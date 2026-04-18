@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Env / secrets
+.env
+backend/.env
+backend/data/session/credentials.json
+backend/data/session/cookies.json
+
+# DB (로컬 SQLite — Supabase 이전 후 불필요)
+backend/data/qoo10.db
+
+# OS
+.DS_Store
+Thumbs.db
