@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import { themeQuartz } from 'ag-grid-community';
+import { addInterestKeywords, getInterestKeywords } from '../store/interestKeywords';
 
 const myTheme = themeQuartz.withParams({
   fontSize: 12,
@@ -15,6 +17,7 @@ const myTheme = themeQuartz.withParams({
 });
 import type { ColDef } from 'ag-grid-community';
 import { getKeywords, listKeywordDates } from '../api/endpoints';
+import api from '../api/client';
 import type { Keyword } from '../types';
 import CheckboxSetFilter from '../components/Grid/CheckboxSetFilter';
 
@@ -174,6 +177,7 @@ export default function RecommendPage() {
   const handleGridReady = () => { restoreColState(); };
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [dates, setDates] = useState<{ lookup_date: string; count: number }[]>([]);
+  const [interestCount, setInterestCount] = useState(() => getInterestKeywords().length);
 
   // 기간 필터: mode = single(특정일) | range(기간) | all(전체)
   const [mode, setMode] = useState<'single' | 'range' | 'all'>('all');
@@ -277,6 +281,10 @@ export default function RecommendPage() {
   const scoreFmt = (p: any) => p.value == null ? '' : Number(p.value).toFixed(2);
 
   const columnDefs: ColDef[] = useMemo(() => [
+    {
+      headerName: '관심', width: 70, pinned: 'left', sortable: false, filter: false,
+      checkboxSelection: true, headerCheckboxSelection: true, headerCheckboxSelectionFilteredOnly: true,
+    },
     { field: 'lookup_date', headerName: '조회날짜', width: 110 },
     { headerName: '#', valueGetter: (p: any) => (p.node?.rowIndex ?? 0) + 1, width: 60, sortable: false, filter: false },
     { field: 'recommend_score', headerName: '추천점수', width: 100, type: 'numericColumn', valueFormatter: scoreFmt,
@@ -342,6 +350,50 @@ export default function RecommendPage() {
     sortable: true, resizable: true, filter: CheckboxSetFilter, suppressMovable: false, minWidth: 60,
   }), []);
 
+  const [retranslating, setRetranslating] = useState(false);
+  const [retransProgress, setRetransProgress] = useState<string | null>(null);
+
+  const retranslateAll = async (onlyMissing: boolean) => {
+    const label = onlyMissing ? '한국어 없는 키워드만' : '전체 키워드';
+    if (!confirm(`${label}을 구글 번역으로 재번역합니다. 수 분 걸릴 수 있습니다. 진행?`)) return;
+    setRetranslating(true); setRetransProgress(null);
+    try {
+      const { data } = await api.post('/keywords/retranslate', null, { params: { only_missing: onlyMissing } });
+      if (data.status === 'empty') { alert('재번역할 키워드가 없습니다.'); return; }
+      const taskId = data.task_id;
+      const poll = window.setInterval(async () => {
+        try {
+          const { data: t } = await api.get(`/tasks/${taskId}`);
+          if (!t) return;
+          setRetransProgress(`${t.message || ''} (${t.progress}/${t.total})`);
+          if (t.status === 'completed' || t.status === 'failed') {
+            window.clearInterval(poll);
+            setRetranslating(false);
+            alert(t.message || '완료');
+            reload();
+          }
+        } catch { /* ignore */ }
+      }, 2000);
+    } catch (e: any) {
+      setRetranslating(false);
+      alert('재번역 실패: ' + (e?.message || String(e)));
+    }
+  };
+
+  const addSelectedToInterest = () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const selected: any[] = api.getSelectedRows?.() || [];
+    if (selected.length === 0) {
+      alert('키워드를 체크해주세요.');
+      return;
+    }
+    const items = selected.map(r => ({ keyword_jp: r.keyword_jp, keyword_kr: r.keyword_kr }));
+    const merged = addInterestKeywords(items);
+    setInterestCount(merged.length);
+    alert(`${items.length}개 추가 완료. 총 ${merged.length}개가 관심 키워드에 있습니다.`);
+  };
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-6">⭐ 역직구 추천 키워드</h2>
@@ -388,6 +440,22 @@ export default function RecommendPage() {
             </button>
           </div>
           <div className="flex gap-1">
+            <button
+              onClick={() => retranslateAll(false)}
+              disabled={retranslating}
+              className="text-xs px-2 py-1 bg-blue-500 text-white hover:bg-blue-600 rounded disabled:opacity-50"
+              title="DB의 모든 키워드를 구글 번역기로 재번역"
+            >
+              🌐 전체 재번역
+            </button>
+            <button
+              onClick={() => retranslateAll(true)}
+              disabled={retranslating}
+              className="text-xs px-2 py-1 bg-blue-100 text-blue-700 hover:bg-blue-200 rounded disabled:opacity-50"
+              title="한국어가 비어있는 키워드만 번역"
+            >
+              빈 것만
+            </button>
             <button
               onClick={() => { setMinSearch(50); setMinKrRatio(5); setCompMin(0.1); setCompMax(15); setBrandFilter('all'); setDedupe(true); }}
               className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded"
@@ -514,9 +582,31 @@ export default function RecommendPage() {
         </div>
       </div>
 
+      {retranslating && (
+        <div className="bg-blue-50 border-l-4 border-blue-400 text-xs p-3 mb-4 rounded flex items-center gap-2">
+          <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+          <b>구글 번역 중...</b>
+          <span className="text-gray-600">{retransProgress}</span>
+        </div>
+      )}
+
       <div className="bg-white rounded-lg shadow p-2">
-        <div className="px-2 py-2 text-sm text-gray-500">
-          추천 키워드 {enriched.length}개 (추천점수 내림차순 정렬됨)
+        <div className="px-2 py-2 flex items-center justify-between">
+          <div className="text-sm text-gray-500">추천 키워드 {enriched.length}개 (추천점수 내림차순)</div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={addSelectedToInterest}
+              className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded hover:bg-emerald-700"
+            >
+              ⭐ 선택한 키워드를 관심 키워드에 추가
+            </button>
+            <Link
+              to="/recommend-products"
+              className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
+            >
+              📊 관심 키워드 리포트 보기 ({interestCount})
+            </Link>
+          </div>
         </div>
         <div style={{ height: 600, width: '100%' }}>
           <AgGridReact
@@ -526,6 +616,8 @@ export default function RecommendPage() {
             columnDefs={columnDefs}
             defaultColDef={defaultColDef}
             animateRows={true}
+            rowSelection="multiple"
+            suppressRowClickSelection={true}
             pagination={true}
             paginationPageSize={2000}
             paginationPageSizeSelector={[100, 500, 1000, 2000, 5000]}

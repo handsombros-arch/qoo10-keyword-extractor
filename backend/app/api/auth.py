@@ -47,7 +47,15 @@ async def get_login_status():
         "logged_in": browser_manager.is_logged_in,
         "browser_active": browser_manager._browser is not None,
         "last_error": browser_manager.last_error,
+        "has_cookies": settings.COOKIES_PATH.exists(),
     }
+
+
+@router.post("/verify")
+async def verify_login():
+    """실제 QSM 접속하여 로그인 여부 재검증."""
+    ok = await browser_manager.verify_login()
+    return {"logged_in": ok}
 
 
 @router.get("/credentials")
@@ -73,12 +81,22 @@ async def delete_credentials():
 
 
 @router.post("/login")
-async def start_login():
-    """브라우저를 열고 Qoo10 로그인 페이지로 이동 + ID/PW 자동 입력"""
+async def start_login(force_new: bool = False):
+    """큐텐 로그인.
+
+    기본: 살아있는 브라우저·탭을 재사용하고 저장된 쿠키로 QSM 재진입.
+    force_new=True: 브라우저를 완전히 닫고 새로 시작 (문제 발생 시만).
+    """
     try:
-        # 항상 새 크롬 창으로 시작
-        await browser_manager.close()
-        await browser_manager.initialize()
+        if force_new:
+            # 명시 요청 시만 기존 브라우저 완전 종료 후 재시작
+            await browser_manager.close()
+            await browser_manager.initialize()
+        elif not browser_manager._is_alive():
+            # 죽어있으면 초기화 (쿠키는 자동 복원)
+            await browser_manager.initialize()
+        # 살아있으면 그대로 재사용 → 기존 탭에서 navigate
+
         page = await browser_manager.get_page()
         try:
             await page.bring_to_front()
@@ -90,15 +108,18 @@ async def start_login():
 
         current_url = page.url
 
+        # 쿠키 유효 → QSM 본 페이지 접속 완료
         if "qsm.qoo10.jp" in current_url and "/Login" not in current_url and "/login" not in current_url:
             browser_manager.is_logged_in = True
             await browser_manager.save_session()
             return {
                 "status": "success",
-                "message": "이미 로그인된 상태입니다.",
+                "message": "저장된 쿠키로 로그인 완료.",
                 "url": current_url,
+                "reused_browser": not force_new,
             }
 
+        # 로그인 페이지로 리디렉션됨 → 저장된 ID/PW 자동 입력
         creds = _load_credentials()
         autofilled = False
         if creds.user_id or creds.password:
@@ -119,13 +140,15 @@ async def start_login():
         return {
             "status": "login_page_opened",
             "message": (
-                "ID/PW가 입력되었습니다. 보안문자 입력 후 로그인 버튼을 누르세요."
+                "ID/PW가 자동 입력되었습니다. 보안문자 확인 후 로그인 버튼을 누르세요."
                 if autofilled
-                else "크롬 창에서 로그인을 완료한 후 '로그인 완료' 버튼을 클릭하세요."
+                else "크롬 창에서 로그인을 완료한 후 '로그인 완료' 버튼을 클릭하세요. "
+                     "자격정보를 /auth/credentials에 저장하면 자동 입력됩니다."
             ),
             "autofilled": autofilled,
             "url": current_url,
             "title": title,
+            "reused_browser": not force_new,
         }
 
     except Exception as e:

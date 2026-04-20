@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { getQoo10Products, searchQoo10Products } from '../api/endpoints';
 import type { Qoo10Product } from '../types';
+
+function marginLink(p: Qoo10Product): string {
+  const params = new URLSearchParams();
+  if (p.price_jpy) params.set('sell_jpy', String(p.price_jpy));
+  if (p.product_name) params.set('name', p.product_name);
+  return `/margin?${params.toString()}`;
+}
 
 export default function ProductSearchPage() {
   const [products, setProducts] = useState<Qoo10Product[]>([]);
@@ -63,6 +71,7 @@ export default function ProductSearchPage() {
               <th className="px-3 py-2 text-left">배송비</th>
               <th className="px-3 py-2 text-left">출하지</th>
               <th className="px-3 py-2 text-center">조회날짜</th>
+              <th className="px-3 py-2 text-center w-20">마진</th>
             </tr>
           </thead>
           <tbody>
@@ -84,10 +93,15 @@ export default function ProductSearchPage() {
                 <td className="px-3 py-2">{p.shipping_fee || '-'}</td>
                 <td className="px-3 py-2">{p.origin || '-'}</td>
                 <td className="px-3 py-2 text-center">{p.lookup_date}</td>
+                <td className="px-3 py-2 text-center">
+                  <Link to={marginLink(p)} className="text-xs px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">
+                    💹
+                  </Link>
+                </td>
               </tr>
             ))}
             {products.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-8 text-center text-gray-400">검색 결과 없음</td></tr>
+              <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">검색 결과 없음</td></tr>
             )}
           </tbody>
         </table>

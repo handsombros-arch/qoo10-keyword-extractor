@@ -15,8 +15,9 @@ from app.browser.manager import browser_manager
 from app.config import settings
 from app.db.connection import engine
 from app.db.models import Base
+from app.services.auto_login import auto_login_on_startup
 
-from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related
+from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data
 
 # 프론트엔드 빌드 경로
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -24,11 +25,21 @@ FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "di
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: DB 테이블 생성
+    # Startup: DB 테이블 생성 + 브라우저 쿠키 기반 로그인 상태 복원
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # 쿠키 파일이 있으면 로그인 유지된 것으로 낙관적 판정 (검증은 첫 사용 시)
+    try:
+        if settings.COOKIES_PATH.exists():
+            browser_manager._logged_in = True
+    except Exception:
+        pass
+
+    # 자동 로그인 시도 (백그라운드) — 쿠키 만료 시 자격정보로 재로그인
+    asyncio.create_task(auto_login_on_startup())
+
     yield
-    # Shutdown: 브라우저 종료
+    # Shutdown: 브라우저 종료 (명시적 종료, 로그인 플래그 리셋)
     await browser_manager.close()
 
 
@@ -56,6 +67,9 @@ app.include_router(insights.router)
 app.include_router(image.router)
 app.include_router(price_compare.router)
 app.include_router(related.router)
+app.include_router(margin.router)
+app.include_router(recommendations.router)
+app.include_router(user_data.router)
 
 # 프론트엔드 정적 파일 서빙
 if FRONTEND_DIST.exists():

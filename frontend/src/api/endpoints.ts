@@ -51,6 +51,46 @@ export const getExchangeRate = (currency: string = 'JPY') => api.get('/utils/exc
 export const translate = (text: string, source: string = 'ko', target: string = 'ja') =>
   api.post('/utils/translate', { text, source, target });
 
+// Margin
+export interface MarginInput {
+  weight_g: number;
+  purchase_price_krw: number;
+  shipping_packaging_krw: number;
+  sell_price_jpy: number;
+  exchange_rate?: number;
+  use_exact_rate?: boolean;
+  shipping_mode?: 'auto' | 'free_kse' | 'paid_tracx';
+}
+export const calculateMargin = (input: MarginInput) => api.post('/margin/calculate', input);
+export const analyzeCompositions = (input: MarginInput) => api.post('/margin/analyze-compositions', input);
+
+// Recommendations
+export const collectRecommendations = (keywords_jp: string[], opts?: { include_naver?: boolean; include_qoo10?: boolean }) =>
+  api.post('/recommendations/collect', { keywords_jp, include_naver: opts?.include_naver ?? true, include_qoo10: opts?.include_qoo10 ?? true });
+export const getRecommendationReport = (keywords_jp: string[], opts?: { default_weight_g?: number; default_packaging_krw?: number; min_margin_rate?: number }) =>
+  api.post('/recommendations/report', { keywords_jp, ...opts });
+
+export interface AutoSourcingParams {
+  mode: 'auto' | 'interest';
+  min_search_volume: number;
+  min_kr_ratio: number;
+  max_kr_ratio: number;
+  min_competition: number;
+  max_competition: number;
+  brand_filter: 'all' | 'general' | 'brand';
+  keywords_limit: number;
+  products_per_keyword: number;
+  categories?: string[];
+  interest_keywords?: string[];
+}
+export const listKeywordCategories = () => api.get<{ category: string; count: number }[]>('/keywords/categories');
+export const previewAutoSourcing = (params: AutoSourcingParams) =>
+  api.post('/recommendations/auto-sheet/preview', params);
+export const runAutoSourcing = (params: AutoSourcingParams) =>
+  api.post('/recommendations/auto-sheet', params);
+export const fetchQoo10ProductsByKeywords = (keywords_jp: string[], per_keyword_limit: number) =>
+  api.post('/recommendations/qoo10-products-by-keywords', { keywords_jp, per_keyword_limit });
+
 // Insights
 export const getNewKeywords = (days_back: number = 1, category?: string) =>
   api.get('/insights/new', { params: { days_back, category } });

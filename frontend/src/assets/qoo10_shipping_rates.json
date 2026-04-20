@@ -1,0 +1,528 @@
+{
+  "description": "큐텐 배송비 테이블 (한국 → 일본). paid_tracx=Tracx 유료배송(항공), free_kse=KSE 무료배송(해상)",
+  "source": "글로벌라이징-큐텐 판매제품리스트.xlsx / 큐텐 배송비 시트",
+  "paid_tracx": [
+    {
+      "weight_g": 0.0,
+      "shipping_krw": 0.0
+    },
+    {
+      "weight_g": 100.0,
+      "shipping_krw": 5550.0
+    },
+    {
+      "weight_g": 250.0,
+      "shipping_krw": 6680.0
+    },
+    {
+      "weight_g": 500.0,
+      "shipping_krw": 7400.0
+    },
+    {
+      "weight_g": 750.0,
+      "shipping_krw": 8430.0
+    },
+    {
+      "weight_g": 1000.0,
+      "shipping_krw": 9450.0
+    },
+    {
+      "weight_g": 1500.0,
+      "shipping_krw": 9800.0
+    },
+    {
+      "weight_g": 2000.0,
+      "shipping_krw": 10200.0
+    },
+    {
+      "weight_g": 2500.0,
+      "shipping_krw": 11350.0
+    },
+    {
+      "weight_g": 3000.0,
+      "shipping_krw": 12400.0
+    },
+    {
+      "weight_g": 3500.0,
+      "shipping_krw": 13450.0
+    },
+    {
+      "weight_g": 4000.0,
+      "shipping_krw": 14500.0
+    },
+    {
+      "weight_g": 4500.0,
+      "shipping_krw": 15550.0
+    },
+    {
+      "weight_g": 5000.0,
+      "shipping_krw": 16300.0
+    },
+    {
+      "weight_g": 5500.0,
+      "shipping_krw": 18950.0
+    },
+    {
+      "weight_g": 6000.0,
+      "shipping_krw": 20200.0
+    },
+    {
+      "weight_g": 6500.0,
+      "shipping_krw": 21450.0
+    },
+    {
+      "weight_g": 7000.0,
+      "shipping_krw": 22600.0
+    },
+    {
+      "weight_g": 7500.0,
+      "shipping_krw": 23850.0
+    },
+    {
+      "weight_g": 8000.0,
+      "shipping_krw": 25100.0
+    },
+    {
+      "weight_g": 8500.0,
+      "shipping_krw": 26250.0
+    },
+    {
+      "weight_g": 9000.0,
+      "shipping_krw": 27500.0
+    },
+    {
+      "weight_g": 9500.0,
+      "shipping_krw": 28650.0
+    },
+    {
+      "weight_g": 10000.0,
+      "shipping_krw": 29900.0
+    },
+    {
+      "weight_g": 10500.0,
+      "shipping_krw": 30080.0
+    },
+    {
+      "weight_g": 11000.0,
+      "shipping_krw": 31250.0
+    },
+    {
+      "weight_g": 11500.0,
+      "shipping_krw": 32430.0
+    },
+    {
+      "weight_g": 12000.0,
+      "shipping_krw": 33600.0
+    },
+    {
+      "weight_g": 12500.0,
+      "shipping_krw": 34790.0
+    },
+    {
+      "weight_g": 13000.0,
+      "shipping_krw": 35960.0
+    },
+    {
+      "weight_g": 13500.0,
+      "shipping_krw": 37130.0
+    },
+    {
+      "weight_g": 14000.0,
+      "shipping_krw": 38310.0
+    },
+    {
+      "weight_g": 14500.0,
+      "shipping_krw": 39480.0
+    },
+    {
+      "weight_g": 15000.0,
+      "shipping_krw": 40660.0
+    },
+    {
+      "weight_g": 15500.0,
+      "shipping_krw": 41930.0
+    },
+    {
+      "weight_g": 16000.0,
+      "shipping_krw": 43190.0
+    },
+    {
+      "weight_g": 16500.0,
+      "shipping_krw": 44460.0
+    },
+    {
+      "weight_g": 17000.0,
+      "shipping_krw": 45720.0
+    },
+    {
+      "weight_g": 17500.0,
+      "shipping_krw": 46990.0
+    },
+    {
+      "weight_g": 18000.0,
+      "shipping_krw": 48260.0
+    },
+    {
+      "weight_g": 18500.0,
+      "shipping_krw": 49520.0
+    },
+    {
+      "weight_g": 19000.0,
+      "shipping_krw": 50790.0
+    },
+    {
+      "weight_g": 19500.0,
+      "shipping_krw": 52060.0
+    },
+    {
+      "weight_g": 20000.0,
+      "shipping_krw": 53320.0
+    },
+    {
+      "weight_g": 20500.0,
+      "shipping_krw": 54500.0
+    },
+    {
+      "weight_g": 21000.0,
+      "shipping_krw": 55670.0
+    },
+    {
+      "weight_g": 21500.0,
+      "shipping_krw": 56850.0
+    },
+    {
+      "weight_g": 22000.0,
+      "shipping_krw": 58030.0
+    },
+    {
+      "weight_g": 22500.0,
+      "shipping_krw": 59200.0
+    },
+    {
+      "weight_g": 23000.0,
+      "shipping_krw": 60380.0
+    },
+    {
+      "weight_g": 23500.0,
+      "shipping_krw": 61550.0
+    },
+    {
+      "weight_g": 24000.0,
+      "shipping_krw": 62730.0
+    },
+    {
+      "weight_g": 24500.0,
+      "shipping_krw": 63900.0
+    },
+    {
+      "weight_g": 25000.0,
+      "shipping_krw": 52080.0
+    },
+    {
+      "weight_g": 25500.0,
+      "shipping_krw": 66260.0
+    },
+    {
+      "weight_g": 26000.0,
+      "shipping_krw": 67430.0
+    },
+    {
+      "weight_g": 26500.0,
+      "shipping_krw": 68610.0
+    },
+    {
+      "weight_g": 27000.0,
+      "shipping_krw": 69780.0
+    },
+    {
+      "weight_g": 27500.0,
+      "shipping_krw": 70960.0
+    },
+    {
+      "weight_g": 28000.0,
+      "shipping_krw": 72130.0
+    },
+    {
+      "weight_g": 28500.0,
+      "shipping_krw": 73310.0
+    },
+    {
+      "weight_g": 29000.0,
+      "shipping_krw": 74490.0
+    },
+    {
+      "weight_g": 29500.0,
+      "shipping_krw": 75670.0
+    },
+    {
+      "weight_g": 30000.0,
+      "shipping_krw": 76840.0
+    }
+  ],
+  "free_kse": [
+    {
+      "weight_g": 0.0,
+      "shipping_krw": 0.0
+    },
+    {
+      "weight_g": 100.0,
+      "shipping_krw": 4950.0
+    },
+    {
+      "weight_g": 250.0,
+      "shipping_krw": 5250.0
+    },
+    {
+      "weight_g": 500.0,
+      "shipping_krw": 5900.0
+    },
+    {
+      "weight_g": 750.0,
+      "shipping_krw": 6800.0
+    },
+    {
+      "weight_g": 1000.0,
+      "shipping_krw": 7200.0
+    },
+    {
+      "weight_g": 1250.0,
+      "shipping_krw": 7600.0
+    },
+    {
+      "weight_g": 1500.0,
+      "shipping_krw": 8100.0
+    },
+    {
+      "weight_g": 1750.0,
+      "shipping_krw": 8600.0
+    },
+    {
+      "weight_g": 2000.0,
+      "shipping_krw": 9100.0
+    },
+    {
+      "weight_g": 2500.0,
+      "shipping_krw": 9500.0
+    },
+    {
+      "weight_g": 3000.0,
+      "shipping_krw": 10200.0
+    },
+    {
+      "weight_g": 3500.0,
+      "shipping_krw": 11100.0
+    },
+    {
+      "weight_g": 4000.0,
+      "shipping_krw": 11700.0
+    },
+    {
+      "weight_g": 4500.0,
+      "shipping_krw": 12300.0
+    },
+    {
+      "weight_g": 5000.0,
+      "shipping_krw": 13400.0
+    },
+    {
+      "weight_g": 5500.0,
+      "shipping_krw": 14500.0
+    },
+    {
+      "weight_g": 6000.0,
+      "shipping_krw": 15300.0
+    },
+    {
+      "weight_g": 6500.0,
+      "shipping_krw": 16100.0
+    },
+    {
+      "weight_g": 7000.0,
+      "shipping_krw": 16800.0
+    },
+    {
+      "weight_g": 7500.0,
+      "shipping_krw": 17600.0
+    },
+    {
+      "weight_g": 8000.0,
+      "shipping_krw": 18300.0
+    },
+    {
+      "weight_g": 8500.0,
+      "shipping_krw": 19000.0
+    },
+    {
+      "weight_g": 9000.0,
+      "shipping_krw": 19800.0
+    },
+    {
+      "weight_g": 9500.0,
+      "shipping_krw": 20400.0
+    },
+    {
+      "weight_g": 10000.0,
+      "shipping_krw": 21200.0
+    },
+    {
+      "weight_g": 10500.0,
+      "shipping_krw": 21900.0
+    },
+    {
+      "weight_g": 11000.0,
+      "shipping_krw": 22700.0
+    },
+    {
+      "weight_g": 11500.0,
+      "shipping_krw": 23400.0
+    },
+    {
+      "weight_g": 12000.0,
+      "shipping_krw": 24200.0
+    },
+    {
+      "weight_g": 12500.0,
+      "shipping_krw": 24900.0
+    },
+    {
+      "weight_g": 13000.0,
+      "shipping_krw": 25600.0
+    },
+    {
+      "weight_g": 13500.0,
+      "shipping_krw": 26400.0
+    },
+    {
+      "weight_g": 14000.0,
+      "shipping_krw": 27200.0
+    },
+    {
+      "weight_g": 14500.0,
+      "shipping_krw": 27800.0
+    },
+    {
+      "weight_g": 15000.0,
+      "shipping_krw": 28600.0
+    },
+    {
+      "weight_g": 15500.0,
+      "shipping_krw": 29400.0
+    },
+    {
+      "weight_g": 16000.0,
+      "shipping_krw": 30200.0
+    },
+    {
+      "weight_g": 16500.0,
+      "shipping_krw": 31100.0
+    },
+    {
+      "weight_g": 17000.0,
+      "shipping_krw": 31800.0
+    },
+    {
+      "weight_g": 17500.0,
+      "shipping_krw": 32600.0
+    },
+    {
+      "weight_g": 18000.0,
+      "shipping_krw": 33500.0
+    },
+    {
+      "weight_g": 18500.0,
+      "shipping_krw": 34300.0
+    },
+    {
+      "weight_g": 19000.0,
+      "shipping_krw": 35100.0
+    },
+    {
+      "weight_g": 19500.0,
+      "shipping_krw": 36000.0
+    },
+    {
+      "weight_g": 20000.0,
+      "shipping_krw": 36800.0
+    },
+    {
+      "weight_g": 20500.0,
+      "shipping_krw": 37600.0
+    },
+    {
+      "weight_g": 21000.0,
+      "shipping_krw": 38300.0
+    },
+    {
+      "weight_g": 21500.0,
+      "shipping_krw": 39300.0
+    },
+    {
+      "weight_g": 22000.0,
+      "shipping_krw": 39800.0
+    },
+    {
+      "weight_g": 22500.0,
+      "shipping_krw": 40500.0
+    },
+    {
+      "weight_g": 23000.0,
+      "shipping_krw": 41200.0
+    },
+    {
+      "weight_g": 23500.0,
+      "shipping_krw": 42700.0
+    },
+    {
+      "weight_g": 24000.0,
+      "shipping_krw": 43000.0
+    },
+    {
+      "weight_g": 24500.0,
+      "shipping_krw": 43300.0
+    },
+    {
+      "weight_g": 25000.0,
+      "shipping_krw": 44000.0
+    },
+    {
+      "weight_g": 25500.0,
+      "shipping_krw": 44600.0
+    },
+    {
+      "weight_g": 26000.0,
+      "shipping_krw": 45500.0
+    },
+    {
+      "weight_g": 26500.0,
+      "shipping_krw": 46300.0
+    },
+    {
+      "weight_g": 27000.0,
+      "shipping_krw": 47000.0
+    },
+    {
+      "weight_g": 27500.0,
+      "shipping_krw": 47700.0
+    },
+    {
+      "weight_g": 28000.0,
+      "shipping_krw": 48400.0
+    },
+    {
+      "weight_g": 28500.0,
+      "shipping_krw": 49100.0
+    },
+    {
+      "weight_g": 29000.0,
+      "shipping_krw": 49600.0
+    },
+    {
+      "weight_g": 29500.0,
+      "shipping_krw": 49800.0
+    },
+    {
+      "weight_g": 30000.0,
+      "shipping_krw": 50900.0
+    }
+  ]
+}

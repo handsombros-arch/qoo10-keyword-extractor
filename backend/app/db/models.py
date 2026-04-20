@@ -139,3 +139,12 @@ class BestsellerItem(Base):
     product_url = Column(String)
     sales_volume = Column(Integer)
     lookup_date = Column(Date, default=date.today)
+
+
+class UserData(Base):
+    """범용 JSON 저장: 시트·관심 키워드·샵 캐시 등을 PC 간 공유."""
+    __tablename__ = "user_data"
+
+    key = Column(String, primary_key=True)
+    data = Column(Text)  # JSON 문자열
+    updated_at = Column(DateTime, default=datetime.utcnow)

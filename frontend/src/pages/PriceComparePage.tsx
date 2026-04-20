@@ -1,5 +1,20 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../api/client';
+
+function marginLinkFromJpy(price_jpy?: number, name?: string): string {
+  const p = new URLSearchParams();
+  if (price_jpy) p.set('sell_jpy', String(price_jpy));
+  if (name) p.set('name', name);
+  return `/margin?${p.toString()}`;
+}
+
+function marginLinkFromKrw(price_krw?: number, name?: string): string {
+  const p = new URLSearchParams();
+  if (price_krw) p.set('purchase_krw', String(price_krw));
+  if (name) p.set('name', name);
+  return `/margin?${p.toString()}`;
+}
 
 interface Qoo10Product {
   product_name: string;
@@ -134,6 +149,7 @@ export default function PriceComparePage() {
                     <th className="px-2 py-2 text-right">원화</th>
                     <th className="px-2 py-2 text-left">배송비</th>
                     <th className="px-2 py-2 text-left">출하지</th>
+                    <th className="px-2 py-2 text-center w-12">마진</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -151,10 +167,13 @@ export default function PriceComparePage() {
                       <td className="px-2 py-1 text-right font-mono text-gray-600">₩{fmt(p.price_krw)}</td>
                       <td className="px-2 py-1 text-gray-500">{p.shipping_fee || '-'}</td>
                       <td className="px-2 py-1">{p.origin || '-'}</td>
+                      <td className="px-2 py-1 text-center">
+                        <Link to={marginLinkFromJpy(p.price_jpy, p.product_name)} className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">💹</Link>
+                      </td>
                     </tr>
                   ))}
                   {result.qoo10.length === 0 && (
-                    <tr><td colSpan={6} className="text-center text-gray-400 py-6">결과 없음</td></tr>
+                    <tr><td colSpan={7} className="text-center text-gray-400 py-6">결과 없음</td></tr>
                   )}
                 </tbody>
               </table>
@@ -181,6 +200,7 @@ export default function PriceComparePage() {
                     <th className="px-2 py-2 text-left">상품명</th>
                     <th className="px-2 py-2 text-right">가격(원)</th>
                     <th className="px-2 py-2 text-left">배송비</th>
+                    <th className="px-2 py-2 text-center w-12">마진</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -196,10 +216,13 @@ export default function PriceComparePage() {
                       </td>
                       <td className="px-2 py-1 text-right font-mono">₩{fmt(p.price_krw)}</td>
                       <td className="px-2 py-1 text-gray-500">{p.shipping_fee || '-'}</td>
+                      <td className="px-2 py-1 text-center">
+                        <Link to={marginLinkFromKrw(p.price_krw, p.product_name)} className="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">💹</Link>
+                      </td>
                     </tr>
                   ))}
                   {result.naver.length === 0 && (
-                    <tr><td colSpan={4} className="text-center text-gray-400 py-6">결과 없음</td></tr>
+                    <tr><td colSpan={5} className="text-center text-gray-400 py-6">결과 없음</td></tr>
                   )}
                 </tbody>
               </table>

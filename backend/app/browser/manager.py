@@ -47,9 +47,9 @@ class BrowserManager:
             return False
 
     async def initialize(self) -> None:
-        """완전히 새로 브라우저를 시작"""
-        # 기존 리소스 정리
-        await self.close()
+        """완전히 새로 브라우저를 시작. 기존 쿠키 기반 로그인 상태는 유지."""
+        # 기존 리소스 정리 (단, 명시적 logout이 아니므로 로그인 플래그 유지)
+        await self.close(keep_login_flag=True)
 
         self._playwright = await async_playwright().start()
 
@@ -85,15 +85,32 @@ class BrowserManager:
             ignore_https_errors=True,
         )
 
-        # 저장된 쿠키 복원
+        # 저장된 쿠키 복원 — 쿠키가 있으면 낙관적으로 로그인 상태 유지
         cookies = await load_cookies(settings.COOKIES_PATH)
         if cookies:
             try:
                 await self._context.add_cookies(cookies)
+                # 유효한 세션 쿠키가 있으면 is_logged_in = True (실제 검증은 verify_login에서)
+                if any(c.get("name", "").lower() in ("gmkt.inc.session", "jsessionid", "session_id", "sessionid") or
+                       "session" in c.get("name", "").lower() for c in cookies):
+                    self._logged_in = True
             except Exception:
                 pass
 
         self._page = await self._context.new_page()
+
+    async def verify_login(self) -> bool:
+        """실제로 QSM에 접속해 로그인 페이지로 리디렉션되는지 확인. 실패 시 is_logged_in=False."""
+        try:
+            page = await self.get_page()
+            await page.goto(settings.QSM_URL, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(1000)
+            url = page.url
+            ok = "qsm.qoo10.jp" in url and "/Login" not in url and "/login" not in url
+            self._logged_in = ok
+            return ok
+        except Exception:
+            return self._logged_in
 
     async def get_page(self) -> Page:
         """살아있는 페이지 반환. 죽어있으면 재초기화."""
@@ -121,7 +138,8 @@ class BrowserManager:
     def last_error(self) -> Optional[str]:
         return self._last_error
 
-    async def close(self) -> None:
+    async def close(self, keep_login_flag: bool = False) -> None:
+        """브라우저 리소스 정리. keep_login_flag=True면 로그인 상태 유지 (재초기화 대비)."""
         for cleanup in [
             lambda: self._page.close() if self._page and not self._page.is_closed() else None,
             lambda: self._browser.close() if self._browser else None,
@@ -138,7 +156,8 @@ class BrowserManager:
         self._playwright = None
         self._page = None
         self._context = None
-        self._logged_in = False
+        if not keep_login_flag:
+            self._logged_in = False
 
 
 browser_manager = BrowserManager()

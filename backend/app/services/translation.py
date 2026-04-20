@@ -1,3 +1,4 @@
+"""구글 번역기 (무료 비공식 endpoint)."""
 import asyncio
 import httpx
 
@@ -5,8 +6,8 @@ import httpx
 GOOGLE_TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"
 
 
-async def translate_papago(text: str, source: str = "ja", target: str = "ko") -> str:
-    """Google 무료 비공식 번역 endpoint 사용. (이름은 호환 위해 유지)"""
+async def translate_google(text: str, source: str = "ja", target: str = "ko") -> str:
+    """구글 번역 무료 endpoint 사용. API 키 불필요."""
     if not text:
         return ""
     try:
@@ -39,6 +40,10 @@ async def translate_batch(
 
     async def one(t: str) -> str:
         async with sem:
-            return await translate_papago(t, source, target)
+            return await translate_google(t, source, target)
 
     return await asyncio.gather(*(one(t) for t in texts))
+
+
+# 하위 호환용 별칭 (예전 import 경로 유지)
+translate_papago = translate_google

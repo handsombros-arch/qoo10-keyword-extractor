@@ -13,6 +13,8 @@ import BidPage from './pages/BidPage';
 import ProductSearchPage from './pages/ProductSearchPage';
 import TrackingPage from './pages/TrackingPage';
 import BestsellerPage from './pages/BestsellerPage';
+import MarginPage from './pages/MarginPage';
+import RecommendProductsPage from './pages/RecommendProductsPage';
 
 const queryClient = new QueryClient();
 
@@ -34,6 +36,8 @@ function App() {
             <Route path="/products" element={<ProductSearchPage />} />
             <Route path="/tracking" element={<TrackingPage />} />
             <Route path="/bestsellers" element={<BestsellerPage />} />
+            <Route path="/margin" element={<MarginPage />} />
+            <Route path="/recommend-products" element={<RecommendProductsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

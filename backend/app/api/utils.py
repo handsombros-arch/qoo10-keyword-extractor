@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.connection import get_session
 from app.db.sqlite_repo import SQLiteKeywordRepository, SQLiteBidRepository, SQLiteProductRepository
 from app.services.exchange_rate import get_exchange_rate
-from app.services.translation import translate_papago
+from app.services.translation import translate_batch, translate_papago
 
 router = APIRouter(prefix="/api/utils", tags=["utils"])
 
@@ -30,6 +30,20 @@ async def exchange_rate(currency: str = "JPY"):
 async def translate(req: TranslateRequest):
     result = await translate_papago(req.text, req.source, req.target)
     return {"original": req.text, "translated": result}
+
+
+class TranslateBatchRequest(BaseModel):
+    texts: list[str]
+    source: str = "ja"
+    target: str = "ko"
+    concurrency: int = 5
+
+
+@router.post("/translate-batch")
+async def translate_multiple(req: TranslateBatchRequest):
+    """여러 문자열 동시 번역."""
+    results = await translate_batch(req.texts, req.source, req.target, req.concurrency)
+    return {"translations": results}
 
 
 @router.get("/export/keywords")

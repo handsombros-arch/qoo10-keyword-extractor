@@ -38,6 +38,90 @@ async def list_keyword_dates(session: AsyncSession = Depends(get_session)):
     return await repo.list_dates()
 
 
+@router.get("/categories")
+async def list_keyword_categories(session: AsyncSession = Depends(get_session)):
+    """DB에 등록된 카테고리 목록과 각 카테고리의 키워드 수."""
+    from sqlalchemy import select as sa_select, func as sa_func
+    from app.db.models import Keyword
+    stmt = (
+        sa_select(Keyword.category, sa_func.count(Keyword.id))
+        .group_by(Keyword.category)
+        .order_by(Keyword.category)
+    )
+    result = await session.execute(stmt)
+    return [
+        {"category": row[0] or "(미분류)", "count": row[1]}
+        for row in result.all()
+    ]
+
+
+@router.post("/retranslate")
+async def retranslate_keywords(only_missing: bool = False):
+    """기존 DB 키워드의 keyword_kr을 구글 번역으로 일괄 재번역.
+
+    only_missing=True: 한국어가 없는 것만
+    only_missing=False: 전체 재번역
+    """
+    from sqlalchemy import select, update
+    from app.db.models import Keyword
+
+    # 1) 대상 수집
+    async with async_session() as session:
+        stmt = select(Keyword.keyword_jp, Keyword.keyword_kr).distinct()
+        result = await session.execute(stmt)
+        pairs = result.all()
+
+    targets_jp = []
+    seen = set()
+    for jp, kr in pairs:
+        if not jp or jp in seen:
+            continue
+        seen.add(jp)
+        if only_missing and kr:
+            continue
+        targets_jp.append(jp)
+
+    if not targets_jp:
+        return {"status": "empty", "total": 0}
+
+    # 2) 태스크 생성
+    task_id = task_manager.create_task(
+        f"키워드 재번역 ({len(targets_jp)}개)", len(targets_jp)
+    )
+    task_manager.start_task(task_id)
+
+    async def _run():
+        try:
+            # 청크 단위로 번역 (한번에 너무 많으면 오래 걸림)
+            chunk = 50
+            updates: dict[str, str] = {}
+            for i in range(0, len(targets_jp), chunk):
+                batch = targets_jp[i:i + chunk]
+                translations = await translate_batch(batch, source="ja", target="ko", concurrency=5)
+                for jp, ko in zip(batch, translations):
+                    if ko and ko != jp:
+                        updates[jp] = ko
+                task_manager.update_progress(
+                    task_id, len(batch), f"{i + len(batch)}/{len(targets_jp)} 번역 완료"
+                )
+
+            # 3) DB 일괄 업데이트
+            async with async_session() as session:
+                for jp, ko in updates.items():
+                    await session.execute(
+                        update(Keyword).where(Keyword.keyword_jp == jp).values(keyword_kr=ko)
+                    )
+                await session.commit()
+
+            task_manager.complete_task(task_id, f"{len(updates)}개 키워드 재번역 완료")
+        except Exception as e:
+            traceback.print_exc()
+            task_manager.fail_task(task_id, f"실패: {e}")
+
+    asyncio.create_task(_run())
+    return {"status": "started", "task_id": task_id, "total": len(targets_jp)}
+
+
 @router.delete("/by-date/{lookup_date}")
 async def delete_by_date(lookup_date: date, session: AsyncSession = Depends(get_session)):
     repo = SQLiteKeywordRepository(session)
