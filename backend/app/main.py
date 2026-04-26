@@ -17,7 +17,7 @@ from app.db.connection import engine
 from app.db.models import Base
 from app.services.auto_login import auto_login_on_startup
 
-from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data
+from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data, automation
 
 # 프론트엔드 빌드 경로
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -70,6 +70,7 @@ app.include_router(related.router)
 app.include_router(margin.router)
 app.include_router(recommendations.router)
 app.include_router(user_data.router)
+app.include_router(automation.router)
 
 # 프론트엔드 정적 파일 서빙
 if FRONTEND_DIST.exists():

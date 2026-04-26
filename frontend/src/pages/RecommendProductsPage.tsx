@@ -18,7 +18,9 @@ import {
 } from '../store/interestKeywords';
 import {
   loadSheet, newSheetRow, saveSheet, totalPurchaseKrw, type SheetRow,
+  type CompositionOption,
 } from '../store/productSheet';
+import CompositionsPanel, { summarizeBestComposition } from '../components/common/CompositionsPanel';
 import {
   clearShopCache, loadShopCache, saveShopCache,
 } from '../store/shopCache';
@@ -26,8 +28,11 @@ import { fetchCloud, makeDebouncedPusher } from '../store/cloudSync';
 import {
   calculateMargin, marginVerdict,
   calculateRecommendScore,
+  targetSellJpyForMargin,
   PRICE_SWEETSPOT_MIN_JPY, PRICE_SWEETSPOT_MAX_JPY,
 } from '../lib/marginCalc';
+
+const TARGET_MARGIN_NORMAL = 0.20;
 
 const myTheme = themeQuartz.withParams({
   fontSize: 12,
@@ -205,6 +210,19 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const [colListVersion, setColListVersion] = useState(0);
   const [qoo10ExportOpen, setQoo10ExportOpen] = useState(false);
   const [qoo10ExportRows, setQoo10ExportRows] = useState<SheetRow[]>([]);
+  // 구성 편집 패널: 선택된 상품 id (null이면 패널 숨김)
+  const [compositionRowId, setCompositionRowId] = useState<string | null>(null);
+
+  const updateCompositions = (rowId: string, compositions: CompositionOption[]) => {
+    setRows(rows.map(r => (r.id === rowId ? { ...r, compositions } : r)));
+  };
+
+  // 확장 행 높이 재계산: 선택 상품의 구성 개수 변동에 반응
+  useEffect(() => {
+    const api = gridRef.current?.api as any;
+    if (!api || !compositionRowId) return;
+    try { api.resetRowHeights(); } catch { /* ignore */ }
+  }, [compositionRowId, rows]);
 
   // ─ 일자 필터 ─
   const [dateMode, setDateMode] = useState<'all' | 'single' | 'range' | 'today'>('all');
@@ -228,6 +246,19 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       return true;
     });
   }, [rows, dateMode, singleDate, fromDate, toDate, today]);
+
+  // 선택된 행 바로 아래에 구성 편집 확장 행을 주입
+  const rowsWithExpansion = useMemo(() => {
+    if (!compositionRowId) return filteredRows;
+    const out: any[] = [];
+    for (const r of filteredRows) {
+      out.push(r);
+      if (r.id === compositionRowId) {
+        out.push({ __expansion: true, __parentId: r.id, id: `__exp_${r.id}` });
+      }
+    }
+    return out;
+  }, [filteredRows, compositionRowId]);
 
   // 일자별 집계 (필터 옵션 표시용)
   const dateGroups = useMemo(() => {
@@ -257,6 +288,15 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     shipping_mode: r.shipping_mode ?? 'auto',
     is_mega: true,
   });
+  const computeTargetJpy = (r: SheetRow, target: number) => targetSellJpyForMargin({
+    weight_g: r.weight_g,
+    purchase_price_krw: totalPurchaseKrw(r),
+    shipping_packaging_krw: r.shipping_packaging_krw,
+    sell_price_jpy: r.sell_price_jpy,
+    exchange_rate: r.exchange_rate ?? 9.5,
+    shipping_mode: r.shipping_mode ?? 'auto',
+    is_mega: false,
+  }, target);
   const computeScore = (r: SheetRow) => {
     const m = computeRow(r);
     return calculateRecommendScore({
@@ -274,8 +314,33 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       checkboxSelection: true, headerCheckboxSelection: true,
     },
     {
-      field: 'created_at', headerName: '작성일', width: 95, pinned: 'left',
-      cellStyle: { color: '#6b7280', fontSize: 11 },
+      field: 'created_at', headerName: '작성일 / 구성', width: 115, pinned: 'left',
+      cellRenderer: (p: any) => {
+        if (p.data?.__expansion) return null;
+        const best = summarizeBestComposition(p.data);
+        const count = (p.data?.compositions || []).length;
+        const isOpen = compositionRowId === p.data?.id;
+        return (
+          <div className="flex flex-col h-full justify-center leading-tight py-0.5">
+            <span className="text-[11px] text-gray-500">{p.value || ''}</span>
+            <button
+              onClick={(e) => { e.stopPropagation(); setCompositionRowId(isOpen ? null : (p.data?.id || null)); }}
+              className={`text-[10px] mt-0.5 px-1 py-0 rounded border self-start ${
+                isOpen
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-blue-700 border-blue-300 hover:bg-blue-50'
+              }`}
+              title={best ? `최고 마진 구성: ${best.label} ${(best.margin_rate * 100).toFixed(1)}%` : '구성 편집'}
+            >
+              {isOpen ? '▾ 접기' : (count > 0
+                ? `▸ ${count}개${best ? ` ${(best.margin_rate * 100).toFixed(0)}%` : ''}`
+                : '▸ 편집')}
+            </button>
+          </div>
+        );
+      },
+      autoHeight: true,
+      cellStyle: { padding: 2 },
     },
     {
       field: 'source', headerName: '출처', width: 120, pinned: 'left',
@@ -368,6 +433,18 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           : { color: '#15803d', fontWeight: 'bold' } as any;
       },
       headerTooltip: '(예상판매가 - 경쟁가) / 경쟁가. 음수일수록 내 예상가가 저렴 = 경쟁력' },
+    { headerName: '권장가(20%)', width: 105, type: 'numericColumn',
+      valueGetter: (p: any) => Math.round(computeTargetJpy(p.data, TARGET_MARGIN_NORMAL)),
+      valueFormatter: (p: any) => p.value > 0 ? `¥${fmt.jpy(p.value)}` : '-',
+      cellStyle: (p: any) => {
+        const cur = p.data?.sell_price_jpy || 0;
+        if (!p.value || !cur) return { color: '#1d4ed8', fontStyle: 'italic' };
+        // 내 판매가가 목표가 이상 → 20% 달성 가능 (녹색), 미만 → 경고 (주황)
+        return cur >= p.value
+          ? { color: '#15803d', fontWeight: 'bold' } as any
+          : { color: '#c2410c', fontWeight: 'bold' } as any;
+      },
+      headerTooltip: '일반마진 20%를 달성하려면 필요한 엔화 판매가. 수수료·배송 모드 반영 정밀 역산. 내 판매가가 이 값 이상이면 녹색.' },
     { field: 'sell_price_jpy', headerName: '내 판매가(¥)', width: 110, editable: true, type: 'numericColumn',
       valueFormatter: (p: any) => `¥${fmt.jpy(p.value)}`,
       cellStyle: { backgroundColor: '#fefce8', fontWeight: 'bold' },
@@ -379,9 +456,27 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       headerTooltip: '메가와리 10% 할인가 = 내 판매가 × 0.9 (자동 계산)' },
 
     // ─ 일반 수익 섹션 (엑셀 AB, AC 근처) ─
-    { headerName: '배송', width: 65,
-      valueGetter: (p: any) => computeRow(p.data).shipping_mode_resolved,
-      cellRenderer: (p: any) => p.value === 'free' ? '무료' : '유료' },
+    {
+      field: 'shipping_mode', headerName: '배송', width: 110, editable: true,
+      cellEditor: 'agSelectCellEditor',
+      cellEditorParams: { values: ['auto', 'free', 'paid'] },
+      valueGetter: (p: any) => p.data?.shipping_mode || 'auto',
+      valueFormatter: (p: any) => {
+        const mode = p.value;
+        if (mode === 'free') return '무료 (수동)';
+        if (mode === 'paid') return '유료 (수동)';
+        // auto: 20,000원 임계값 기반 자동 판정
+        const resolved = computeRow(p.data).shipping_mode_resolved;
+        return `자동 (${resolved === 'free' ? '무료' : '유료'})`;
+      },
+      cellStyle: (p: any) => {
+        const mode = p.data?.shipping_mode || 'auto';
+        if (mode === 'free') return { backgroundColor: '#ecfdf5', color: '#047857' } as any;
+        if (mode === 'paid') return { backgroundColor: '#fef2f2', color: '#b91c1c' } as any;
+        return { color: '#6b7280', fontStyle: 'italic' } as any;
+      },
+      headerTooltip: '자동: 원화 판매가 ≥ 20,000원이면 무료(KSE), 미만이면 유료. 수동으로 무료/유료 고정 가능.',
+    },
     { headerName: '배송비', width: 85, type: 'numericColumn',
       valueGetter: (p: any) => computeRow(p.data).shipping_cost_krw,
       valueFormatter: (p: any) => fmt.krw(p.value) },
@@ -447,7 +542,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
     },
     { field: 'notes', headerName: '메모', width: 130, editable: true },
-  ] as ColDef[]), []);
+  ] as ColDef[]), [compositionRowId]);
 
   const defaultColDef: ColDef = useMemo(() => ({
     resizable: true, sortable: true, filter: false, suppressHeaderMenuButton: false,
@@ -460,7 +555,10 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       api.applyColumnState?.({ defaultState: { sort: null } });
     } catch { /* ignore */ }
     const newRows: SheetRow[] = [];
-    api.forEachNode((node: any) => { if (node.data) newRows.push(node.data); });
+    api.forEachNode((node: any) => {
+      // __expansion 행(합성 행)은 localStorage에 저장하지 않음
+      if (node.data && !node.data.__expansion) newRows.push(node.data);
+    });
     setRows(newRows);
     saveSheet(newRows);
     api.refreshCells?.({ force: true });
@@ -750,7 +848,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         <AgGridReact
           ref={gridRef}
           theme={myTheme}
-          rowData={filteredRows}
+          rowData={rowsWithExpansion}
           columnDefs={columnDefs}
           defaultColDef={defaultColDef}
           rowSelection="multiple"
@@ -762,6 +860,30 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           onColumnVisible={onColumnVisible}
           onGridReady={onGridReady}
           animateRows={false}
+          getRowId={(p: any) => String(p.data.id)}
+          isFullWidthRow={(p: any) => !!p.rowNode?.data?.__expansion}
+          fullWidthCellRenderer={(p: any) => {
+            const parent = rows.find(r => r.id === p.data?.__parentId);
+            if (!parent) return null;
+            return (
+              <div style={{ padding: 8, background: '#f9fafb' }}>
+                <CompositionsPanel
+                  row={parent}
+                  onChange={(comps) => updateCompositions(parent.id, comps)}
+                  onClose={() => setCompositionRowId(null)}
+                />
+              </div>
+            );
+          }}
+          getRowHeight={(p: any) => {
+            if (p.data?.__expansion) {
+              const parent = rows.find(r => r.id === p.data?.__parentId);
+              const n = parent?.compositions?.length || 0;
+              return Math.min(600, 180 + n * 40);
+            }
+            return 30;
+          }}
+          isRowSelectable={(p: any) => !p.data?.__expansion}
         />
       </div>
 
@@ -1028,10 +1150,20 @@ function saveAutoParams(p: AutoSourcingParams) {
   try { localStorage.setItem(AUTO_SOURCING_KEY, JSON.stringify(p)); } catch { /* ignore */ }
 }
 
+interface ScoredKeyword {
+  keyword_jp: string;
+  score: number;
+  search_volume: number;
+  kr_ratio: number;
+  competition_intensity: number;
+}
+
 function AutoSourcingBlock({ onAddRows, interestKeywords }: { onAddRows: (rows: SheetRow[]) => void; interestKeywords: string[] }) {
   const [params, setParams] = useState<AutoSourcingParams>(() => loadAutoParams());
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [previewKws, setPreviewKws] = useState<string[]>([]);
+  const [previewScored, setPreviewScored] = useState<ScoredKeyword[]>([]);
+  const [previewTotal, setPreviewTotal] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<CollectProgress | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -1066,6 +1198,8 @@ function AutoSourcingBlock({ onAddRows, interestKeywords }: { onAddRows: (rows: 
       const { data } = await previewAutoSourcing(body);
       setPreviewCount(data.count);
       setPreviewKws(data.selected_keywords || []);
+      setPreviewScored(data.scored || []);
+      setPreviewTotal(typeof data.total_candidates === 'number' ? data.total_candidates : null);
     } catch (e: any) {
       setErr(e?.message || '미리보기 실패');
     }
@@ -1171,6 +1305,17 @@ function AutoSourcingBlock({ onAddRows, interestKeywords }: { onAddRows: (rows: 
       </div>
 
       {params.mode === 'auto' && (
+        <div className="mb-3 bg-indigo-50 border-l-4 border-indigo-400 rounded px-3 py-2 text-xs flex items-center flex-wrap gap-x-4 gap-y-1">
+          <span className="font-semibold text-indigo-800">현재 기준</span>
+          <span>검색량 ≥ <b className="text-indigo-700">{params.min_search_volume.toLocaleString()}</b></span>
+          <span>한국비율 <b className="text-indigo-700">{Math.round(params.min_kr_ratio * 100)}%~{Math.round(params.max_kr_ratio * 100)}%</b></span>
+          <span>경쟁강도 <b className="text-indigo-700">{params.min_competition}~{params.max_competition}</b></span>
+          <span>브랜드 <b className="text-indigo-700">{params.brand_filter === 'all' ? '전체' : params.brand_filter === 'general' ? '일반만' : '브랜드만'}</b></span>
+          <span className="ml-auto text-gray-500">상위 <b className="text-indigo-700">{params.keywords_limit}</b>개 × 상품 <b className="text-indigo-700">{params.products_per_keyword}</b></span>
+        </div>
+      )}
+
+      {params.mode === 'auto' && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs mb-3 bg-gray-50 p-3 rounded">
           <label>
             <div className="text-gray-600 mb-0.5">최소 검색수(주)</div>
@@ -1273,13 +1418,46 @@ function AutoSourcingBlock({ onAddRows, interestKeywords }: { onAddRows: (rows: 
 
       {previewCount !== null && (
         <div className="mt-3 bg-blue-50 border-l-4 border-blue-400 text-xs p-3 rounded">
-          <b>선정된 키워드: {previewCount}개</b>
-          {previewKws.length > 0 && (
+          <div className="flex items-baseline gap-3 mb-2">
+            <b>선정된 키워드: {previewCount}개</b>
+            {previewTotal !== null && previewTotal !== previewCount && (
+              <span className="text-gray-500">필터 통과 총 {previewTotal}개 중 상위 {params.keywords_limit}</span>
+            )}
+          </div>
+          {previewScored.length > 0 ? (
+            <div className="overflow-x-auto bg-white border rounded">
+              <table className="w-full text-[11px]">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="border-b px-2 py-1 text-left">#</th>
+                    <th className="border-b px-2 py-1 text-left">키워드</th>
+                    <th className="border-b px-2 py-1 text-right">추천점수</th>
+                    <th className="border-b px-2 py-1 text-right">검색수(주)</th>
+                    <th className="border-b px-2 py-1 text-right">한국비율</th>
+                    <th className="border-b px-2 py-1 text-right">경쟁강도</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewScored.map((s, i) => (
+                    <tr key={s.keyword_jp} className="hover:bg-blue-50">
+                      <td className="border-b px-2 py-0.5 text-gray-500">{i + 1}</td>
+                      <td className="border-b px-2 py-0.5">
+                        <a href={`https://www.qoo10.jp/s/?keyword=${s.keyword_jp}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{s.keyword_jp}</a>
+                      </td>
+                      <td className="border-b px-2 py-0.5 text-right font-semibold text-cyan-700">{s.score.toFixed(2)}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{s.search_volume.toLocaleString()}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{(s.kr_ratio * 100).toFixed(1)}%</td>
+                      <td className="border-b px-2 py-0.5 text-right">{s.competition_intensity.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : previewKws.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1">
-              {previewKws.slice(0, 20).map(kw => (
+              {previewKws.map(kw => (
                 <span key={kw} className="px-1.5 py-0.5 bg-white border rounded">{kw}</span>
               ))}
-              {previewKws.length > 20 && <span className="text-gray-500">... +{previewKws.length - 20}</span>}
             </div>
           )}
         </div>
@@ -1785,7 +1963,16 @@ export default function RecommendProductsPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold">📊 상품 추천 시트</h2>
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex items-center gap-3 text-xs">
+          <a
+            href={`/api/recommend/auto-collected/${new Date().toISOString().slice(0, 10)}`}
+            target="_blank"
+            rel="noreferrer"
+            className="px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs font-semibold"
+            title="야간 자동화 결과 — 새 탭"
+          >
+            🌙 오늘 자동 결과
+          </a>
           {cloudStatus === 'syncing' && <span className="text-blue-600">☁ 동기화 중...</span>}
           {cloudStatus === 'synced' && <span className="text-emerald-600">☁ 클라우드 저장됨 (다른 PC에서 접속 가능)</span>}
           {cloudStatus === 'error' && <span className="text-red-600">☁ 동기화 실패 (로컬만 저장됨)</span>}
@@ -1801,7 +1988,6 @@ export default function RecommendProductsPage() {
         onAddRows={addRows}
         interestKeywords={getInterestKeywords().map(i => i.keyword_jp)}
       />
-      <ShopBenchmark onAddRows={addRows} />
       <InterestKeywordBlock onAddRows={addRows} />
       <PriceHistogram rows={rows} />
       <ProductSheet rows={rows} setRows={setRows} />

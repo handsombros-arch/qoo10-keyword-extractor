@@ -16,6 +16,17 @@ export interface Keyword {
   products_cn?: number;
   products_other?: number;
   volume_change_flag?: string;
+  bid_count?: number;
+  bid_price_1?: number;
+  bid_price_2?: number;
+  bid_price_3?: number;
+  bid_price_4?: number;
+  bid_price_5?: number;
+  bid_price_6?: number;
+  bid_price_7?: number;
+  bid_price_8?: number;
+  bid_price_9?: number;
+  bid_price_10?: number;
 }
 
 export interface TaskInfo {

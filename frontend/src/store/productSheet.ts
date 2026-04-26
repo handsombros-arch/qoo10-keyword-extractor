@@ -2,6 +2,21 @@
  * 상품 시트 localStorage 저장소.
  * 사용자가 수동 입력한 무게/구매가/배송비를 재방문 시 복원.
  */
+
+/** 구성 옵션: 한 상품을 단품/세트/번들 등 여러 판매 형태로 등록하기 위한 하위 레코드. */
+export interface CompositionOption {
+  id: string;
+  label: string;                    // 표시명 ("단품", "3개 세트", "5+1 세트" 등 자유)
+  quantity: number;
+  weight_g: number;                 // 총 무게 (세트 기준)
+  item_price_krw: number;           // 총 상품가 (세트 기준, 할인가 포함 가능)
+  domestic_shipping_krw: number;    // 국내배송비 (세트 기준 무게에 맞춰 사용자 기입)
+  shipping_packaging_krw: number;   // KSE 포장+배대지
+  sell_price_jpy: number;           // 엔화 판매가 (세트별)
+  is_mega?: boolean;                // 메가와리 적용 여부 (개별 구성)
+  notes?: string;
+}
+
 export interface SheetRow {
   id: string;                    // uuid
   product_name: string;          // 원문 (일본어)
@@ -33,6 +48,9 @@ export interface SheetRow {
   shipping_mode?: 'auto' | 'free' | 'paid';
   notes?: string;
 
+  // 구성 옵션 (단품/세트 등 — 없으면 메인 행 값으로 단품 취급)
+  compositions?: CompositionOption[];
+
   // 하위 호환
   purchase_price_krw?: number;
 }
@@ -61,7 +79,26 @@ function migrateRow(raw: any): SheetRow {
   const m: any = row.shipping_mode;
   if (m === 'free_kse') row.shipping_mode = 'free';
   else if (m === 'paid_tracx') row.shipping_mode = 'paid';
+  // 구성 옵션 배열 정규화
+  if (!Array.isArray(row.compositions)) row.compositions = [];
   return row;
+}
+
+/** 새 구성 옵션 생성. 메인 행 값을 기본으로 채움 (1단위). */
+export function newCompositionOption(row: SheetRow, partial: Partial<CompositionOption> = {}): CompositionOption {
+  const qty = partial.quantity ?? 1;
+  return {
+    id: (crypto as any).randomUUID?.() || String(Date.now() + Math.random()),
+    label: partial.label ?? (qty === 1 ? '단품' : `${qty}개 세트`),
+    quantity: qty,
+    weight_g: partial.weight_g ?? (row.weight_g || 0) * qty,
+    item_price_krw: partial.item_price_krw ?? (row.item_price_krw || 0) * qty,
+    domestic_shipping_krw: partial.domestic_shipping_krw ?? (row.domestic_shipping_krw || 0),
+    shipping_packaging_krw: partial.shipping_packaging_krw ?? (row.shipping_packaging_krw || 3000),
+    sell_price_jpy: partial.sell_price_jpy ?? (row.sell_price_jpy || 0) * qty,
+    is_mega: partial.is_mega ?? false,
+    notes: partial.notes ?? '',
+  };
 }
 
 const KEY = 'productSheet.v1';

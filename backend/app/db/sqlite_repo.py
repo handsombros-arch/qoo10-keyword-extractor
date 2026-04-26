@@ -1,8 +1,9 @@
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.db.base import (
     KeywordRepository, BidRepository, ProductRepository,
@@ -15,6 +16,12 @@ from app.db.models import (
     BestsellerItem,
 )
 
+BID_COLUMNS = (
+    "bid_count",
+    "bid_price_1", "bid_price_2", "bid_price_3", "bid_price_4", "bid_price_5",
+    "bid_price_6", "bid_price_7", "bid_price_8", "bid_price_9", "bid_price_10",
+)
+
 
 class SQLiteKeywordRepository(KeywordRepository):
     def __init__(self, session: AsyncSession):
@@ -24,16 +31,25 @@ class SQLiteKeywordRepository(KeywordRepository):
         if not keywords:
             return
 
-        # 동일 index_key (날짜_카테고리_분류_순위)를 가진 기존 행 삭제 후 새로 적재.
-        # → 같은 일자에 동일 카테고리 재수집 시 중복 누적 방지, 최신값으로 갱신.
-        keys = [kw["index_key"] for kw in keywords if kw.get("index_key")]
-        if keys:
-            # IN 절 너무 길면 분할
-            chunk = 500
-            for i in range(0, len(keys), chunk):
-                await self.session.execute(
-                    delete(Keyword).where(Keyword.index_key.in_(keys[i:i+chunk]))
+        # (lookup_date, category, classification) 조합별로 기존 행 전부 삭제 후 새로 적재.
+        # 같은 조합으로 재수집 시 과거 rank (31~100 등) 잔재가 남지 않도록 근본 차단.
+        combos: set[tuple] = set()
+        for kw in keywords:
+            d = kw.get("lookup_date")
+            c = kw.get("category")
+            cls = kw.get("classification")
+            if d and c and cls:
+                combos.add((d, c, cls))
+        for d, c, cls in combos:
+            await self.session.execute(
+                delete(Keyword).where(
+                    and_(
+                        Keyword.lookup_date == d,
+                        Keyword.category == c,
+                        Keyword.classification == cls,
+                    )
                 )
+            )
 
         for kw in keywords:
             self.session.add(Keyword(**kw))
@@ -45,10 +61,34 @@ class SQLiteKeywordRepository(KeywordRepository):
             stmt = stmt.where(Keyword.lookup_date == lookup_date)
         result = await self.session.execute(stmt)
         rows = result.scalars().all()
-        return [
-            {c.name: getattr(r, c.name) for c in Keyword.__table__.columns}
-            for r in rows
-        ]
+
+        # (lookup_date, keyword_jp) → BidHistory 최신 1건 맵 생성
+        bid_map: dict[tuple, BidHistory] = {}
+        if rows:
+            pairs = {(r.lookup_date, r.keyword_jp) for r in rows if r.lookup_date and r.keyword_jp}
+            if pairs:
+                dates = {p[0] for p in pairs}
+                kws = {p[1] for p in pairs}
+                bid_stmt = (
+                    select(BidHistory)
+                    .where(BidHistory.lookup_date.in_(dates))
+                    .where(BidHistory.keyword_jp.in_(kws))
+                    .order_by(BidHistory.id.desc())
+                )
+                bid_result = await self.session.execute(bid_stmt)
+                for b in bid_result.scalars().all():
+                    key = (b.lookup_date, b.keyword_jp)
+                    if key not in bid_map:  # id 내림차순이라 최신 1건 유지
+                        bid_map[key] = b
+
+        out = []
+        for r in rows:
+            row_dict = {c.name: getattr(r, c.name) for c in Keyword.__table__.columns}
+            b = bid_map.get((r.lookup_date, r.keyword_jp))
+            for col in BID_COLUMNS:
+                row_dict[col] = getattr(b, col, None) if b else None
+            out.append(row_dict)
+        return out
 
     async def delete_keyword(self, keyword_id: int) -> None:
         await self.session.execute(delete(Keyword).where(Keyword.id == keyword_id))
@@ -93,6 +133,26 @@ class SQLiteBidRepository(BidRepository):
         self.session = session
 
     async def save_bid_history(self, records: list[dict]) -> None:
+        for rec in records:
+            self.session.add(BidHistory(**rec))
+        await self.session.commit()
+
+    async def replace_bid_history(self, lookup_date: date, records: list[dict]) -> None:
+        """같은 (lookup_date, keyword_jp) 기존 행 삭제 후 적재 — 중복 누적 방지."""
+        if not records:
+            return
+        kws = [rec.get("keyword_jp") for rec in records if rec.get("keyword_jp")]
+        if kws:
+            chunk = 500
+            for i in range(0, len(kws), chunk):
+                await self.session.execute(
+                    delete(BidHistory).where(
+                        and_(
+                            BidHistory.lookup_date == lookup_date,
+                            BidHistory.keyword_jp.in_(kws[i:i + chunk]),
+                        )
+                    )
+                )
         for rec in records:
             self.session.add(BidHistory(**rec))
         await self.session.commit()

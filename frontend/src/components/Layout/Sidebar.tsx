@@ -6,6 +6,7 @@ const mainItems = [
   { path: '/keywords', label: '키워드 추출', icon: '🔍' },
   { path: '/recommend', label: '역직구 추천', icon: '⭐' },
   { path: '/recommend-products', label: '상품 시트', icon: '📋' },
+  { path: '/shop-benchmark', label: '샵 벤치마크', icon: '🎯' },
   { path: '/margin', label: '마진 계산기', icon: '💹' },
   { path: '/image', label: '워터마크 제거', icon: '🎨' },
 ];
@@ -56,6 +57,17 @@ export default function Sidebar() {
       <h1 className="text-lg font-bold mb-6 px-2">Qoo10 키워드 추출기</h1>
       <nav className="flex flex-col gap-1">
         {mainItems.map(item => <NavItem key={item.path} {...item} />)}
+
+        <a
+          href="/api/recommend/auto-collected"
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-2 px-3 py-2 rounded text-sm text-gray-300 hover:bg-gray-800"
+          title="새 탭으로 열림"
+        >
+          <span>🌙</span>
+          <span>야간 결과</span>
+        </a>
 
         <button
           onClick={toggleMore}

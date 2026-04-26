@@ -56,10 +56,52 @@ def _is_brand_keyword(jp: str) -> bool:
     return bool(re.fullmatch(r"[a-zA-Z0-9\s\-_.&'+]+", jp or ""))
 
 
-async def _select_keywords_for_auto(req: AutoSheetRequest) -> list[str]:
-    """추천점수 기반 키워드 선정. 모드 interest면 사용자 지정 리스트 그대로."""
+async def _score_keywords_for_auto(req: AutoSheetRequest) -> list[dict]:
+    """필터 통과 키워드 + 추천점수 상세 리스트 반환 (keywords_limit 적용 전)."""
     if req.mode == "interest":
-        return (req.interest_keywords or [])[: req.keywords_limit]
+        # interest 모드: DB에서 관심 키워드만 뽑아 점수 계산. 필터는 적용하지 않음.
+        from app.db.models import Keyword
+        interest = set(req.interest_keywords or [])
+        if not interest:
+            return []
+        async with async_session() as session:
+            stmt = select(Keyword).where(Keyword.keyword_jp.in_(interest))
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+        by_jp: dict[str, dict] = {}
+        for r in rows:
+            jp = r.keyword_jp
+            if not jp:
+                continue
+            sv = r.search_volume_weekly or 0
+            total = r.total_products or 0
+            kr = r.products_kr or 0
+            comp = r.competition_intensity or 0
+            kr_ratio = (kr / total) if total > 0 else 0.0
+            existing = by_jp.get(jp)
+            if existing and existing["search_volume"] >= sv:
+                continue
+            by_jp[jp] = {
+                "keyword_jp": jp,
+                "search_volume": sv,
+                "kr_ratio": kr_ratio,
+                "competition_intensity": comp,
+            }
+        scored = []
+        for kw in by_jp.values():
+            sv = max(kw["search_volume"], 1)
+            comp = max(kw["competition_intensity"], 0.1)
+            kw["score"] = math.log10(sv + 1) * kw["kr_ratio"] / comp
+            scored.append(kw)
+        # DB에 없는 관심 키워드도 score=0으로 노출
+        for kw_jp in interest - set(by_jp.keys()):
+            scored.append({
+                "keyword_jp": kw_jp, "search_volume": 0,
+                "kr_ratio": 0.0, "competition_intensity": 0.0, "score": 0.0,
+            })
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored
 
     from app.db.models import Keyword
 
@@ -67,16 +109,13 @@ async def _select_keywords_for_auto(req: AutoSheetRequest) -> list[str]:
         result = await session.execute(select(Keyword))
         rows = result.scalars().all()
 
-    # 카테고리 필터링
     cat_set = set(req.categories) if req.categories else None
 
-    # 같은 keyword_jp 중 가장 큰 검색량만 유지 (단 카테고리는 누적)
     by_jp: dict[str, dict] = {}
     for r in rows:
         jp = r.keyword_jp
         if not jp:
             continue
-        # 카테고리 필터 (지정된 카테고리 중 하나라도 일치하면 통과)
         if cat_set is not None and r.category not in cat_set:
             continue
 
@@ -96,7 +135,6 @@ async def _select_keywords_for_auto(req: AutoSheetRequest) -> list[str]:
             "competition_intensity": comp,
         }
 
-    # 필터
     filtered = []
     for kw in by_jp.values():
         if kw["search_volume"] < req.min_search_volume:
@@ -112,22 +150,34 @@ async def _select_keywords_for_auto(req: AutoSheetRequest) -> list[str]:
         if req.brand_filter == "brand" and not brand:
             continue
 
-        # 추천점수
         sv = max(kw["search_volume"], 1)
         comp = max(kw["competition_intensity"], 0.1)
-        score = math.log10(sv + 1) * kw["kr_ratio"] / comp
-        kw["_score"] = score
+        kw["score"] = math.log10(sv + 1) * kw["kr_ratio"] / comp
         filtered.append(kw)
 
-    filtered.sort(key=lambda x: x["_score"], reverse=True)
-    return [kw["keyword_jp"] for kw in filtered[: req.keywords_limit]]
+    filtered.sort(key=lambda x: x["score"], reverse=True)
+    return filtered
+
+
+async def _select_keywords_for_auto(req: AutoSheetRequest) -> list[str]:
+    """추천점수 기반 키워드 선정. 모드 interest면 사용자 지정 리스트 그대로."""
+    if req.mode == "interest":
+        return (req.interest_keywords or [])[: req.keywords_limit]
+    scored = await _score_keywords_for_auto(req)
+    return [kw["keyword_jp"] for kw in scored[: req.keywords_limit]]
 
 
 @router.post("/auto-sheet/preview")
 async def auto_sheet_preview(req: AutoSheetRequest):
-    """실제 수집 전 선정될 키워드 미리보기."""
-    selected = await _select_keywords_for_auto(req)
-    return {"selected_keywords": selected, "count": len(selected)}
+    """실제 수집 전 선정될 키워드 + 점수 상세 미리보기."""
+    scored = await _score_keywords_for_auto(req)
+    limited = scored[: req.keywords_limit]
+    return {
+        "selected_keywords": [kw["keyword_jp"] for kw in limited],
+        "count": len(limited),
+        "scored": limited,
+        "total_candidates": len(scored),  # 필터 통과 전체 (limit 적용 전)
+    }
 
 
 @router.post("/auto-sheet")

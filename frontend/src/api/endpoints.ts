@@ -15,8 +15,13 @@ export const getKeywords = () => api.get<Keyword[]>('/keywords');
 export const deleteKeyword = (id: number) => api.delete(`/keywords/${id}`);
 export const listKeywordDates = () => api.get<{ lookup_date: string; count: number }[]>('/keywords/dates');
 export const deleteKeywordsByDate = (lookup_date: string) => api.delete(`/keywords/by-date/${lookup_date}`);
-export const collectTrendKeywords = (categories: number[], opts?: { translate?: boolean; fill_total_products?: boolean }) =>
-  api.post('/keywords/trend', { categories, translate: opts?.translate ?? true, fill_total_products: opts?.fill_total_products ?? true });
+export const collectTrendKeywords = (categories: number[], opts?: { translate?: boolean; fill_total_products?: boolean; collect_bids?: boolean }) =>
+  api.post('/keywords/trend', {
+    categories,
+    translate: opts?.translate ?? true,
+    fill_total_products: opts?.fill_total_products ?? true,
+    collect_bids: opts?.collect_bids ?? false,
+  });
 export const collectRelatedKeywords = (keywords: string[]) => api.post('/keywords/related', { keywords });
 
 // Competition

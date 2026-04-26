@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 
@@ -18,6 +19,7 @@ import { getKeywords, collectTrendKeywords, collectRelatedKeywords, deleteKeywor
 import type { Keyword } from '../types';
 import CheckboxSetFilter from '../components/Grid/CheckboxSetFilter';
 import TaskProgressPanel from '../components/common/TaskProgressPanel';
+import { addInterestKeywords, getInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -41,6 +43,7 @@ export default function KeywordPage() {
   const [selectedCats, setSelectedCats] = useState<number[]>([1]);
   const [translate, setTranslate] = useState(true);
   const [fillTotal, setFillTotal] = useState(true);
+  const [collectBids, setCollectBids] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [relatedInput, setRelatedInput] = useState('');
@@ -106,7 +109,7 @@ export default function KeywordPage() {
     setLoading(true);
     setMessage(`크롬 창에서 ${selectedCats.length}개 카테고리 트렌드 키워드를 수집하는 중... (번역+상품수 포함, 시간 걸림)`);
     try {
-      const res = await collectTrendKeywords(selectedCats, { translate, fill_total_products: fillTotal });
+      const res = await collectTrendKeywords(selectedCats, { translate, fill_total_products: fillTotal, collect_bids: collectBids });
       if (res.data.error) {
         setMessage(`오류: ${res.data.error}`);
         setLoading(false);
@@ -176,9 +179,14 @@ export default function KeywordPage() {
   const handleSortChanged = () => saveColState();
   const handleGridReady = () => { restoreColState(); };
 
-  // 빠른 필터: 카테고리/분류 버튼
+  // 빠른 필터: 카테고리/분류/날짜 (state 기반 — rowData를 직접 필터링해 1-click 즉시 반영)
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [activeClass, setActiveClass] = useState<string | null>(null);
+  type DateMode = 'all' | 'single' | 'range';
+  const [dateMode, setDateMode] = useState<DateMode>('all');
+  const [singleDate, setSingleDate] = useState('');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   const uniqueCats = useMemo(() => {
     const s = new Set<string>();
@@ -191,27 +199,24 @@ export default function KeywordPage() {
     return Array.from(s).sort();
   }, [keywords]);
 
-  const applyQuickFilter = async (field: string, value: string | null) => {
-    const api = gridRef.current?.api as any;
-    if (!api) return;
-    if (value === null) {
-      await api.setColumnFilterModel?.(field, null);
-    } else {
-      await api.setColumnFilterModel?.(field, { values: [value] });
-    }
-    api.onFilterChanged?.();
-  };
+  const toggleQuickCat = (v: string) => setActiveCat(prev => prev === v ? null : v);
+  const toggleQuickClass = (v: string) => setActiveClass(prev => prev === v ? null : v);
 
-  const toggleQuickCat = (v: string) => {
-    const next = activeCat === v ? null : v;
-    setActiveCat(next);
-    applyQuickFilter('category', next);
-  };
-  const toggleQuickClass = (v: string) => {
-    const next = activeClass === v ? null : v;
-    setActiveClass(next);
-    applyQuickFilter('classification', next);
-  };
+  // 표시용 필터링된 rowData (state 기반)
+  const filteredKeywords = useMemo(() => {
+    return keywords.filter(k => {
+      if (activeCat && k.category !== activeCat) return false;
+      if (activeClass && k.classification !== activeClass) return false;
+      const d = k.lookup_date;
+      if (dateMode === 'single' && singleDate) {
+        if (d !== singleDate) return false;
+      } else if (dateMode === 'range') {
+        if (fromDate && (!d || d < fromDate)) return false;
+        if (toDate && (!d || d > toDate)) return false;
+      }
+      return true;
+    });
+  }, [keywords, activeCat, activeClass, dateMode, singleDate, fromDate, toDate]);
 
   // 데이터가 바뀌면 사용자가 조정 안 한 컬럼만 자동 크기 조정
   useEffect(() => {
@@ -223,7 +228,7 @@ export default function KeywordPage() {
     if (cols.length) {
       try { api.autoSizeColumns(cols, false); } catch { /* ignore */ }
     }
-  }, [keywords]);
+  }, [filteredKeywords]);
   const numFmt = (p: any) => p.value == null ? '' : Number(p.value).toLocaleString();
   const pctFmt = (p: any) => p.value == null ? '' : `${Number(p.value).toFixed(1)}%`;
   const scoreFmt = (p: any) => p.value == null ? '' : Number(p.value).toFixed(2);
@@ -252,7 +257,39 @@ export default function KeywordPage() {
     });
   }, []);
 
+  // 관심 키워드 북마크
+  const [interestCount, setInterestCount] = useState<number>(() => getInterestKeywords().length);
+  const addSelectedToInterest = () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const selected: any[] = api.getSelectedRows?.() || [];
+    if (selected.length === 0) {
+      alert('키워드 행을 체크해주세요.');
+      return;
+    }
+    const items: InterestKeyword[] = selected.map((r: any) => ({
+      keyword_jp: r.keyword_jp,
+      keyword_kr: r.keyword_kr,
+      category: r.category,
+      search_volume_weekly: r.search_volume_weekly,
+      search_volume_daily: r.search_volume_daily,
+      competition_intensity: r.competition_intensity,
+      total_products: r.total_products,
+      products_jp: r.products_jp,
+      products_kr: r.products_kr,
+      products_cn: r.products_cn,
+      products_other: r.products_other,
+    }));
+    const merged = addInterestKeywords(items);
+    setInterestCount(merged.length);
+    alert(`${items.length}개 담았습니다. 관심 키워드 풀 총 ${merged.length}개.`);
+  };
+
   const columnDefs: ColDef[] = useMemo(() => [
+    {
+      headerName: '선택', width: 60, pinned: 'left', sortable: false, filter: false,
+      checkboxSelection: true, headerCheckboxSelection: true, headerCheckboxSelectionFilteredOnly: true,
+    },
     { field: 'lookup_date', headerName: '조회날짜', width: 110 },
     { field: 'rank', headerName: '순위', width: 70, type: 'numericColumn' },
     {
@@ -290,6 +327,17 @@ export default function KeywordPage() {
     { field: 'classification', headerName: '분류', width: 90 },
     { field: 'search_volume_weekly', headerName: '검색수(주평)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
     { field: 'search_volume_daily', headerName: '검색수(전날)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_count', headerName: '낙찰수', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_10', headerName: '낙찰시가', width: 100, type: 'numericColumn', valueFormatter: numFmt, headerTooltip: '전체 낙찰 중 최저가 (가장 낮은 순위의 낙찰가)' },
+    { field: 'bid_price_9', headerName: '9위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_8', headerName: '8위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_7', headerName: '7위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_6', headerName: '6위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_5', headerName: '5위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_4', headerName: '4위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_3', headerName: '3위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_2', headerName: '2위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_1', headerName: '낙찰종가', width: 100, type: 'numericColumn', valueFormatter: numFmt, headerTooltip: '1위 낙찰가 (최고가)' },
     { field: 'competition_intensity', headerName: '경쟁강도', width: 100, type: 'numericColumn' },
     { field: 'total_products', headerName: '전체상품수', width: 120, type: 'numericColumn', valueFormatter: numFmt },
     { field: 'products_jp', headerName: '일본', width: 100, type: 'numericColumn', valueFormatter: numFmt },
@@ -370,6 +418,10 @@ export default function KeywordPage() {
             <input type="checkbox" checked={fillTotal} onChange={e => setFillTotal(e.target.checked)} />
             전체 상품수 함께 수집 (느림)
           </label>
+          <label className="flex items-center gap-1">
+            <input type="checkbox" checked={collectBids} onChange={e => setCollectBids(e.target.checked)} />
+            광고 경매 낙찰가 함께 수집 (선택, 매우 느림)
+          </label>
         </div>
 
         <div className="flex gap-3">
@@ -449,9 +501,49 @@ export default function KeywordPage() {
       <div className="bg-white rounded-lg shadow p-2">
         <div className="px-2 pt-2 pb-2 border-b border-gray-100 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-gray-600 w-16">날짜</span>
+            <button
+              onClick={() => { setDateMode('all'); setSingleDate(''); setFromDate(''); setToDate(''); }}
+              className={`px-2 py-0.5 text-xs rounded border ${dateMode === 'all' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+            >전체</button>
+            <button
+              onClick={() => setDateMode('single')}
+              className={`px-2 py-0.5 text-xs rounded border ${dateMode === 'single' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+            >특정일</button>
+            {dateMode === 'single' && (
+              <input
+                type="date"
+                value={singleDate}
+                onChange={e => setSingleDate(e.target.value)}
+                className="border rounded px-2 py-0.5 text-xs"
+              />
+            )}
+            <button
+              onClick={() => setDateMode('range')}
+              className={`px-2 py-0.5 text-xs rounded border ${dateMode === 'range' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+            >기간</button>
+            {dateMode === 'range' && (
+              <>
+                <input
+                  type="date"
+                  value={fromDate}
+                  onChange={e => setFromDate(e.target.value)}
+                  className="border rounded px-2 py-0.5 text-xs"
+                />
+                <span className="text-xs text-gray-400">~</span>
+                <input
+                  type="date"
+                  value={toDate}
+                  onChange={e => setToDate(e.target.value)}
+                  className="border rounded px-2 py-0.5 text-xs"
+                />
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-gray-600 w-16">카테고리</span>
             <button
-              onClick={() => { setActiveCat(null); applyQuickFilter('category', null); }}
+              onClick={() => setActiveCat(null)}
               className={`px-2 py-0.5 text-xs rounded border ${activeCat === null ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
             >전체</button>
             {uniqueCats.map(c => (
@@ -465,7 +557,7 @@ export default function KeywordPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-gray-600 w-16">분류</span>
             <button
-              onClick={() => { setActiveClass(null); applyQuickFilter('classification', null); }}
+              onClick={() => setActiveClass(null)}
               className={`px-2 py-0.5 text-xs rounded border ${activeClass === null ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
             >전체</button>
             {uniqueClasses.map(c => (
@@ -478,22 +570,35 @@ export default function KeywordPage() {
           </div>
         </div>
         <div className="px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap">
-          <span>총 {keywords.length}개 키워드</span>
+          <span>표시 {filteredKeywords.length.toLocaleString()} / 총 {keywords.length.toLocaleString()}개</span>
           <button
             onClick={sortByRecommendation}
             className="px-3 py-1 bg-amber-500 text-white text-xs rounded hover:bg-amber-600"
           >
             ⭐ 역직구 추천 정렬
           </button>
-          <span className="text-xs text-gray-400">
-            컬럼 헤더 우측 ≡ 메뉴로 필터, 헤더 클릭으로 정렬, 드래그로 순서/크기 변경
+          <button
+            onClick={addSelectedToInterest}
+            className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700"
+            title="선택한(체크된) 행을 관심 키워드로 북마크 — /recommend 페이지에서 확인"
+          >
+            🔖 선택 키워드를 관심 키워드로 담기
+          </button>
+          <Link
+            to="/recommend"
+            className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+          >
+            📊 역직구 추천 페이지 ({interestCount})
+          </Link>
+          <span className="text-xs text-gray-400 ml-auto">
+            행 왼쪽 체크박스로 선택 · 컬럼 헤더 우측 ≡ 메뉴로 필터
           </span>
         </div>
         <div style={{ height: 600, width: '100%' }}>
           <AgGridReact
             ref={gridRef}
             theme={myTheme}
-            rowData={keywords}
+            rowData={filteredKeywords}
             columnDefs={columnDefs}
             defaultColDef={defaultColDef}
             rowSelection={{ mode: 'multiRow' }}

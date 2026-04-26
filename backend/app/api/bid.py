@@ -1,5 +1,6 @@
 import asyncio
 import traceback
+from datetime import date
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,10 +30,12 @@ async def collect_bid_results(req: BidCollectRequest):
         try:
             scraper = BidResultScraper(browser_manager, task_manager)
             result = await scraper.run(keywords=req.keywords)
-            if "results" in result:
+            records = result.get("results") or []
+            if records:
                 async with async_session() as session:
                     repo = SQLiteBidRepository(session)
-                    await repo.save_bid_history(result["results"])
+                    # (lookup_date, keyword_jp) 동일 기존 행 삭제 후 적재 — 중복 방지
+                    await repo.replace_bid_history(date.today(), records)
         except Exception:
             traceback.print_exc()
 

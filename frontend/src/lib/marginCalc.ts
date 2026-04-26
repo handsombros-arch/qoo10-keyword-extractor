@@ -112,6 +112,52 @@ export function calculateMargin(input: MarginInput): MarginResult {
   };
 }
 
+/**
+ * 목표 마진율을 달성하는 엔화 판매가(base)를 역산.
+ *
+ * margin = profit / (base_jpy * exchange_rate) 식을 S에 대해 정리:
+ *   S * (megaFactor * revenueRate * (1 - C) - target * er) = (P + Sh)
+ * 배송비는 모드·판매가 임계로 갈리므로 유료/무료 두 해를 계산 후 정합한 쪽 채택.
+ * 반환 0 = 목표 달성 불가(분모 ≤ 0) 또는 입력 부족.
+ */
+export function targetSellJpyForMargin(input: MarginInput, target_margin: number): number {
+  const {
+    weight_g,
+    purchase_price_krw,
+    shipping_packaging_krw,
+    is_mega = false,
+    exchange_rate = 9.5,
+    use_exact_rate = false,
+    shipping_mode = 'auto',
+    quantity = 1,
+  } = input;
+
+  const cost = (purchase_price_krw + shipping_packaging_krw) * quantity;
+  if (cost <= 0) return 0;
+
+  const revenueRate = use_exact_rate ? exchange_rate : APPROX_RATE;
+  const megaFactor = is_mega ? MEGAWARI_DISCOUNT : 1.0;
+  const denom = megaFactor * revenueRate * (1 - QOO10_COMMISSION_RATE) - target_margin * exchange_rate;
+  if (denom <= 0) return 0;
+
+  const kse = lookupKseShipping(weight_g * quantity);
+  const solvePaid = cost / denom;           // Sh = 0
+  const solveFree = (cost + kse) / denom;   // Sh = KSE
+
+  if (shipping_mode === 'paid') return solvePaid;
+  if (shipping_mode === 'free') return solveFree;
+
+  // auto: 해당 해의 effectiveJpy*er 이 임계 조건과 일치하는지 확인
+  const paidKrw = solvePaid * megaFactor * exchange_rate;
+  const freeKrw = solveFree * megaFactor * exchange_rate;
+  const paidValid = paidKrw < FREE_SHIPPING_THRESHOLD_KRW;
+  const freeValid = freeKrw >= FREE_SHIPPING_THRESHOLD_KRW;
+  if (paidValid && !freeValid) return solvePaid;
+  if (freeValid && !paidValid) return solveFree;
+  // 양쪽 모두 성립하는 경계 혹은 무배송 해가 없을 때: 유료해 우선(대체로 더 낮음)
+  return solvePaid;
+}
+
 export function marginVerdict(margin_rate: number): '우수' | '양호' | '애매' | '부족' | '손실' {
   if (margin_rate >= 0.3) return '우수';
   if (margin_rate >= 0.2) return '양호';

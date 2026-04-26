@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import { themeQuartz } from 'ag-grid-community';
-import { addInterestKeywords, getInterestKeywords } from '../store/interestKeywords';
+import { addInterestKeywords, getInterestKeywords, removeInterestKeyword, clearInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
 
 const myTheme = themeQuartz.withParams({
   fontSize: 12,
@@ -140,7 +140,10 @@ function CriteriaModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+const AUTO_SOURCING_KEY = 'autoSourcingParams.v1';
+
 export default function RecommendPage() {
+  const navigate = useNavigate();
   const [showCriteria, setShowCriteria] = useState(false);
   const gridRef = useRef<AgGridReact>(null);
   const resizedColsRef = useRef<Set<string>>(new Set());
@@ -177,7 +180,8 @@ export default function RecommendPage() {
   const handleGridReady = () => { restoreColState(); };
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [dates, setDates] = useState<{ lookup_date: string; count: number }[]>([]);
-  const [interestCount, setInterestCount] = useState(() => getInterestKeywords().length);
+  const [interestList, setInterestList] = useState<InterestKeyword[]>(() => getInterestKeywords());
+  const interestCount = interestList.length;
 
   // 기간 필터: mode = single(특정일) | range(기간) | all(전체)
   const [mode, setMode] = useState<'single' | 'range' | 'all'>('all');
@@ -193,6 +197,8 @@ export default function RecommendPage() {
   // 중복 제거 / 브랜드 필터
   const [dedupe, setDedupe] = useState(true);
   const [brandFilter, setBrandFilter] = useState<'all' | 'general' | 'brand'>('all');
+  // 카테고리 필터 (빈 Set = 전체)
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     Promise.all([getKeywords().then(r => setKeywords(r.data)).catch(() => {}),
@@ -250,6 +256,7 @@ export default function RecommendPage() {
         if (c < compMin || c > compMax) return false;
         if (brandFilter === 'general' && isBrand(kw.keyword_jp)) return false;
         if (brandFilter === 'brand' && !isBrand(kw.keyword_jp)) return false;
+        if (selectedCategories.size > 0 && !selectedCategories.has(kw.category || '')) return false;
         return true;
       });
 
@@ -274,7 +281,21 @@ export default function RecommendPage() {
     }
 
     return rows.sort((a, b) => b.recommend_score - a.recommend_score);
-  }, [keywords, mode, singleDate, fromDate, toDate, minSearch, minKrRatio, compMin, compMax, dedupe, brandFilter]);
+  }, [keywords, mode, singleDate, fromDate, toDate, minSearch, minKrRatio, compMin, compMax, dedupe, brandFilter, selectedCategories]);
+
+  // DB에 존재하는 카테고리 목록 (빠른 필터 버튼용)
+  const availableCats = useMemo(() => {
+    const s = new Set<string>();
+    keywords.forEach(k => { if (k.category) s.add(k.category); });
+    return Array.from(s).sort();
+  }, [keywords]);
+  const toggleCategoryFilter = (cat: string) => {
+    setSelectedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
+  };
 
   const numFmt = (p: any) => p.value == null ? '' : Number(p.value).toLocaleString();
   const pctFmt = (p: any) => p.value == null ? '' : `${Number(p.value).toFixed(1)}%`;
@@ -380,6 +401,20 @@ export default function RecommendPage() {
     }
   };
 
+  const rowToInterest = (r: any): InterestKeyword => ({
+    keyword_jp: r.keyword_jp,
+    keyword_kr: r.keyword_kr,
+    category: r.category,
+    search_volume_weekly: r.search_volume_weekly,
+    search_volume_daily: r.search_volume_daily,
+    competition_intensity: r.competition_intensity,
+    total_products: r.total_products,
+    products_jp: r.products_jp,
+    products_kr: r.products_kr,
+    products_cn: r.products_cn,
+    products_other: r.products_other,
+  });
+
   const addSelectedToInterest = () => {
     const api = gridRef.current?.api as any;
     if (!api) return;
@@ -388,10 +423,60 @@ export default function RecommendPage() {
       alert('키워드를 체크해주세요.');
       return;
     }
-    const items = selected.map(r => ({ keyword_jp: r.keyword_jp, keyword_kr: r.keyword_kr }));
+    const items = selected.map(rowToInterest);
     const merged = addInterestKeywords(items);
-    setInterestCount(merged.length);
+    setInterestList(merged);
     alert(`${items.length}개 추가 완료. 총 ${merged.length}개가 관심 키워드에 있습니다.`);
+  };
+
+  const sourceSelectedKeywords = () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const selected: any[] = api.getSelectedRows?.() || [];
+    if (selected.length === 0) {
+      alert('키워드를 체크해주세요.');
+      return;
+    }
+    const items = selected.map(rowToInterest);
+    const merged = addInterestKeywords(items);
+    setInterestList(merged);
+    // 자동 소싱 파라미터를 interest 모드로 프리셋
+    try {
+      const raw = localStorage.getItem(AUTO_SOURCING_KEY);
+      const cur = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(AUTO_SOURCING_KEY, JSON.stringify({
+        ...cur,
+        mode: 'interest',
+        keywords_limit: Math.max(cur.keywords_limit || 20, items.length),
+      }));
+    } catch { /* ignore */ }
+    navigate('/recommend-products');
+  };
+
+  const removeInterest = (jp: string) => {
+    const next = removeInterestKeyword(jp);
+    setInterestList(next);
+  };
+  const clearAllInterest = () => {
+    if (!confirm('관심 키워드를 모두 삭제할까요?')) return;
+    clearInterestKeywords();
+    setInterestList([]);
+  };
+  const sourceInterestList = () => {
+    if (interestList.length === 0) {
+      alert('관심 키워드가 비어있습니다.');
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(AUTO_SOURCING_KEY);
+      const cur = raw ? JSON.parse(raw) : {};
+      localStorage.setItem(AUTO_SOURCING_KEY, JSON.stringify({
+        ...cur,
+        mode: 'interest',
+        keywords_limit: Math.max(cur.keywords_limit || 20, interestList.length),
+      }));
+    } catch { /* ignore */ }
+    navigate('/recommend-products');
   };
 
   return (
@@ -509,13 +594,21 @@ export default function RecommendPage() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4 text-sm">
           <div>
-            <div className="flex justify-between mb-1">
+            <div className="flex justify-between items-center mb-1">
               <span className="text-xs text-gray-600">최소 검색수(주평)</span>
-              <span className="text-xs font-semibold text-blue-700">{minSearch.toLocaleString()} 이상</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number" min={0} max={100000} step={1}
+                  value={minSearch}
+                  onChange={e => setMinSearch(Math.max(0, Number(e.target.value) || 0))}
+                  className="w-20 text-xs font-semibold text-blue-700 border rounded px-1 py-0.5 text-right"
+                />
+                <span className="text-xs text-blue-700">이상</span>
+              </div>
             </div>
             <input
-              type="range" min={0} max={20000} step={100}
-              value={minSearch}
+              type="range" min={0} max={20000} step={1}
+              value={Math.min(minSearch, 20000)}
               onChange={e => setMinSearch(Number(e.target.value))}
               className="w-full accent-blue-600"
             />
@@ -525,9 +618,17 @@ export default function RecommendPage() {
           </div>
 
           <div>
-            <div className="flex justify-between mb-1">
+            <div className="flex justify-between items-center mb-1">
               <span className="text-xs text-gray-600">최소 한국비율(%)</span>
-              <span className="text-xs font-semibold text-blue-700">{minKrRatio}% 이상</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number" min={0} max={100} step={1}
+                  value={minKrRatio}
+                  onChange={e => setMinKrRatio(Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
+                  className="w-16 text-xs font-semibold text-blue-700 border rounded px-1 py-0.5 text-right"
+                />
+                <span className="text-xs text-blue-700">% 이상</span>
+              </div>
             </div>
             <input
               type="range" min={0} max={100} step={1}
@@ -541,12 +642,24 @@ export default function RecommendPage() {
           </div>
 
           <div>
-            <div className="flex justify-between mb-1">
+            <div className="flex justify-between items-center mb-1">
               <span className="text-xs text-gray-600">경쟁강도 최소</span>
-              <span className="text-xs font-semibold text-blue-700">{compMin.toFixed(1)} 이상</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number" min={0} max={50} step={1}
+                  value={compMin}
+                  onChange={e => {
+                    const v = Math.max(0, Math.min(50, Number(e.target.value) || 0));
+                    setCompMin(v);
+                    if (v > compMax) setCompMax(v);
+                  }}
+                  className="w-16 text-xs font-semibold text-blue-700 border rounded px-1 py-0.5 text-right"
+                />
+                <span className="text-xs text-blue-700">이상</span>
+              </div>
             </div>
             <input
-              type="range" min={0} max={20} step={0.1}
+              type="range" min={0} max={50} step={1}
               value={compMin}
               onChange={e => {
                 const v = Number(e.target.value);
@@ -556,17 +669,29 @@ export default function RecommendPage() {
               className="w-full accent-blue-600"
             />
             <div className="flex justify-between text-[10px] text-gray-400">
-              <span>0</span><span>5</span><span>10</span><span>15</span><span>20</span>
+              <span>0</span><span>10</span><span>20</span><span>30</span><span>40</span><span>50</span>
             </div>
           </div>
 
           <div>
-            <div className="flex justify-between mb-1">
+            <div className="flex justify-between items-center mb-1">
               <span className="text-xs text-gray-600">경쟁강도 최대</span>
-              <span className="text-xs font-semibold text-blue-700">{compMax.toFixed(1)} 이하</span>
+              <div className="flex items-center gap-1">
+                <input
+                  type="number" min={0} max={50} step={1}
+                  value={compMax}
+                  onChange={e => {
+                    const v = Math.max(0, Math.min(50, Number(e.target.value) || 0));
+                    setCompMax(v);
+                    if (v < compMin) setCompMin(v);
+                  }}
+                  className="w-16 text-xs font-semibold text-blue-700 border rounded px-1 py-0.5 text-right"
+                />
+                <span className="text-xs text-blue-700">이하</span>
+              </div>
             </div>
             <input
-              type="range" min={0} max={20} step={0.1}
+              type="range" min={0} max={50} step={1}
               value={compMax}
               onChange={e => {
                 const v = Number(e.target.value);
@@ -576,10 +701,135 @@ export default function RecommendPage() {
               className="w-full accent-blue-600"
             />
             <div className="flex justify-between text-[10px] text-gray-400">
-              <span>0</span><span>5</span><span>10</span><span>15</span><span>20</span>
+              <span>0</span><span>10</span><span>20</span><span>30</span><span>40</span><span>50</span>
             </div>
           </div>
         </div>
+
+        {/* 카테고리 필터 (복수 선택) */}
+        <div className="mt-4 pt-3 border-t">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-gray-700">카테고리 필터</span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setSelectedCategories(new Set())}
+                className="text-[11px] px-2 py-0.5 bg-gray-100 hover:bg-gray-200 rounded"
+              >전체(초기화)</button>
+              <button
+                onClick={() => setSelectedCategories(new Set(availableCats))}
+                className="text-[11px] px-2 py-0.5 bg-gray-100 hover:bg-gray-200 rounded"
+              >전체 선택</button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {availableCats.map(c => {
+              const on = selectedCategories.has(c);
+              return (
+                <button
+                  key={c}
+                  onClick={() => toggleCategoryFilter(c)}
+                  className={`px-2 py-0.5 text-xs rounded border ${on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+                >{c}</button>
+              );
+            })}
+          </div>
+          {selectedCategories.size > 0 && (
+            <div className="mt-1 text-[11px] text-gray-500">
+              선택: {selectedCategories.size}개 (나머지 카테고리 제외)
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 관심 키워드 풀 */}
+      <div className="bg-white rounded-lg shadow p-5 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <h3 className="font-semibold">⭐ 관심 키워드 풀</h3>
+            <span className="text-xs text-gray-500">({interestList.length}개)</span>
+          </div>
+          <div className="flex gap-1">
+            <button
+              onClick={sourceInterestList}
+              disabled={interestList.length === 0}
+              className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-40"
+              title="관심 키워드 전체를 interest 모드 자동 소싱 페이지로 이동"
+            >
+              ⚡ 이 목록으로 자동 소싱
+            </button>
+            <button
+              onClick={clearAllInterest}
+              disabled={interestList.length === 0}
+              className="text-xs px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-40"
+            >
+              전체 비우기
+            </button>
+          </div>
+        </div>
+        {interestList.length === 0 ? (
+          <div className="text-center py-4 text-xs text-gray-400 border border-dashed rounded">
+            아래 추천 테이블에서 키워드를 체크 후 "⭐ 선택한 키워드를 관심 키워드에 추가" 버튼으로 담으세요.
+          </div>
+        ) : (
+          <div className="overflow-x-auto max-h-[320px] overflow-y-auto border rounded">
+            <table className="w-full text-[11px]">
+              <thead className="bg-gray-50 sticky top-0 z-10">
+                <tr>
+                  <th className="border-b px-2 py-1 text-left">체크한 날짜</th>
+                  <th className="border-b px-2 py-1 text-left">일본어</th>
+                  <th className="border-b px-2 py-1 text-left">한국어</th>
+                  <th className="border-b px-2 py-1 text-right">한국비율(%)</th>
+                  <th className="border-b px-2 py-1 text-left">카테고리</th>
+                  <th className="border-b px-2 py-1 text-right">검색수(주평)</th>
+                  <th className="border-b px-2 py-1 text-right">검색수(전날)</th>
+                  <th className="border-b px-2 py-1 text-right">경쟁강도</th>
+                  <th className="border-b px-2 py-1 text-right">전체상품수</th>
+                  <th className="border-b px-2 py-1 text-right">일본</th>
+                  <th className="border-b px-2 py-1 text-right">한국</th>
+                  <th className="border-b px-2 py-1 text-right">중국</th>
+                  <th className="border-b px-2 py-1 text-right">그외</th>
+                  <th className="border-b px-2 py-1 text-center w-10"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {interestList.map(k => {
+                  const total = k.total_products || 0;
+                  const kr = k.products_kr || 0;
+                  const krRatio = total > 0 ? (kr / total) * 100 : 0;
+                  const fmtN = (n?: number) => n == null ? '-' : Number(n).toLocaleString();
+                  return (
+                    <tr key={k.keyword_jp} className="hover:bg-yellow-50">
+                      <td className="border-b px-2 py-0.5 text-gray-600 whitespace-nowrap">{k.added_at || '-'}</td>
+                      <td className="border-b px-2 py-0.5 whitespace-nowrap">
+                        <a href={`https://www.qoo10.jp/s/?keyword=${k.keyword_jp}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{k.keyword_jp}</a>
+                      </td>
+                      <td className="border-b px-2 py-0.5 text-gray-700 whitespace-nowrap">{k.keyword_kr || '-'}</td>
+                      <td className={`border-b px-2 py-0.5 text-right ${krRatio >= 30 ? 'bg-amber-50 font-semibold' : ''}`}>{krRatio.toFixed(1)}%</td>
+                      <td className="border-b px-2 py-0.5 text-gray-700 whitespace-nowrap">{k.category || '-'}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{fmtN(k.search_volume_weekly)}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{fmtN(k.search_volume_daily)}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{k.competition_intensity?.toFixed(2) ?? '-'}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{fmtN(k.total_products)}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{fmtN(k.products_jp)}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{fmtN(k.products_kr)}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{fmtN(k.products_cn)}</td>
+                      <td className="border-b px-2 py-0.5 text-right">{fmtN(k.products_other)}</td>
+                      <td className="border-b px-2 py-0.5 text-center">
+                        <button
+                          onClick={() => removeInterest(k.keyword_jp)}
+                          className="text-red-500 hover:text-red-700 text-xs"
+                          title="관심 키워드에서 제거"
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {retranslating && (
@@ -599,6 +849,13 @@ export default function RecommendPage() {
               className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded hover:bg-emerald-700"
             >
               ⭐ 선택한 키워드를 관심 키워드에 추가
+            </button>
+            <button
+              onClick={sourceSelectedKeywords}
+              className="text-xs px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700"
+              title="체크한 키워드를 관심에 추가하고 자동 소싱 페이지로 이동 (interest 모드 자동 세팅)"
+            >
+              ⚡ 선택 키워드로 자동 소싱 시작
             </button>
             <Link
               to="/recommend-products"

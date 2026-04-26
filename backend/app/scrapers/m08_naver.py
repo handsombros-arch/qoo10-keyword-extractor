@@ -1,77 +1,152 @@
+"""M08: 네이버 쇼핑 검색 — 공식 검색 API + BGE-M3 임베딩 매칭.
+
+네이버 검색 API (https://developers.naver.com/) 사용. 일 25,000건 무료.
+Client ID / Secret 발급 후 backend/.env 에 추가:
+
+    NAVER_CLIENT_ID=...
+    NAVER_CLIENT_SECRET=...
+
+흐름:
+    1. display=100 으로 100건 받음
+    2. BGE-M3 임베딩으로 keyword 와 의미 유사한 것만 통과 (threshold)
+    3. 가격 낮은 순으로 상위 N개 채택
+    임베딩 사용 불가 시(모델 미설치 등) fallback: 가격 낮은 순 그대로
+"""
+from __future__ import annotations
+
+import os
 import re
 from datetime import date
 
-from app.config import settings
+import httpx
+
 from app.scrapers.base import BaseScraper
+from app.services.semantic_match import is_available as semantic_available, match_candidates
+
+
+NAVER_API_URL = "https://openapi.naver.com/v1/search/shop.json"
+_TAG_RE = re.compile(r"<[^>]+>")
+
+# 임베딩 매칭 임계값 — 한국어 ↔ 한국어 매칭이라 0.55 부터 시작 (운영 데이터로 튜닝)
+_SIM_THRESHOLD = float(os.getenv("NAVER_SIM_THRESHOLD", "0.55"))
+
+
+def _strip_html(s: str) -> str:
+    return _TAG_RE.sub("", s or "").strip()
 
 
 class NaverShoppingScraper(BaseScraper):
-    """M08: 네이버 쇼핑 상품 검색"""
+    """M08: 네이버 쇼핑 검색 (공식 API + 의미 매칭)."""
 
-    async def run(self, keyword: str, **params) -> dict:
-        page = await self.browser.get_page()
+    async def run(self, keyword: str, max_results: int = 30, **params) -> dict:
         task_id = self.tasks.create_task("네이버 쇼핑 검색", 1)
         self.tasks.start_task(task_id)
 
+        client_id = os.getenv("NAVER_CLIENT_ID", "").strip()
+        client_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
+
+        if not client_id or not client_secret:
+            self.tasks.fail_task(task_id, "NAVER_CLIENT_ID / SECRET 미설정")
+            return {
+                "task_id": task_id,
+                "products": [],
+                "error": (
+                    "환경변수 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 가 필요합니다. "
+                    "https://developers.naver.com 에서 애플리케이션 등록 후 backend/.env 에 추가."
+                ),
+            }
+
         try:
-            self.tasks.update_progress(task_id, 0, f"'{keyword}' 네이버 검색 중...")
+            self.tasks.update_progress(task_id, 0, f"'{keyword}' 네이버 API 100건 호출")
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.get(
+                    NAVER_API_URL,
+                    headers={
+                        "X-Naver-Client-Id": client_id,
+                        "X-Naver-Client-Secret": client_secret,
+                    },
+                    params={
+                        "query": keyword,
+                        "display": 100,   # API 최대치
+                        "start": 1,
+                        "sort": "sim",
+                    },
+                )
+                if resp.status_code != 200:
+                    msg = f"API {resp.status_code}: {resp.text[:200]}"
+                    self.tasks.fail_task(task_id, msg)
+                    return {"task_id": task_id, "products": [], "error": msg}
+                data = resp.json()
 
-            url = f"{settings.NAVER_SHOPPING_URL}?query={keyword}"
-            await page.goto(url, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)
+            items = data.get("items") or []
+            if not items:
+                self.tasks.complete_task(task_id, "0개 결과")
+                return {"task_id": task_id, "products": []}
 
-            # 스크롤
-            for _ in range(3):
-                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(1000)
+            # 1차: 임베딩 매칭으로 의미 유사한 것만 통과
+            titles = [_strip_html(it.get("title", "")) for it in items]
+            if semantic_available():
+                self.tasks.update_progress(
+                    task_id, 0,
+                    f"'{keyword}' BGE-M3 매칭 ({len(titles)}건 → 의미 유사도 ≥ {_SIM_THRESHOLD})"
+                )
+                matches = match_candidates(keyword, titles, threshold=_SIM_THRESHOLD)
+                kept_indices = {idx for idx, _ in matches}
+                score_map = dict(matches)
+                filtered = [(items[idx], score_map[idx]) for idx in kept_indices]
+                semantic_used = True
+            else:
+                # fallback: 모두 통과
+                filtered = [(it, 0.0) for it in items]
+                semantic_used = False
 
-            products = await self._extract_products(page, keyword)
+            # 2차: 가격 낮은 순 정렬 (의미 일치 그룹 안에서)
+            def _lprice(item_score):
+                v = item_score[0].get("lprice", "")
+                try:
+                    return int(v) if v else 0
+                except (TypeError, ValueError):
+                    return 0
 
-            self.tasks.complete_task(task_id, f"{len(products)}개 상품 수집")
+            filtered_priced = [t for t in filtered if _lprice(t) > 0]
+            filtered_priced.sort(key=_lprice)
+
+            # 3차: 상위 max_results 개 채택
+            chosen = filtered_priced[:max_results]
+
+            products: list[dict] = []
+            today = date.today()
+            for it, score in chosen:
+                try:
+                    name = _strip_html(it.get("title", ""))
+                    if not name:
+                        continue
+                    lprice = it.get("lprice", "")
+                    try:
+                        price_krw = int(lprice) if lprice else 0
+                    except (TypeError, ValueError):
+                        price_krw = 0
+                    products.append({
+                        "source": "naver",
+                        "search_keyword": keyword,
+                        "product_name": name,
+                        "price_krw": price_krw,
+                        "shipping_fee": "",
+                        "origin": "",
+                        "cover_image_url": it.get("image", ""),
+                        "product_url": it.get("link", ""),
+                        "lookup_date": today,
+                    })
+                except Exception:
+                    continue
+
+            verb = "임베딩 매칭" if semantic_used else "fallback"
+            self.tasks.complete_task(
+                task_id,
+                f"{len(products)}개 채택 ({len(items)}→{len(filtered)} {verb} → 가격순 top {max_results})",
+            )
             return {"task_id": task_id, "products": products}
 
         except Exception as e:
             self.tasks.fail_task(task_id, str(e))
-            return {"task_id": task_id, "error": str(e)}
-
-    async def _extract_products(self, page, keyword: str) -> list[dict]:
-        products = []
-
-        items = await page.query_selector_all(
-            "[class*='product_item'], [class*='basicList_item']"
-        )
-
-        for item in items[:30]:
-            try:
-                product = {"source": "naver", "search_keyword": keyword, "lookup_date": date.today()}
-
-                name_el = await item.query_selector("[class*='title'], [class*='name']")
-                if name_el:
-                    product["product_name"] = (await name_el.inner_text()).strip()
-
-                price_el = await item.query_selector("[class*='price'] em, [class*='price'] span")
-                if price_el:
-                    text = await price_el.inner_text()
-                    nums = re.sub(r"[^\d]", "", text)
-                    product["price_krw"] = int(nums) if nums else 0
-
-                # 배송비
-                ship_el = await item.query_selector("[class*='delivery'], [class*='etc']")
-                if ship_el:
-                    product["shipping_fee"] = (await ship_el.inner_text()).strip()
-
-                img_el = await item.query_selector("img")
-                if img_el:
-                    product["cover_image_url"] = await img_el.get_attribute("src") or ""
-
-                link_el = await item.query_selector("a[href]")
-                if link_el:
-                    product["product_url"] = await link_el.get_attribute("href") or ""
-
-                if product.get("product_name"):
-                    products.append(product)
-
-            except Exception:
-                continue
-
-        return products
+            return {"task_id": task_id, "error": str(e), "products": []}

@@ -12,8 +12,19 @@ dist/
 # Env / secrets
 .env
 backend/.env
+automation/.env
 backend/data/session/credentials.json
 backend/data/session/cookies.json
+
+# 자동화 로그
+logs/
+
+# 디버그/진단/세션 데이터
+backend/data/*.log
+backend/data/m09_debug/
+automation/diagnostics/
+automation/data/
+backend/scripts/bid_test.json
 
 # DB (로컬 SQLite — Supabase 이전 후 불필요)
 backend/data/qoo10.db

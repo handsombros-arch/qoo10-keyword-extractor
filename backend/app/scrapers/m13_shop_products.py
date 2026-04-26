@@ -196,11 +196,19 @@ class Qoo10ShopScraper(BaseScraper):
                 origin_el = await item.query_selector(".national, [class*='origin'], [class*='country']")
                 product["origin"] = (await origin_el.inner_text()).strip() if origin_el else ""
 
-                # 이미지: a.thmb img
+                # 이미지: a.thmb img (Qoo10 lazy-load: gd_src 우선, src는 로딩 플레이스홀더)
                 img_el = await item.query_selector("a.thmb img, img")
                 if img_el:
-                    src = await img_el.get_attribute("src") or await img_el.get_attribute("data-src") or ""
-                    product["cover_image_url"] = src
+                    gd_src = await img_el.get_attribute("gd_src") or ""
+                    data_src = await img_el.get_attribute("data-src") or ""
+                    src = await img_el.get_attribute("src") or ""
+                    candidates = [gd_src, data_src, src]
+                    chosen = ""
+                    for c in candidates:
+                        if c and "loading" not in c.lower():
+                            chosen = c
+                            break
+                    product["cover_image_url"] = chosen or src
 
                 # 링크: a.thmb[href] 또는 a.tt[href]
                 link_el = await item.query_selector("a.thmb[href], a.tt[href]")

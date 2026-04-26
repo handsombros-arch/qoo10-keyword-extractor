@@ -9,9 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.browser.manager import browser_manager
 from app.config import settings
 from app.db.connection import get_session, async_session
-from app.db.sqlite_repo import SQLiteKeywordRepository
+from app.db.sqlite_repo import SQLiteKeywordRepository, SQLiteBidRepository
 from app.schemas.keyword import TrendKeywordRequest, RelatedKeywordRequest
 from app.scrapers.m02_trend_keywords import TrendKeywordScraper, CATEGORIES
+from app.scrapers.m04_bid_results import BidResultScraper
 from app.scrapers.m05_related_keywords import RelatedKeywordScraper
 from app.services.task_manager import task_manager
 from app.services.translation import translate_batch
@@ -192,8 +193,14 @@ async def collect_trend_keywords(req: TrendKeywordRequest):
 
     target_categories = _resolve_categories(req)
 
-    # 전체 진척도 (마스터) task: 카테고리 N개 + 번역 1 + 상품수 1 + 저장 1
-    total_steps = len(target_categories) + (1 if req.translate else 0) + (1 if req.fill_total_products else 0) + 1
+    # 전체 진척도 (마스터) task: 카테고리 N개 + 번역 1 + 상품수 1 + 저장 1 (+ 비딩 1)
+    total_steps = (
+        len(target_categories)
+        + (1 if req.translate else 0)
+        + (1 if req.fill_total_products else 0)
+        + 1
+        + (1 if req.collect_bids else 0)
+    )
     master_id = task_manager.create_task(
         f"키워드 수집 ({len(target_categories)}개 카테고리)", total_steps
     )
@@ -267,6 +274,28 @@ async def collect_trend_keywords(req: TrendKeywordRequest):
                 repo = SQLiteKeywordRepository(session)
                 await repo.save_keywords(all_keywords)
             task_manager.update_progress(master_id, 1, f"DB 저장 완료 ({len(all_keywords)}개)")
+
+            # 경매 낙찰 결과 수집 — 옵션 (collect_bids=True일 때만)
+            if req.collect_bids:
+                try:
+                    unique_jp = list({kw["keyword_jp"] for kw in all_keywords if kw.get("keyword_jp")})
+                    if unique_jp:
+                        task_manager.update_progress(master_id, 0, f"경매 낙찰가 수집 중 ({len(unique_jp)}개)")
+                        bid_scraper = BidResultScraper(browser_manager, task_manager)
+                        bid_result = await bid_scraper.run(keywords=unique_jp)
+                        bid_records = bid_result.get("results") or []
+                        if bid_records:
+                            async with async_session() as session:
+                                bid_repo = SQLiteBidRepository(session)
+                                await bid_repo.replace_bid_history(today, bid_records)
+                            print(f"[trend] 경매결과 {len(bid_records)}개 저장")
+                        task_manager.update_progress(master_id, 1, f"경매 낙찰가 수집 완료 ({len(bid_records)}개)")
+                except Exception as be:
+                    # 경매 수집 실패해도 키워드 수집 자체는 성공으로 처리
+                    print(f"[trend] 경매결과 수집 실패(무시): {be}")
+                    traceback.print_exc()
+                    task_manager.update_progress(master_id, 1, f"경매 낙찰가 수집 실패: {be}")
+
             task_manager.complete_task(master_id, f"{len(all_keywords)}개 키워드 적재 완료")
 
             return {"status": "ok", "saved": len(all_keywords)}
