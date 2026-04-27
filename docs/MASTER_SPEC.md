@@ -298,7 +298,7 @@ decision    = "accepted" if (image_ok AND
 |---|---|---|---|
 | 1 | ✅ 완료 | ~~정상 K-뷰티 결합 룰 검증~~ — 2026-04-27 23:30 완료 (accept 0% → 23%, 코스노리 7/7) | `PHASE1_POSITIVE_TEST.md § 10` |
 | 2 | ✅ 완료 | ~~깨진 번역 케이스 reset + 재번역~~ — 2026-04-28 00:00 완료 (JSON 잔재 12→0, 일본어 잔존 271→189, accept 23→26, 코스노리 7→10) | `PHASE1_POSITIVE_TEST.md § 11` |
-| 3 | ★★★ | 1-D 브랜드 키워드 확장 (큐텐 상위 10개 상품명 토큰 재검색) | Phase 1 (명세 3.3#1~3) |
+| 3 | ✅ 핵심 완료 | Phase 1-D 브랜드 키워드 확장 — LLM(qwen3:14b) 큐텐 top 10 상품명 → specific 키워드 3~5개 추출. 메디큐브 시운전 5/5 (PDRN 부스터/AGE-R 울트라/부스터 프로 X2 등). 한국 검색 통합(R-1~R-3)은 후속. PHASE1_BRAND_EXPAND.md | Phase 1 |
 | 4 | ✅ A 진행 완료 (단기) | Phase 2 옵션 — **A 결정 (검색 API 데이터)** 적용. 4/25 accepted 13건 OK 13/13. domestic_product_options 채움 (default 옵션 1건씩). shipping_kind=unknown. 옵션 N개/배송비/누끼는 Phase 2.5 후속. PHASE2_DETAIL_SCRAPER § 13. | Phase 2 |
 | 5 | ★★ | 사장님 검수 UI — accepted 케이스 동일 카테고리 다른 SKU 분리 | Phase 1 잔여 |
 | 6 | ★★ | 이미지 매칭 프롬프트 재작성 + 임계값 0.85 (양극화 완화) | Phase 1 잔여 |

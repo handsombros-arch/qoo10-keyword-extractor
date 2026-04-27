@@ -558,3 +558,182 @@ async def collect_related_keywords(req: RelatedKeywordRequest):
 
     asyncio.create_task(_task())
     return {"status": "started", "message": "연관 키워드 수집을 시작합니다."}
+
+
+# ─── Phase 1-D — 브랜드 키워드 확장 ─────────────────────
+
+
+@router.post("/expand-brand")
+async def expand_brand_endpoint(body: dict | None = None):
+    """is_brand=1 키워드의 큐텐 상위 N개 상품명에서 specific 키워드 LLM 추출 (백그라운드).
+
+    body:
+      date:       YYYY-MM-DD (4/27 형식 — keywords lookup_date)
+      qoo10_date: YYYY-MM-DD (큐텐 상품 lookup_date — 기본 = date)
+      top_n:      int (큐텐 상위 N개 상품명, 기본 10)
+      limit:      int (처리할 brand 키워드 상한)
+      brands:     list[str] (선택, 특정 brand_kr 만)
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel, func as _func
+    from app.db.models import Keyword as _K, Qoo10Product as _Q
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    raw_qd = body.get("qoo10_date")
+    if raw_qd:
+        try:
+            qoo10_date = _dt.strptime(str(raw_qd), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "qoo10_date 형식: YYYY-MM-DD"}
+    else:
+        qoo10_date = target_date
+
+    top_n = int(body.get("top_n", 10))
+    raw_limit = body.get("limit")
+    limit = int(raw_limit) if raw_limit else None
+    brands_filter = body.get("brands") or []
+
+    # is_brand=1 키워드 추출
+    async with async_session() as session:
+        stmt = (
+            _sel(_K.keyword_jp, _K.brand_kr, _K.search_volume_daily)
+            .where(_K.lookup_date == target_date)
+            .where(_K.is_brand == 1)
+            .where(_K.keyword_jp.is_not(None))
+            .order_by(_K.search_volume_daily.desc().nullslast())
+        )
+        if brands_filter:
+            stmt = stmt.where(_K.brand_kr.in_(brands_filter))
+        rows = (await session.execute(stmt)).all()
+        # unique by keyword_jp
+        seen = set()
+        unique_rows = []
+        for jp, br, vol in rows:
+            if jp in seen:
+                continue
+            seen.add(jp)
+            unique_rows.append((jp, br or "", vol or 0))
+
+    if limit:
+        unique_rows = unique_rows[:limit]
+
+    if not unique_rows:
+        return {
+            "task_id": None, "candidates": 0,
+            "message": f"{target_date}: is_brand=1 키워드 0건",
+        }
+
+    task_id = task_manager.create_task(
+        name=f"브랜드 키워드 확장 ({target_date}, {len(unique_rows)}개)",
+        total=len(unique_rows),
+    )
+    _asyncio.create_task(_run_expand_brand(task_id, unique_rows, qoo10_date, top_n))
+    return {
+        "task_id": task_id, "candidates": len(unique_rows),
+        "qoo10_date": str(qoo10_date), "top_n": top_n,
+        "date": str(target_date),
+    }
+
+
+async def _run_expand_brand(task_id: str, rows: list, qoo10_date, top_n: int) -> None:
+    """백그라운드 — 각 브랜드 키워드의 큐텐 상위 N개 상품명 → LLM expand → DB INSERT."""
+    from sqlalchemy import select as _sel
+    from sqlalchemy.exc import IntegrityError
+    from app.db.models import Qoo10Product as _Q, ExpandedKeyword as _EK
+    from app.services.llm.brand_expand import expand_brand_keyword_async
+
+    task_manager.start_task(task_id)
+    expanded_n = empty_n = 0
+
+    try:
+        for idx, (brand_jp, brand_kr, vol) in enumerate(rows, 1):
+            # 큐텐 상위 N개 상품명 (search_keyword == brand_jp 매칭)
+            async with async_session() as db:
+                p_rows = (await db.execute(
+                    _sel(_Q.product_name)
+                    .where(_Q.search_keyword == brand_jp)
+                    .where(_Q.lookup_date == qoo10_date)
+                    .where(_Q.product_name.is_not(None))
+                    .order_by(_Q.id.asc())
+                    .limit(top_n)
+                )).all()
+            product_names = [r[0] for r in p_rows if r[0]]
+
+            if not product_names:
+                empty_n += 1
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] SKIP {brand_jp[:25]} (큐텐 상품 0)",
+                )
+                continue
+
+            try:
+                expansions = await expand_brand_keyword_async(
+                    brand_jp=brand_jp,
+                    brand_kr=brand_kr,
+                    product_names=product_names,
+                )
+            except Exception as e:
+                logger.warning(f"[brand_expand] LLM 실패 {brand_jp!r}: {e}")
+                expansions = []
+
+            if not expansions:
+                empty_n += 1
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] EMPTY {brand_jp[:25]} (LLM 추출 0)",
+                )
+                continue
+
+            # DB INSERT (중복 (parent_jp, keyword_jp) 회피)
+            inserted = 0
+            try:
+                async with async_session() as db:
+                    # 같은 parent_jp 의 기존 keyword_jp 제외
+                    existing = (await db.execute(
+                        _sel(_EK.keyword_jp).where(_EK.parent_jp == brand_jp)
+                    )).all()
+                    existing_set = {r[0] for r in existing}
+                    for exp in expansions:
+                        kw = exp.get("keyword_jp")
+                        if not kw or kw in existing_set:
+                            continue
+                        db.add(_EK(
+                            parent_jp=brand_jp,
+                            parent_kr=brand_kr or None,
+                            keyword_jp=kw,
+                            keyword_kr=exp.get("keyword_kr") or None,
+                            source_count=len(product_names),
+                        ))
+                        inserted += 1
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"[brand_expand] DB INSERT 실패 {brand_jp!r}: {e}")
+
+            expanded_n += inserted
+            kws_preview = ", ".join(e["keyword_jp"][:20] for e in expansions[:3])
+            task_manager.update_progress(
+                task_id, increment=1,
+                message=(
+                    f"[{idx}/{len(rows)}] OK {brand_jp[:18]} "
+                    f"+{inserted}/{len(expansions)} → [{kws_preview}]"
+                ),
+            )
+
+        task_manager.complete_task(
+            task_id,
+            message=f"완료 — 확장 {expanded_n}개, 빈 {empty_n} (대상 brand {len(rows)})",
+        )
+    except Exception as e:
+        task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        traceback.print_exc()

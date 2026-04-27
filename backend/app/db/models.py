@@ -171,6 +171,29 @@ class DomesticProductOption(Base):
     captured_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ExpandedKeyword(Base):
+    """브랜드 키워드 확장 결과 (Phase 1-D, 명세 3.3#1~3).
+
+    is_brand=1 키워드의 큐텐 상위 N개 상품명에서 LLM 이 추출한
+    더 specific 한 검색 키워드 (예: 「アヌア」 → 「anua pdrn」, 「anua heartleaf toner」).
+    그 후 m07/m08 한국 검색 → 매칭 단계로 통합.
+
+    PK 는 id 만. 같은 부모 키워드에서 여러 expanded 가능.
+    UNIQUE (parent_jp, keyword_jp) 로 중복 방지는 caller 가 선체크.
+    """
+    __tablename__ = "expanded_keywords"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    parent_jp = Column(String, nullable=False, index=True)    # 원본 브랜드 키워드 (예: 「アヌア」)
+    parent_kr = Column(String)                                # 원본 한국어 (선택)
+    keyword_jp = Column(String, nullable=False)               # 확장된 specific (예: 「anua pdrn」)
+    keyword_kr = Column(String)                               # 한국어 번역 (m08 검색용)
+    source_count = Column(Integer)                            # 추출 시 사용한 큐텐 상품 N개
+    created_at = Column(DateTime, default=datetime.utcnow)
+    # 후속: m07/m08 검색 후 결과 행 수
+    domestic_match_count = Column(Integer, default=0)
+
+
 class BestsellerItem(Base):
     __tablename__ = "bestseller_items"
 
