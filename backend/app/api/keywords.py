@@ -1,9 +1,12 @@
 import asyncio
+import logging
 import re
 import traceback
 from datetime import date
 
 from fastapi import APIRouter, Depends
+
+logger = logging.getLogger(__name__)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.browser.manager import browser_manager
@@ -733,6 +736,126 @@ async def _run_expand_brand(task_id: str, rows: list, qoo10_date, top_n: int) ->
         task_manager.complete_task(
             task_id,
             message=f"완료 — 확장 {expanded_n}개, 빈 {empty_n} (대상 brand {len(rows)})",
+        )
+    except Exception as e:
+        task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+
+# ─── Phase 1-D R-1 — expanded 한국 검색 ─────────────────
+
+
+@router.post("/expanded/run-search")
+async def run_expanded_search(body: dict | None = None):
+    """expanded_keywords 의 keyword_kr 들을 m08_naver 로 순차 검색 → DomesticProduct INSERT.
+
+    body:
+      parents:    list[str] (선택, 특정 parent_jp 만)
+      limit:      int (처리할 expanded 키워드 상한)
+      max_results: int (m08 결과 상한, 기본 30)
+    """
+    import asyncio as _asyncio
+    from sqlalchemy import select as _sel
+    from app.db.models import ExpandedKeyword as _EK
+
+    body = body or {}
+    parents = body.get("parents") or []
+    raw_limit = body.get("limit")
+    limit = int(raw_limit) if raw_limit else None
+    max_results = int(body.get("max_results", 30))
+
+    async with async_session() as session:
+        stmt = _sel(_EK.id, _EK.parent_jp, _EK.keyword_jp, _EK.keyword_kr).where(
+            _EK.keyword_kr.is_not(None), _EK.keyword_kr != ""
+        )
+        if parents:
+            stmt = stmt.where(_EK.parent_jp.in_(parents))
+        stmt = stmt.order_by(_EK.id.asc())
+        rows = (await session.execute(stmt)).all()
+
+    if limit:
+        rows = list(rows)[:limit]
+
+    if not rows:
+        return {
+            "task_id": None, "candidates": 0,
+            "message": f"expanded_keywords 에 keyword_kr 채워진 행 0건",
+        }
+
+    task_id = task_manager.create_task(
+        name=f"확장 키워드 한국 검색 ({len(rows)}개)", total=len(rows),
+    )
+    _asyncio.create_task(_run_expanded_search(task_id, rows, max_results))
+    return {
+        "task_id": task_id, "candidates": len(rows),
+        "max_results": max_results,
+    }
+
+
+async def _run_expanded_search(task_id: str, rows: list, max_results: int) -> None:
+    """백그라운드 — expanded keyword_kr 마다 NaverShoppingScraper 호출 + DB 저장."""
+    from sqlalchemy import update as _upd
+    from app.db.connection import async_session
+    from app.db.sqlite_repo import SQLiteProductRepository
+    from app.db.models import ExpandedKeyword as _EK
+    from app.scrapers.m08_naver import NaverShoppingScraper
+
+    task_manager.start_task(task_id)
+    matched_n = empty_n = 0
+
+    try:
+        scraper = NaverShoppingScraper(browser_manager, task_manager)
+        for idx, (eid, pjp, kjp, kkr) in enumerate(rows, 1):
+            try:
+                result = await scraper.run(keyword=kkr, max_results=max_results)
+            except Exception as e:
+                empty_n += 1
+                logger.warning(f"[expanded_search] m08 실패 kw={kkr!r}: {e}")
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] FAIL kw={kkr[:25]} ({type(e).__name__})",
+                )
+                continue
+
+            products = result.get("products") or []
+            if not products:
+                empty_n += 1
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] EMPTY kw={kkr[:25]}",
+                )
+                continue
+
+            # DB 저장 (search_keyword=keyword_kr, lookup_date=오늘)
+            try:
+                async with async_session() as session:
+                    repo = SQLiteProductRepository(session)
+                    await repo.save_domestic_products(products)
+                # ExpandedKeyword.domestic_match_count 갱신
+                async with async_session() as session:
+                    await session.execute(
+                        _upd(_EK).where(_EK.id == eid).values(
+                            domestic_match_count=len(products)
+                        )
+                    )
+                    await session.commit()
+            except Exception as e:
+                logger.warning(f"[expanded_search] DB 저장 실패 kw={kkr!r}: {e}")
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] DB-FAIL kw={kkr[:25]}",
+                )
+                continue
+
+            matched_n += 1
+            task_manager.update_progress(
+                task_id, increment=1,
+                message=f"[{idx}/{len(rows)}] OK kw={kkr[:25]} → {len(products)}개",
+            )
+
+        task_manager.complete_task(
+            task_id,
+            message=f"완료 — 매칭 {matched_n}, 빈 {empty_n} (대상 {len(rows)})",
         )
     except Exception as e:
         task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")

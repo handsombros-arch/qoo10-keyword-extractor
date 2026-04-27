@@ -72,11 +72,44 @@ domestic_match_candidates (높은 정확도)
 
 ## 6. 후속 작업 (Phase 1-D 마무리)
 
-| # | 작업 |
+| # | 작업 | 상태 |
+|---|---|---|
+| R-1 | expanded_keywords 의 keyword_kr 로 m08_naver 자동 검색 (백그라운드 워커) | ✅ 완료 (§ 8) |
+| R-2 | 검색 결과 → 매칭 결합 룰 자동 진입 (image_match + text_match) | ⏳ 후속 (keywords 테이블 매핑 통합 필요) |
+| R-3 | daily_workflow STEP 4.5 추가 (자동 필터 후 brand 확장) | ⏳ 후속 |
+
+---
+
+## 8. R-1 한국 검색 자동화 결과 (2026-04-28) ✅
+
+### 구현
+- `POST /api/keywords/expanded/run-search`
+- `_run_expanded_search` 워커 — expanded_keywords 의 keyword_kr 들 → NaverShoppingScraper 순차 호출 → DomesticProduct INSERT
+- `automation/trigger_expanded_search.py`
+- `expanded_keywords.domestic_match_count` 자동 갱신
+
+### 시운전 (메디큐브 5개 expanded, 4/28 검색)
+
+| keyword_kr | 한국 상품 수 |
 |---|---|
-| R-1 | expanded_keywords 의 keyword_kr 로 m08_naver 자동 검색 (백그라운드 워커) |
-| R-2 | 검색 결과 → 매칭 결합 룰 자동 진입 (image_match + text_match) |
-| R-3 | daily_workflow STEP 4.5 추가 (자동 필터 후 brand 확장) |
+| 메디큐브 PDRN 부스터 | 30 |
+| 메디큐브 부스터 프로 X2 | 30 |
+| 메디큐브 부스터 프로 미니 플러스 | 30 |
+| 메디큐브 하이포커스 샷 플러스 | 30 |
+| 메디큐브 AGE-R 울트라 터ン | 25 |
+
+→ **총 145개 한국 상품 신규 수집** (lookup_date=2026-04-28).
+
+### 후속 (R-2 매칭 통합)
+
+현재 `/api/recommendations/match-images` 는 `keywords.keyword_jp/kr` 만 봄. expanded keyword 매핑은 못 봄. 매칭하려면:
+
+1. **간단**: expanded keyword 의 parent_jp 를 큐텐 search_keyword 로 사용 (메디큐브 美顔器 큐텐 상품 50개와 PDRN 부스터 한국 상품 30개 매칭)
+2. **정밀**: expanded keyword 별로 큐텐 검색까지 (m09 호출 — 작업 추가)
+
+후속 작업 (R-2):
+- recommendations.py `match-images` 가 expanded_keywords 의 parent_jp 도 인식
+- 또는 별도 `/api/recommendations/match-images-expanded` 신규
 
 ## 7. MASTER_SPEC § 8 갱신
 
