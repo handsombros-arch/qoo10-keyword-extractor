@@ -599,7 +599,8 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
       date:               YYYY-MM-DD (기본 오늘)
       keywords_jp:        list[str]  (선택, 큐텐 search_keyword 한정)
       per_qoo10_top_n:    int        (큐텐 1개당 비교할 한국 후보 수, 기본 3)
-      threshold:          float      (accepted 임계값, 기본 IMAGE_MATCH_THRESHOLD env → 0.7)
+      threshold:          float      (이미지 accepted 임계값, 기본 IMAGE_MATCH_THRESHOLD env → 0.7)
+      text_threshold:     float      (텍스트 accepted 임계값, 기본 TEXT_MATCH_THRESHOLD env → 0.3)
       limit:              int        (전체 비교 호출 상한)
 
     동작:
@@ -607,7 +608,8 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
       - 같은 search_keyword 의 한국 상품 (image_local_path 우선, cover_image_url 폴백)
         - image_score_overall DESC, price_krw ASC 정렬 → top N
       - (qoo10_id, domestic_id) 중복은 DomesticMatchCandidate 중복 방지
-      - 비전 score ≥ threshold 면 decision="accepted", 아니면 "rejected"
+      - 결합 룰: text_score ≥ text_threshold AND image_score ≥ threshold → accepted
+        (어느 한쪽이라도 미달이면 rejected) — 광고 키워드 도용 자동 거부
     """
     import asyncio as _asyncio
     import os as _os
@@ -638,16 +640,25 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
             threshold = float(_os.getenv("IMAGE_MATCH_THRESHOLD", "0.7"))
         except ValueError:
             threshold = 0.7
+    raw_text_thr = body.get("text_threshold")
+    if raw_text_thr is not None:
+        text_threshold = float(raw_text_thr)
+    else:
+        try:
+            text_threshold = float(_os.getenv("TEXT_MATCH_THRESHOLD", "0.3"))
+        except ValueError:
+            text_threshold = 0.3
     raw_limit = body.get("limit")
     overall_limit = int(raw_limit) if raw_limit else None
 
     # search_keyword 화이트리스트 (jp → kr 매핑)
     search_jp_filter: list[str] | None = list(keywords_jp) if keywords_jp else None
 
-    # 1) 큐텐 후보
+    # 1) 큐텐 후보 — product_name_ko 도 함께 (텍스트 매칭용)
     async with async_session() as session:
         q_stmt = (
-            _sel(_Q.id, _Q.product_name, _Q.cover_image_url, _Q.search_keyword)
+            _sel(_Q.id, _Q.product_name, _Q.product_name_ko,
+                 _Q.cover_image_url, _Q.search_keyword)
             .where(_Q.lookup_date == target_date)
             .where(_Q.cover_image_url.is_not(None))
         )
@@ -655,8 +666,8 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
             q_stmt = q_stmt.where(_Q.search_keyword.in_(search_jp_filter))
         q_rows = (await session.execute(q_stmt)).all()
 
-        # 2) jp → kr 매핑
-        unique_jp = sorted({r[3] for r in q_rows if r[3]})
+        # 2) jp → kr 매핑 (q_rows 인덱스: 0=id 1=name 2=name_ko 3=cover_url 4=search_kw)
+        unique_jp = sorted({r[4] for r in q_rows if r[4]})
         kr_map: dict[str, str] = {}
         if unique_jp:
             kr_rows = await session.execute(
@@ -667,27 +678,30 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
                 if jp and kr and jp not in kr_map:
                     kr_map[jp] = kr
 
-        # 3) 한국 후보 — 같은 search_keyword(kr) 의 top N
+        # 3) 한국 후보 — 같은 search_keyword(kr) 의 top N (product_name 도 같이)
         unique_kr = sorted(set(kr_map.values()))
-        kr_to_candidates: dict[str, list[tuple[int, str | None, str | None]]] = {}
+        kr_to_candidates: dict[str, list[tuple[int, str | None, str | None, str | None]]] = {}
         if unique_kr:
             d_stmt = (
-                _sel(_DP.id, _DP.search_keyword, _DP.image_local_path,
-                     _DP.cover_image_url, _DP.image_score_overall, _DP.price_krw)
+                _sel(_DP.id, _DP.product_name, _DP.search_keyword,
+                     _DP.image_local_path, _DP.cover_image_url,
+                     _DP.image_score_overall, _DP.price_krw)
                 .where(_DP.search_keyword.in_(unique_kr))
                 .where(_DP.lookup_date == target_date)
             )
             d_rows = (await session.execute(d_stmt)).all()
             tmp: dict[str, list] = {}
-            for did, dkw, lp, cu, sc, pk in d_rows:
+            for did, dname, dkw, lp, cu, sc, pk in d_rows:
                 if not dkw:
                     continue
                 if not (lp or cu):
                     continue
-                tmp.setdefault(dkw, []).append((did, lp, cu, sc or 0.0, pk or 10**9))
+                tmp.setdefault(dkw, []).append((did, dname, lp, cu, sc or 0.0, pk or 10**9))
             for dkw, lst in tmp.items():
-                lst.sort(key=lambda r: (-r[3], r[4]))  # image_score DESC, price ASC
-                kr_to_candidates[dkw] = [(did, lp, cu) for did, lp, cu, _, _ in lst[:top_n]]
+                lst.sort(key=lambda r: (-r[4], r[5]))  # image_score DESC, price ASC
+                kr_to_candidates[dkw] = [
+                    (did, dname, lp, cu) for did, dname, lp, cu, _, _ in lst[:top_n]
+                ]
 
         # 4) 이미 비교된 (qoo10_id, domestic_id) 중복 방지
         existing_pairs: set[tuple[int, int]] = set()
@@ -698,18 +712,20 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
             if qid is not None and did is not None:
                 existing_pairs.add((qid, did))
 
-    # 5) 비교 작업 리스트 만들기
+    # 5) 비교 작업 리스트 — 큐텐(jp/ko/cover/kw_kr) + 한국(name/lp/cu)
+    # 큐텐 측 텍스트 매칭 입력에 keyword_kr (브랜드 토큰 등) 도 합쳐서 번역 누락 회피.
     pairs: list[dict] = []
-    for qid, qname, qurl, qjp in q_rows:
+    for qid, qname, qko, qurl, qjp in q_rows:
         kw_kr = kr_map.get(qjp or "")
         if not kw_kr:
             continue
-        for did, dlp, dcu in kr_to_candidates.get(kw_kr, []):
+        for did, dname, dlp, dcu in kr_to_candidates.get(kw_kr, []):
             if (qid, did) in existing_pairs:
                 continue
             pairs.append({
-                "qid": qid, "qname": qname, "qurl": qurl,
-                "did": did, "dlp": dlp, "dcu": dcu,
+                "qid": qid, "qname": qname, "qko": qko, "qurl": qurl,
+                "qkw_kr": kw_kr,
+                "did": did, "dname": dname, "dlp": dlp, "dcu": dcu,
             })
             if overall_limit and len(pairs) >= overall_limit:
                 break
@@ -723,23 +739,44 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
         }
 
     task_id = task_manager.create_task(
-        name=f"이미지 매칭 ({target_date}, ≥{threshold:.2f})",
+        name=f"이미지+텍스트 매칭 ({target_date}, img≥{threshold:.2f} txt≥{text_threshold:.2f})",
         total=len(pairs),
     )
-    _asyncio.create_task(_run_match_images(task_id, pairs, threshold))
+    _asyncio.create_task(_run_match_images(task_id, pairs, threshold, text_threshold))
     return {
         "task_id": task_id, "candidates": len(pairs),
-        "scanned_qoo10": len(q_rows), "threshold": threshold,
+        "scanned_qoo10": len(q_rows),
+        "threshold": threshold, "text_threshold": text_threshold,
         "date": str(target_date),
     }
 
 
-async def _run_match_images(task_id: str, pairs: list[dict], threshold: float) -> None:
-    """백그라운드 — 각 (qoo10, domestic) 쌍 cover 비교 + DomesticMatchCandidate INSERT."""
+async def _run_match_images(
+    task_id: str, pairs: list[dict],
+    img_threshold: float, text_threshold: float,
+) -> None:
+    """백그라운드 — 각 (qoo10, domestic) 쌍 cover 비교 + DomesticMatchCandidate INSERT.
+
+    결합 룰: text_score >= text_threshold AND image_score >= img_threshold → accepted.
+    어느 한쪽이라도 미달이면 rejected (광고 키워드 도용 자동 거부).
+    """
     from pathlib import Path as _P
     from app.db.models import DomesticMatchCandidate as _DMC
-    from app.services.domestic_image_pipeline import download_to_temp
+    from app.services.domestic_image_pipeline import download_to_temp, IMAGE_ROOT
     from app.services.llm.image_match import compare_two_images_async
+    from app.services.llm.text_match import name_similarity
+
+    # image_local_path 가 'image/...' 같은 상대경로로 저장돼 있어도 안전하게 절대경로로.
+    # 백엔드 cwd 가 프로젝트 루트가 아닐 때(IDE/서비스 실행 등) 발생하던 FileNotFoundError 회피.
+    _PROJECT_ROOT = IMAGE_ROOT.parent
+
+    def _abs_path(p: str | None) -> str | None:
+        if not p:
+            return None
+        path = _P(p)
+        if not path.is_absolute():
+            path = (_PROJECT_ROOT / p).resolve()
+        return str(path) if path.exists() else None
 
     task_manager.start_task(task_id)
     accepted = rejected = failed = 0
@@ -750,9 +787,9 @@ async def _run_match_images(task_id: str, pairs: list[dict], threshold: float) -
 
             # 큐텐 cover — URL 만 있어 매번 다운로드
             q_tmp = await download_to_temp(p["qurl"]) if p["qurl"] else None
-            # 한국 cover — image_local_path 있으면 그거, 없으면 URL 다운
+            # 한국 cover — image_local_path 있으면 그거 (절대경로 변환), 없으면 URL 다운
             d_tmp = None
-            d_path = p["dlp"]
+            d_path = _abs_path(p["dlp"])
             if not d_path and p["dcu"]:
                 d_tmp = await download_to_temp(p["dcu"])
                 d_path = d_tmp
@@ -771,6 +808,19 @@ async def _run_match_images(task_id: str, pairs: list[dict], threshold: float) -
                 )
                 continue
 
+            # 텍스트 매칭 — LLM 호출 없는 순수 토큰 자카드
+            # 큐텐 측 텍스트에 keyword_kr (브랜드 토큰) 합쳐서 번역 누락 회피.
+            # 예: 「コスノリ 眉毛脱色」 ko 「이지브로우 톤체인지」 + kw_kr 「코스노리 눈썹 탈색」
+            #     → 한국 「코스노리 이지 브로우 톤 체인저」 와 「코스노리/이지브로우/톤」 토큰 일치.
+            qko = (p.get("qko") or p.get("qname") or "").strip()
+            qkw = (p.get("qkw_kr") or "").strip()
+            q_text_for_match = (qko + " " + qkw).strip() if qkw else qko
+            d_text_for_match = (p.get("dname") or "").strip()
+            try:
+                text_score = name_similarity(q_text_for_match, d_text_for_match)
+            except Exception:
+                text_score = 0.0
+
             try:
                 res = await compare_two_images_async(q_tmp, d_path)
                 score = float(res.get("score") or 0.0)
@@ -786,7 +836,12 @@ async def _run_match_images(task_id: str, pairs: list[dict], threshold: float) -
                     try: _P(d_tmp).unlink(missing_ok=True)
                     except Exception: pass
 
-            decision = "accepted" if (ok and score >= threshold) else "rejected"
+            # 결합 룰: 양쪽 모두 임계값 통과 + 비전 호출 ok
+            decision = (
+                "accepted"
+                if (ok and score >= img_threshold and text_score >= text_threshold)
+                else "rejected"
+            )
             if decision == "accepted":
                 accepted += 1
             else:
@@ -798,6 +853,7 @@ async def _run_match_images(task_id: str, pairs: list[dict], threshold: float) -
                         qoo10_product_id=qid,
                         domestic_product_id=did,
                         source_match_kind="keyword",
+                        name_score=text_score,
                         image_score=score,
                         image_match_note=note,
                         decision=decision,
@@ -809,8 +865,9 @@ async def _run_match_images(task_id: str, pairs: list[dict], threshold: float) -
             task_manager.update_progress(
                 task_id, increment=1,
                 message=(
-                    f"[{idx}/{len(pairs)}] {decision[:3]} score={score:.2f} "
-                    f"q={qid} d={did} {note[:25]}"
+                    f"[{idx}/{len(pairs)}] {decision[:3]} "
+                    f"txt={text_score:.2f} img={score:.2f} "
+                    f"q={qid} d={did} {note[:20]}"
                 ),
             )
 

@@ -31,16 +31,23 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 IMAGE_ROOT = _PROJECT_ROOT / "image"
 
-_INVALID_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
+# Windows 금지 문자 + 일부 도구가 path 처리 시 특별 취급하는 보수적 추가셋
+# (대괄호/중괄호/괄호/느낌표/물음표/세미콜론/쉼표/달러)
+_INVALID_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t\[\]\{\}\(\)!;,\$]')
 _WHITESPACE = re.compile(r"\s+")
 
 
 def _safe_folder_name(name: str, max_len: int = 100) -> str:
-    """Windows 안전 + 100자 제한 + 공백→_ 폴더명."""
+    """Windows 안전 + 보수적 특수문자 제거 + 100자 제한 + 공백→_ 폴더명.
+
+    [, ], (, ) 등은 OS 자체는 허용하지만 일부 라이브러리/스크립트 처리에서
+    파싱 충돌을 일으킬 수 있어 미리 제거. 기존 폴더와 호환성은 깨지지만
+    DB의 image_local_path 가 새 규칙으로 다시 채워지면서 자연스럽게 정합화.
+    """
     s = (name or "").strip()
     s = _INVALID_CHARS.sub("", s)
     s = _WHITESPACE.sub("_", s)
-    s = s.strip("._")
+    s = s.strip("._-")
     if not s:
         s = "untitled"
     return s[:max_len]

@@ -40,21 +40,23 @@ def _strip_codefence(s: str) -> str:
 
 
 def _parse_translation(raw: str) -> str | None:
-    """LLM 응답에서 'ko' 필드 추출. JSON 파싱 실패 시 raw 첫 줄."""
+    """LLM 응답에서 'ko' 필드 추출.
+
+    JSON 파싱 실패 / 'ko' 필드 누락 시 None 반환 (DB UPDATE 스킵).
+    이전 버전은 raw 첫 줄을 폴백 사용했으나 '{"ko": "...' 같은 JSON 잔재가
+    그대로 ko 컬럼에 박히는 결함이 있어 제거.
+    """
     if not raw:
         return None
     s = _strip_codefence(raw)
     try:
         parsed = json.loads(s)
-        if isinstance(parsed, dict):
-            ko = (parsed.get("ko") or "").strip()
-            if ko:
-                return ko
     except json.JSONDecodeError:
-        pass
-    # 폴백: 첫 줄
-    first = (raw.splitlines() or [""])[0].strip()
-    return first or None
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    ko = (parsed.get("ko") or "").strip()
+    return ko or None
 
 
 async def _cache_get(source_text: str, src: str, tgt: str) -> str | None:
