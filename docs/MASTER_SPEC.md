@@ -309,7 +309,7 @@ decision    = "accepted" if (image_ok AND
 | 11 | ★ | LLM 카테고리 분류 결함 — 메디큐브/dasique 등 K-뷰티가 「기타」 분류 | Phase 1 분리 이슈 |
 | 12 | 🟡 부분 | Phase 4-A 무게 추출 + 200g 룰 — 정규식 OK, 시운전 9% 매칭 (데이터 한계). cover OCR 보류 (+5~10% 만, 비용↑). 사장님 시트 수동입력 보완. PHASE4_OCR_WEIGHT.md | Phase 4 |
 | 13 | ✅ 완료 | Phase 4-B 큐텐 fit 콘텐츠 — title_jp/tags/option_name/marketing_points LLM(qwen3:14b) 생성. 시운전 5/5 OK. PHASE4_OCR_WEIGHT.md § 6. | Phase 4 |
-| 14 | ★ | Windows 작업 스케줄러 등록 | Phase 5 (명세 3.1) |
+| 14 | ✅ 완료 | Phase 5 Windows 작업 스케줄러 등록 — `automation/setup_scheduler.ps1` (Register-ScheduledTask). 매일 지정 시간 daily_workflow 자동. STATUS.md 가이드. | Phase 5 |
 
 ---
 

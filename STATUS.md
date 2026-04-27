@@ -60,14 +60,44 @@ VBA → Python(FastAPI) + React 재구축. 두 PC(메인 + Tailscale 노트북) 
 
 ```
 1) git pull origin master
-2) backend/.env 에 3줄 추가:
-   TRANSLATE_MODEL=ollama:qwen2.5:7b
+2) backend/.env 에 LLM 모델 + 임계값 추가 (.env.example 참조):
+   TRANSLATE_MODEL=ollama:qwen3:14b
+   TRANSLATE_FALLBACK_MODELS=ollama:qwen2.5:14b,ollama:qwen2.5:7b
    IMAGE_MATCH_MODEL=ollama:minicpm-v:8b
    IMAGE_MATCH_THRESHOLD=0.7
-3) ollama pull qwen2.5:7b
-   ollama pull minicpm-v:8b
+   TEXT_MATCH_THRESHOLD=0.10
+   QOO10_CONTENT_MODEL=ollama:qwen3:14b
+   BRAND_AUTO_ADD_THRESHOLD=0.85
+3) ollama pull qwen3:14b qwen2.5:14b qwen2.5:7b minicpm-v:8b
 4) start.pyw 더블클릭 → 자동 마이그레이션이 신규 컬럼/테이블 생성
 ```
+
+## 야간 자동화 — Windows 작업 스케줄러 등록 (Phase 5)
+
+매일 새벽 3시 자동 실행 등록 (사장님 PC 에서 한 번만):
+
+```powershell
+# 일반 PowerShell 창 (관리자 X 가능)
+cd C:\Users\Admin\qoo10-keyword-extractor\automation
+powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1 -Time "03:00"
+
+# 다른 시간 / 덮어쓰기
+powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1 -Time "19:00" -Force
+
+# 수동 테스트 (즉시 실행)
+Start-ScheduledTask -TaskName 'Qoo10DailyWorkflow'
+
+# 상태 / 마지막 실행 시간
+Get-ScheduledTask -TaskName 'Qoo10DailyWorkflow' | Get-ScheduledTaskInfo
+
+# 제거
+Unregister-ScheduledTask -TaskName 'Qoo10DailyWorkflow' -Confirm:$false
+```
+
+자동화 흐름 (`daily_workflow.py`):
+- STEP 1~7 매일 자동 — 키워드 수집 → 분류 → 한국 매칭 → set_count → 이미지 → 추천 빌드
+- 텔레그램 알림 (시작/완료/실패) — `automation/notify.py` 가 처리
+- 로그: `logs/automation_YYYYMMDD.log`
 
 Claude Code 메모리(`~/.claude/projects/`)는 PC별 별도 — 동기화 필요 시 수동 카피.
 
