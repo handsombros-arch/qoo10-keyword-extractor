@@ -6,11 +6,11 @@ const KEY = 'shopBenchmarkCache.v1';
 
 export interface CachedShopProduct {
   product_name: string;
-  price_jpy?: number;
-  product_url?: string;
-  cover_image_url?: string;
-  shop_rank?: number;
-  review_count?: number;
+  price_jpy: number | null;
+  product_url: string;
+  cover_image_url: string;
+  shop_rank?: number | null;
+  review_count?: number | null;
 }
 
 export interface CachedShopResult {

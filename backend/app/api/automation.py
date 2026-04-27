@@ -50,7 +50,12 @@ class AutoFilterRequest(BaseModel):
     kr_ratio_min: float = Field(0.3, description="이 값 이상만 통과 (0~1)")
     search_volume_min: int = Field(100, description="주평 검색량 최소")
     date: Optional[date_cls] = Field(None, description="None이면 오늘")
-    brand_filter: str = Field("general", pattern="^(all|general|brand)$")
+    brand_filter: str = Field("all", pattern="^(all|general|brand)$",
+                              description="all=모두 통과(기본), general=브랜드 제외, brand=브랜드만")
+    categories: Optional[list[str]] = Field(
+        None,
+        description="category_inferred 화이트리스트. None 이면 모두 통과. 예: ['03.뷰티&화장품','07.식품']",
+    )
     limit: int = Field(50, description="상위 N개만 반환")
 
 
@@ -82,10 +87,18 @@ async def auto_filter(req: AutoFilterRequest):
             "keyword_jp": jp,
             "keyword_kr": r.keyword_kr,
             "category": r.category,
+            "category_inferred": r.category_inferred or "",
+            "is_brand": bool(r.is_brand),
+            "brand_kr": r.brand_kr or "",
+            "brand_jp": r.brand_jp or "",
+            "brand_en": r.brand_en or "",
             "search_volume": sv,
             "kr_ratio": kr_ratio,
             "competition_intensity": comp,
         }
+
+    # categories 화이트리스트 정규화 (None/빈 리스트면 모두 통과)
+    cat_whitelist = set(req.categories) if req.categories else None
 
     filtered = []
     for kw in by_jp.values():
@@ -99,11 +112,19 @@ async def auto_filter(req: AutoFilterRequest):
         if kw["competition_intensity"] > req.competition_max:
             continue
 
-        brand = _is_brand_keyword(kw["keyword_jp"])
-        if req.brand_filter == "general" and brand:
+        # 브랜드 판별 먼저 (카테고리 화이트리스트보다 우선) —
+        # 브랜드 키워드는 카테고리 분류 신뢰도가 낮아 (예: laka → 홈&생활) 화이트리스트로 누락 방지.
+        is_brand = kw["is_brand"] or _is_brand_keyword(kw["keyword_jp"])
+        kw["is_brand"] = bool(is_brand)
+        if req.brand_filter == "general" and is_brand:
             continue
-        if req.brand_filter == "brand" and not brand:
+        if req.brand_filter == "brand" and not is_brand:
             continue
+
+        # 카테고리 화이트리스트 (LLM 추론 결과 기준) — 브랜드 키워드는 무시 (자동 통과).
+        if cat_whitelist is not None and not is_brand:
+            if kw["category_inferred"] not in cat_whitelist:
+                continue
 
         sv = max(kw["search_volume"], 1)
         comp = max(kw["competition_intensity"], 0.1)
@@ -170,19 +191,22 @@ async def auto_build(req: AutoBuildRequest):
                 "total_products": 0, "products_kr": 0,
             })
 
-            # 2) 큐텐 상품 통계 (판매가 후보)
+            # 2) 큐텐 상품 통계 (판매가 후보) — set_count 단가 환산.
+            # price_jpy / set_count 로 묶음 가격을 단가로 변환 → 한국 단일 가격과 동일 단위로 비교.
+            unit_price = Qoo10Product.price_jpy * 1.0 / func.nullif(Qoo10Product.set_count, 0)
             q = await session.execute(
                 select(
                     func.count(Qoo10Product.id),
-                    func.min(Qoo10Product.price_jpy),
-                    func.avg(Qoo10Product.price_jpy),
-                    func.max(Qoo10Product.price_jpy),
+                    func.min(unit_price),
+                    func.avg(unit_price),
+                    func.max(unit_price),
+                    func.avg(Qoo10Product.set_count),  # 평균 묶음 사이즈 (참고용)
                 ).where(
                     Qoo10Product.search_keyword == jp,
                     Qoo10Product.price_jpy > 0,
                 )
             )
-            qoo10_count, qoo10_min, qoo10_avg, qoo10_max = q.one()
+            qoo10_count, qoo10_min, qoo10_avg, qoo10_max, qoo10_avg_set = q.one()
             qoo10_count = qoo10_count or 0
 
             # 3) 국내 최저가 (구매가 후보)

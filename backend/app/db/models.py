@@ -15,7 +15,12 @@ class Keyword(Base):
     keyword_jp = Column(String, nullable=False)
     keyword_kr = Column(String)
     lookup_date = Column(Date, default=date.today)
-    category = Column(String)
+    category = Column(String)             # M02 트렌드 페이지에서 수집한 큐텐 카테고리 그룹
+    category_inferred = Column(String)    # LLM 추론 카테고리 (03.뷰티&화장품 등 6분류 + 기타)
+    is_brand = Column(Integer, default=0) # 0=일반, 1=브랜드 (LLM + whitelist 판별)
+    brand_kr = Column(String)
+    brand_jp = Column(String)
+    brand_en = Column(String)
     classification = Column(String)  # 원본/유사/연관
     rank = Column(Integer)
     index_key = Column(String)
@@ -105,6 +110,12 @@ class Qoo10Product(Base):
     cover_image_url = Column(String)
     product_url = Column(String)
     lookup_date = Column(Date, default=date.today)
+    set_count = Column(Integer, default=1)         # 묶음 개수 (정규식+LLM 추출)
+    set_count_source = Column(String)               # "regex" / "llm" / "default"
+    set_count_vision = Column(Integer)              # 비전이 본 패키지 수 (200%+ 마진 케이스만)
+    set_count_vision_confidence = Column(Float)
+    set_count_verified_at = Column(DateTime)
+    product_name_ko = Column(String)                # 일본어 → 한국어 번역 (번역 캐시 활용)
 
 
 class DomesticProduct(Base):
@@ -121,6 +132,9 @@ class DomesticProduct(Base):
     cover_image_url = Column(String)
     product_url = Column(String)
     lookup_date = Column(Date, default=date.today)
+    image_local_path = Column(String)        # image/{date}/{kr_name}/cover.jpg
+    image_score_overall = Column(Float)       # 정렬용 종합 점수
+    image_score_json = Column(Text)           # 4항목 raw 점수 JSON
 
 
 class BestsellerItem(Base):
@@ -148,3 +162,67 @@ class UserData(Base):
     key = Column(String, primary_key=True)
     data = Column(Text)  # JSON 문자열
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+class TranslationCache(Base):
+    """번역 캐시 (jp → ko 등 일반).
+
+    같은 원문이 여러 lookup_date 에 반복 등장하므로 1회 번역 후 재사용.
+    PK 는 (source_text, source_lang, target_lang) 복합 키 — 향후 다른 언어쌍 확장 대비.
+    """
+    __tablename__ = "translation_cache"
+
+    source_text = Column(String, primary_key=True)
+    source_lang = Column(String, primary_key=True, default="ja")
+    target_lang = Column(String, primary_key=True, default="ko")
+    translated = Column(Text, nullable=False)
+    model = Column(String)              # "ollama:qwen2.5:7b" 등
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class DomesticMatchCandidate(Base):
+    """큐텐 ↔ 한국 상품 매칭 후보 (3-1, 3-2 결과).
+
+    같은 (qoo10_product_id, domestic_product_id) 쌍 중복 방지.
+    한 큐텐 상품에 여러 후보가 있을 수 있으며 score 내림차순 정렬해 사용.
+
+    source_match_kind:
+      - "keyword": 큐텐 search_keyword(jp→kr 번역)으로 검색된 한국 상품 (기존 흐름)
+      - "translated_name": 번역된 큐텐 product_name_ko 로 검색된 결과
+      - "brand_expanded": 브랜드 키워드 확장 (3-2)에서 발견된 결과
+
+    decision: "pending" | "accepted" | "rejected" — 임계값 + 향후 사용자 검수
+    """
+    __tablename__ = "domestic_match_candidates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    qoo10_product_id = Column(Integer, ForeignKey("qoo10_products.id"), index=True)
+    domestic_product_id = Column(Integer, ForeignKey("domestic_products.id"), index=True)
+    source_match_kind = Column(String)
+    name_score = Column(Float)                  # 텍스트 유사도 (선택)
+    image_score = Column(Float)                 # 비전 유사도 0~1
+    image_match_note = Column(Text)             # 비전 사유 텍스트
+    decision = Column(String, default="pending")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Brand(Base):
+    """K-뷰티/식품 브랜드 화이트리스트.
+
+    LLM 호출 절감 + 의역 방지용. brand.py 의 1차 매칭 소스.
+    두 PC가 같은 Supabase 를 보므로 자동 추가가 즉시 양쪽에서 가시화됨.
+
+    source:
+      - "seed": 초기 시드 (scripts/seed_brands.py)
+      - "auto": LLM 판별 후 confidence > BRAND_AUTO_ADD_THRESHOLD (기본 0.9)
+      - "manual": 셀러가 직접 추가
+    """
+    __tablename__ = "brands"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    kr = Column(String, nullable=False, unique=True, index=True)
+    jp = Column(String, default="")
+    en = Column(String, default="")
+    source = Column(String, default="auto")
+    confidence = Column(Float, default=1.0)
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -60,6 +60,22 @@ FILTER_VOLUME_MIN = int(_env("AUTO_FILTER_VOLUME_MIN", "100"))
 PRODUCTS_PER_KEYWORD = int(_env("PRODUCTS_PER_KEYWORD", "5"))
 MIN_MARGIN_RATE = float(_env("MIN_MARGIN_RATE", "0.10"))
 
+# LLM 카테고리 분류 토글 (1=ON, 0=OFF). best-effort — 실패해도 다음 단계 진행.
+ENABLE_LLM_CATEGORY = _env("ENABLE_LLM_CATEGORY", "1") == "1"
+
+# set_count 추출 토글 (1=ON, 0=OFF)
+ENABLE_SET_COUNT_EXTRACTION = _env("ENABLE_SET_COUNT_EXTRACTION", "1") == "1"
+
+# 한국 상품 이미지 다운로드+비전 토글 (1=ON, 0=OFF)
+ENABLE_DOMESTIC_IMAGES = _env("ENABLE_DOMESTIC_IMAGES", "1") == "1"
+
+# set_count 비전 검증 토글 + 마진 임계값 (5단계)
+ENABLE_SET_COUNT_VERIFY = _env("ENABLE_SET_COUNT_VERIFY", "1") == "1"
+SET_COUNT_VERIFY_MIN_MARGIN = float(_env("SET_COUNT_VERIFY_MIN_MARGIN", "2.0"))
+
+# 자동 필터 카테고리 화이트리스트 (콤마구분). 비어있으면 UserData 우선 → 그것도 없으면 모두 통과.
+AUTO_FILTER_CATEGORIES_ENV = _env("AUTO_FILTER_CATEGORIES", "")
+
 
 DRY_RUN = False
 log: logging.Logger = logging.getLogger("automation")
@@ -230,16 +246,83 @@ async def step_collect_trend(client: httpx.AsyncClient) -> None:
     await wait_task(client, task_id, label="트렌드 수집")
 
 
+async def step_classify_categories(
+    client: httpx.AsyncClient, target_date: date
+) -> dict:
+    """STEP 3.5 — LLM 카테고리 분류.
+
+    best-effort: 실패하면 경고 로그 + 다음 단계 진행 (StepFailed raise 안 함).
+    같은 키워드 중복은 API 가 unique 단위로 알아서 묶음.
+    """
+    log.info("=== STEP 3.5: 카테고리 분류 (LLM) ===")
+    if not ENABLE_LLM_CATEGORY:
+        log.info("ENABLE_LLM_CATEGORY=0 — 스킵")
+        return {"skipped": True}
+
+    try:
+        result = await _post(client, "/api/keywords/classify-categories", {
+            "date": str(target_date),
+        })
+    except Exception as e:
+        log.warning(f"카테고리 분류 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates = result.get("candidates", 0)
+    if not task_id:
+        log.info(f"카테고리 분류 대상 0개 (이미 모두 분류됨)")
+        return {"candidates": 0}
+
+    log.info(f"카테고리 분류 task_id={task_id} (대상 {candidates}개 unique 키워드)")
+    try:
+        await wait_task(client, task_id, label="카테고리 분류")
+        return {"task_id": task_id, "candidates": candidates}
+    except Exception as e:
+        log.warning(f"카테고리 분류 실패 (best-effort, 다음 단계 진행): {e}")
+        return {"error": str(e), "candidates": candidates}
+
+
+async def _resolve_categories(client: httpx.AsyncClient) -> list[str] | None:
+    """카테고리 화이트리스트 우선순위: UserData → .env → None(전체).
+
+    UserData 응답: {"data": {"value": ["03.뷰티&화장품", ...]}, ...}
+    """
+    # 1) UserData 시도
+    try:
+        d = await _get(client, "/api/user-data/auto_filter_categories", timeout=10)
+        payload = d.get("data") or {}
+        if isinstance(payload, dict):
+            v = payload.get("value")
+            if isinstance(v, list) and v:
+                return [str(x).strip() for x in v if str(x).strip()]
+    except Exception as e:
+        log.warning(f"UserData auto_filter_categories 조회 실패 (env 폴백): {e}")
+    # 2) env 폴백
+    if AUTO_FILTER_CATEGORIES_ENV:
+        return [c.strip() for c in AUTO_FILTER_CATEGORIES_ENV.split(",") if c.strip()]
+    # 3) 미설정 → 전체 통과
+    return None
+
+
 async def step_auto_filter(client: httpx.AsyncClient, target_date: date) -> list[dict]:
     log.info("=== STEP 4: 자동 필터 ===")
+    categories = await _resolve_categories(client)
+    if categories:
+        log.info(f"카테고리 화이트리스트: {categories}")
+    else:
+        log.info("카테고리 화이트리스트: (미설정 — 전체 통과)")
 
     async def _call() -> dict:
-        return await _post(client, "/api/keywords/auto-filter", {
+        body = {
             "competition_max": FILTER_COMPETITION_MAX,
             "kr_ratio_min": FILTER_KR_RATIO_MIN,
             "search_volume_min": FILTER_VOLUME_MIN,
             "date": str(target_date),
-        })
+            "brand_filter": "all",  # 사용자 결정 2c — 표시만, 통과
+        }
+        if categories:
+            body["categories"] = categories
+        return await _post(client, "/api/keywords/auto-filter", body)
 
     result = await with_retry(_call, label="자동 필터")
 
@@ -279,6 +362,124 @@ async def step_collect_domestic(
     return len(keywords_jp)
 
 
+async def step_process_domestic_images(
+    client: httpx.AsyncClient, target_date: date, candidates: list[dict],
+) -> dict:
+    """STEP 5.7 — 자동 필터 통과 키워드의 한국 상품 이미지 다운로드+비전+폴더링.
+
+    best-effort: 실패해도 다음 단계 진행.
+    """
+    log.info("=== STEP 5.7: 한국 상품 이미지 처리 ===")
+    if not ENABLE_DOMESTIC_IMAGES:
+        log.info("ENABLE_DOMESTIC_IMAGES=0 — 스킵")
+        return {"skipped": True}
+
+    keywords_jp = [c["keyword_jp"] for c in candidates if c.get("keyword_jp")]
+    if not keywords_jp:
+        log.info("대상 키워드 0개 — 스킵")
+        return {"candidates": 0}
+
+    try:
+        result = await _post(client, "/api/products/domestic/process-images", {
+            "date": str(target_date),
+            "keywords_jp": keywords_jp,
+        })
+    except Exception as e:
+        log.warning(f"이미지 처리 시작 실패 (best-effort): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates_n = result.get("candidates", 0)
+    if not task_id:
+        log.info("이미지 처리 대상 0개")
+        return {"candidates": 0}
+
+    log.info(f"이미지 처리 task_id={task_id} (대상 {candidates_n}장)")
+    try:
+        await wait_task(client, task_id, label="이미지 처리")
+        return {"task_id": task_id, "candidates": candidates_n}
+    except Exception as e:
+        log.warning(f"이미지 처리 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates_n}
+
+
+async def step_extract_set_counts(
+    client: httpx.AsyncClient, target_date: date
+) -> dict:
+    """STEP 5.5 — 큐텐 상품 set_count 추출 (정규식 + LLM 폴백).
+
+    best-effort: 실패해도 다음 단계 진행.
+    """
+    log.info("=== STEP 5.5: set_count 추출 ===")
+    if not ENABLE_SET_COUNT_EXTRACTION:
+        log.info("ENABLE_SET_COUNT_EXTRACTION=0 — 스킵")
+        return {"skipped": True}
+
+    try:
+        result = await _post(client, "/api/products/qoo10/extract-set-counts", {
+            "date": str(target_date),
+        })
+    except Exception as e:
+        log.warning(f"set_count 추출 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates = result.get("candidates", 0)
+    if not task_id:
+        log.info("set_count 대상 0개 (이미 모두 처리됨)")
+        return {"candidates": 0}
+
+    log.info(f"set_count 추출 task_id={task_id} (대상 {candidates}개 unique 상품명)")
+    try:
+        await wait_task(client, task_id, label="set_count 추출")
+        return {"task_id": task_id, "candidates": candidates}
+    except Exception as e:
+        log.warning(f"set_count 추출 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates}
+
+
+async def step_verify_set_counts(
+    client: httpx.AsyncClient, target_date: date, candidates: list[dict],
+) -> dict:
+    """STEP 6.5 — 마진 N%+ 큐텐 상품 set_count 비전 검증.
+
+    best-effort: 실패해도 다음 단계 진행.
+    """
+    log.info(f"=== STEP 6.5: set_count 비전 검증 (마진≥{SET_COUNT_VERIFY_MIN_MARGIN*100:.0f}%) ===")
+    if not ENABLE_SET_COUNT_VERIFY:
+        log.info("ENABLE_SET_COUNT_VERIFY=0 — 스킵")
+        return {"skipped": True}
+
+    keywords_jp = [c["keyword_jp"] for c in candidates if c.get("keyword_jp")]
+    if not keywords_jp:
+        log.info("대상 키워드 0개 — 스킵")
+        return {"candidates": 0}
+
+    try:
+        result = await _post(client, "/api/products/qoo10/verify-set-counts", {
+            "date": str(target_date),
+            "min_margin_rate": SET_COUNT_VERIFY_MIN_MARGIN,
+            "keywords_jp": keywords_jp,
+        })
+    except Exception as e:
+        log.warning(f"비전 검증 시작 실패 (best-effort): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates_n = result.get("candidates", 0)
+    if not task_id:
+        log.info("비전 검증 대상 0개")
+        return {"candidates": 0, "scanned": result.get("scanned", 0)}
+
+    log.info(f"비전 검증 task_id={task_id} (대상 {candidates_n}장 / 스캔 {result.get('scanned', 0)})")
+    try:
+        await wait_task(client, task_id, label="set_count 비전 검증")
+        return {"task_id": task_id, "candidates": candidates_n}
+    except Exception as e:
+        log.warning(f"비전 검증 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates_n}
+
+
 async def step_auto_build(
     client: httpx.AsyncClient, candidates: list[dict], target_date: date
 ) -> dict:
@@ -314,19 +515,60 @@ def _format_summary(
     started: datetime,
     ended: datetime,
     trend_status: str,
+    classify_result: dict,
     filtered_count: int,
     domestic_count: int,
+    image_result: dict,
+    set_count_result: dict,
     build_result: dict,
+    verify_result: dict,
 ) -> str:
     elapsed = ended - started
     elapsed_str = str(elapsed).split(".", 1)[0]
+
+    if classify_result.get("skipped"):
+        classify_line = "스킵 (ENABLE_LLM_CATEGORY=0)"
+    elif classify_result.get("error"):
+        classify_line = f"실패: {classify_result['error'][:60]}"
+    else:
+        n = classify_result.get("candidates", 0)
+        classify_line = f"{n}개 unique 키워드 분류" if n else "대상 0개"
+
+    if set_count_result.get("skipped"):
+        sc_line = "스킵 (ENABLE_SET_COUNT_EXTRACTION=0)"
+    elif set_count_result.get("error"):
+        sc_line = f"실패: {set_count_result['error'][:60]}"
+    else:
+        n = set_count_result.get("candidates", 0)
+        sc_line = f"{n}개 unique 상품명 처리" if n else "대상 0개"
+
+    if image_result.get("skipped"):
+        img_line = "스킵 (ENABLE_DOMESTIC_IMAGES=0)"
+    elif image_result.get("error"):
+        img_line = f"실패: {image_result['error'][:60]}"
+    else:
+        n = image_result.get("candidates", 0)
+        img_line = f"{n}장 다운로드+평가" if n else "대상 0개"
+
+    if verify_result.get("skipped"):
+        vf_line = "스킵 (ENABLE_SET_COUNT_VERIFY=0)"
+    elif verify_result.get("error"):
+        vf_line = f"실패: {verify_result['error'][:60]}"
+    else:
+        n = verify_result.get("candidates", 0)
+        vf_line = f"{n}장 비전 검증" if n else "마진 임계값 도달 0개"
+
     return (
         f"야간 자동화 완료\n"
         f"시작: {started.strftime('%Y-%m-%d %H:%M')}\n"
         f"종료: {ended.strftime('%H:%M')} (소요 {elapsed_str})\n\n"
         f"트렌드 수집: {trend_status}\n"
+        f"카테고리 분류: {classify_line}\n"
         f"필터 통과 키워드: {filtered_count}개\n"
         f"한국상품 수집 키워드: {domestic_count}개\n"
+        f"이미지 처리: {img_line}\n"
+        f"set_count 추출: {sc_line}\n"
+        f"set_count 비전 검증: {vf_line}\n"
         f"마진 통과 후보: {build_result.get('count', 0)}개 "
         f"(전체 {build_result.get('total_candidates', 0)})\n"
         f"저장 키: {build_result.get('storage_key', '')}\n\n"
@@ -365,6 +607,8 @@ async def main_async() -> int:
                 await step_collect_trend(client)
                 trend_status = "수집 완료"
 
+            classify_result = await step_classify_categories(client, target_date)
+
             candidates = await step_auto_filter(client, target_date)
 
             if not candidates:
@@ -379,13 +623,17 @@ async def main_async() -> int:
                 return 0
 
             domestic_kw_count = await step_collect_domestic(client, candidates)
+            image_result = await step_process_domestic_images(client, target_date, candidates)
+            set_count_result = await step_extract_set_counts(client, target_date)
             build_result = await step_auto_build(client, candidates, target_date)
+            verify_result = await step_verify_set_counts(client, target_date, candidates)
 
             ended = datetime.now()
             await notify.send(
                 _format_summary(
-                    started, ended, trend_status,
-                    len(candidates), domestic_kw_count, build_result,
+                    started, ended, trend_status, classify_result,
+                    len(candidates), domestic_kw_count, image_result,
+                    set_count_result, build_result, verify_result,
                 ),
                 level="ok",
             )

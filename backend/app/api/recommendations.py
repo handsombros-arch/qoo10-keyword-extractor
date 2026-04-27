@@ -468,16 +468,19 @@ async def report(req: ReportRequest, session: AsyncSession = Depends(get_session
                             "total_products": 0, "products_kr": 0,
                             "competition_intensity": 0})
 
-        # 2) 큐텐 상품 통계 (판매가 후보)
+        # 2) 큐텐 상품 통계 (판매가 후보) — set_count 단가 환산.
+        # price_jpy / set_count → 한국 단일 가격과 동일 단위로 비교.
+        unit_price = Qoo10Product.price_jpy * 1.0 / func.nullif(Qoo10Product.set_count, 0)
         q = await session.execute(
             select(
                 func.count(Qoo10Product.id),
-                func.min(Qoo10Product.price_jpy),
-                func.avg(Qoo10Product.price_jpy),
-                func.max(Qoo10Product.price_jpy),
+                func.min(unit_price),
+                func.avg(unit_price),
+                func.max(unit_price),
+                func.avg(Qoo10Product.set_count),  # 참고용 평균 묶음
             ).where(Qoo10Product.search_keyword == jp, Qoo10Product.price_jpy > 0)
         )
-        qoo10_count, qoo10_min_jpy, qoo10_avg_jpy, qoo10_max_jpy = q.one()
+        qoo10_count, qoo10_min_jpy, qoo10_avg_jpy, qoo10_max_jpy, qoo10_avg_set = q.one()
         qoo10_count = qoo10_count or 0
 
         # 3) 국내 최저가 (구매가 후보)
@@ -583,3 +586,241 @@ async def report(req: ReportRequest, session: AsyncSession = Depends(get_session
     ]
     items.sort(key=lambda x: x["score"], reverse=True)
     return {"items": items[: req.limit], "total": len(items)}
+
+
+# ─── 큐텐 ↔ 한국 cover 이미지 1:1 매칭 (3-1) ─────────
+
+
+@router.post("/match-images")
+async def match_qoo10_to_domestic_by_image(body: dict | None = None):
+    """큐텐 cover ↔ 한국 cover 이미지 비전 1:1 비교 (백그라운드).
+
+    body:
+      date:               YYYY-MM-DD (기본 오늘)
+      keywords_jp:        list[str]  (선택, 큐텐 search_keyword 한정)
+      per_qoo10_top_n:    int        (큐텐 1개당 비교할 한국 후보 수, 기본 3)
+      threshold:          float      (accepted 임계값, 기본 IMAGE_MATCH_THRESHOLD env → 0.7)
+      limit:              int        (전체 비교 호출 상한)
+
+    동작:
+      - lookup_date 의 큐텐 상품 (cover_image_url 有) 대상
+      - 같은 search_keyword 의 한국 상품 (image_local_path 우선, cover_image_url 폴백)
+        - image_score_overall DESC, price_krw ASC 정렬 → top N
+      - (qoo10_id, domestic_id) 중복은 DomesticMatchCandidate 중복 방지
+      - 비전 score ≥ threshold 면 decision="accepted", 아니면 "rejected"
+    """
+    import asyncio as _asyncio
+    import os as _os
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel
+    from app.db.models import (
+        Qoo10Product as _Q, DomesticProduct as _DP, Keyword as _K,
+        DomesticMatchCandidate as _DMC,
+    )
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    keywords_jp = body.get("keywords_jp") or []
+    top_n = int(body.get("per_qoo10_top_n", 3))
+    raw_thr = body.get("threshold")
+    if raw_thr is not None:
+        threshold = float(raw_thr)
+    else:
+        try:
+            threshold = float(_os.getenv("IMAGE_MATCH_THRESHOLD", "0.7"))
+        except ValueError:
+            threshold = 0.7
+    raw_limit = body.get("limit")
+    overall_limit = int(raw_limit) if raw_limit else None
+
+    # search_keyword 화이트리스트 (jp → kr 매핑)
+    search_jp_filter: list[str] | None = list(keywords_jp) if keywords_jp else None
+
+    # 1) 큐텐 후보
+    async with async_session() as session:
+        q_stmt = (
+            _sel(_Q.id, _Q.product_name, _Q.cover_image_url, _Q.search_keyword)
+            .where(_Q.lookup_date == target_date)
+            .where(_Q.cover_image_url.is_not(None))
+        )
+        if search_jp_filter:
+            q_stmt = q_stmt.where(_Q.search_keyword.in_(search_jp_filter))
+        q_rows = (await session.execute(q_stmt)).all()
+
+        # 2) jp → kr 매핑
+        unique_jp = sorted({r[3] for r in q_rows if r[3]})
+        kr_map: dict[str, str] = {}
+        if unique_jp:
+            kr_rows = await session.execute(
+                _sel(_K.keyword_jp, _K.keyword_kr).where(_K.keyword_jp.in_(unique_jp))
+                .where(_K.keyword_kr.is_not(None))
+            )
+            for jp, kr in kr_rows.all():
+                if jp and kr and jp not in kr_map:
+                    kr_map[jp] = kr
+
+        # 3) 한국 후보 — 같은 search_keyword(kr) 의 top N
+        unique_kr = sorted(set(kr_map.values()))
+        kr_to_candidates: dict[str, list[tuple[int, str | None, str | None]]] = {}
+        if unique_kr:
+            d_stmt = (
+                _sel(_DP.id, _DP.search_keyword, _DP.image_local_path,
+                     _DP.cover_image_url, _DP.image_score_overall, _DP.price_krw)
+                .where(_DP.search_keyword.in_(unique_kr))
+                .where(_DP.lookup_date == target_date)
+            )
+            d_rows = (await session.execute(d_stmt)).all()
+            tmp: dict[str, list] = {}
+            for did, dkw, lp, cu, sc, pk in d_rows:
+                if not dkw:
+                    continue
+                if not (lp or cu):
+                    continue
+                tmp.setdefault(dkw, []).append((did, lp, cu, sc or 0.0, pk or 10**9))
+            for dkw, lst in tmp.items():
+                lst.sort(key=lambda r: (-r[3], r[4]))  # image_score DESC, price ASC
+                kr_to_candidates[dkw] = [(did, lp, cu) for did, lp, cu, _, _ in lst[:top_n]]
+
+        # 4) 이미 비교된 (qoo10_id, domestic_id) 중복 방지
+        existing_pairs: set[tuple[int, int]] = set()
+        ex_rows = await session.execute(
+            _sel(_DMC.qoo10_product_id, _DMC.domestic_product_id)
+        )
+        for qid, did in ex_rows.all():
+            if qid is not None and did is not None:
+                existing_pairs.add((qid, did))
+
+    # 5) 비교 작업 리스트 만들기
+    pairs: list[dict] = []
+    for qid, qname, qurl, qjp in q_rows:
+        kw_kr = kr_map.get(qjp or "")
+        if not kw_kr:
+            continue
+        for did, dlp, dcu in kr_to_candidates.get(kw_kr, []):
+            if (qid, did) in existing_pairs:
+                continue
+            pairs.append({
+                "qid": qid, "qname": qname, "qurl": qurl,
+                "did": did, "dlp": dlp, "dcu": dcu,
+            })
+            if overall_limit and len(pairs) >= overall_limit:
+                break
+        if overall_limit and len(pairs) >= overall_limit:
+            break
+
+    if not pairs:
+        return {
+            "task_id": None, "candidates": 0, "scanned_qoo10": len(q_rows),
+            "message": f"{target_date}: 비교할 후보 0건",
+        }
+
+    task_id = task_manager.create_task(
+        name=f"이미지 매칭 ({target_date}, ≥{threshold:.2f})",
+        total=len(pairs),
+    )
+    _asyncio.create_task(_run_match_images(task_id, pairs, threshold))
+    return {
+        "task_id": task_id, "candidates": len(pairs),
+        "scanned_qoo10": len(q_rows), "threshold": threshold,
+        "date": str(target_date),
+    }
+
+
+async def _run_match_images(task_id: str, pairs: list[dict], threshold: float) -> None:
+    """백그라운드 — 각 (qoo10, domestic) 쌍 cover 비교 + DomesticMatchCandidate INSERT."""
+    from pathlib import Path as _P
+    from app.db.models import DomesticMatchCandidate as _DMC
+    from app.services.domestic_image_pipeline import download_to_temp
+    from app.services.llm.image_match import compare_two_images_async
+
+    task_manager.start_task(task_id)
+    accepted = rejected = failed = 0
+
+    try:
+        for idx, p in enumerate(pairs, 1):
+            qid, did = p["qid"], p["did"]
+
+            # 큐텐 cover — URL 만 있어 매번 다운로드
+            q_tmp = await download_to_temp(p["qurl"]) if p["qurl"] else None
+            # 한국 cover — image_local_path 있으면 그거, 없으면 URL 다운
+            d_tmp = None
+            d_path = p["dlp"]
+            if not d_path and p["dcu"]:
+                d_tmp = await download_to_temp(p["dcu"])
+                d_path = d_tmp
+
+            if not q_tmp or not d_path:
+                failed += 1
+                if q_tmp:
+                    try: _P(q_tmp).unlink(missing_ok=True)
+                    except Exception: pass
+                if d_tmp:
+                    try: _P(d_tmp).unlink(missing_ok=True)
+                    except Exception: pass
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(pairs)}] 다운로드 실패 q={qid} d={did}",
+                )
+                continue
+
+            try:
+                res = await compare_two_images_async(q_tmp, d_path)
+                score = float(res.get("score") or 0.0)
+                note = str(res.get("note") or "")
+                ok = bool(res.get("ok"))
+            except Exception as e:
+                failed += 1
+                score = 0.0; note = f"ERR: {e}"; ok = False
+            finally:
+                try: _P(q_tmp).unlink(missing_ok=True)
+                except Exception: pass
+                if d_tmp:
+                    try: _P(d_tmp).unlink(missing_ok=True)
+                    except Exception: pass
+
+            decision = "accepted" if (ok and score >= threshold) else "rejected"
+            if decision == "accepted":
+                accepted += 1
+            else:
+                rejected += 1
+
+            try:
+                async with async_session() as session:
+                    session.add(_DMC(
+                        qoo10_product_id=qid,
+                        domestic_product_id=did,
+                        source_match_kind="keyword",
+                        image_score=score,
+                        image_match_note=note,
+                        decision=decision,
+                    ))
+                    await session.commit()
+            except Exception as e:
+                failed += 1
+
+            task_manager.update_progress(
+                task_id, increment=1,
+                message=(
+                    f"[{idx}/{len(pairs)}] {decision[:3]} score={score:.2f} "
+                    f"q={qid} d={did} {note[:25]}"
+                ),
+            )
+
+        task_manager.complete_task(
+            task_id,
+            message=(
+                f"완료 — accepted {accepted}, rejected {rejected}, failed {failed} "
+                f"(쌍 {len(pairs)})"
+            ),
+        )
+    except Exception as e:
+        task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        traceback.print_exc()

@@ -15,7 +15,13 @@ from app.db.models import UserData
 
 router = APIRouter(prefix="/api/user-data", tags=["user-data"])
 
-ALLOWED_KEYS = {"product_sheet", "interest_keywords", "shop_cache"}
+ALLOWED_KEYS = {
+    "product_sheet",
+    "interest_keywords",
+    "shop_cache",
+    "brand_auto_add_threshold",  # /settings 에서 조정. payload: {"value": 0.0~1.0}
+    "auto_filter_categories",     # /settings 카테고리 화이트리스트. payload: {"value": ["03.뷰티&화장품", ...]}
+}
 
 
 class PutRequest(BaseModel):

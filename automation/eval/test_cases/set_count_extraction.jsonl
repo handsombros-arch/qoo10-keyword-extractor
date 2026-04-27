@@ -1,0 +1,40 @@
+// 세트 개수 추출 30개. 짧은 형식: {"input": "<상품명>", "expected": "<숫자>"}
+// LLM은 숫자만 답하도록 프롬프트가 강제. eval_runner는 부분 매칭.
+
+// === 한국어 N+단위 (10) ===
+{"input": "아누아 어성초 토너 3개입", "expected": "3"}
+{"input": "코스알엑스 스네일 에센스 5개세트", "expected": "5"}
+{"input": "메디힐 NMF 마스크팩 10매입", "expected": "10"}
+{"input": "농심 신라면 5봉지", "expected": "5"}
+{"input": "비비고 만두 4팩", "expected": "4"}
+{"input": "롬앤 쥬시 틴트 2개 묶음", "expected": "2"}
+{"input": "닥터자르트 시카페어 크림 2개세트", "expected": "2"}
+{"input": "바프 허니버터아몬드 3봉 세트", "expected": "3"}
+{"input": "토리든 다이브인 세럼 2입", "expected": "2"}
+{"input": "마이프로틴 임팩트웨이 1kg 6팩 세트", "expected": "6"}
+
+// === 일본어 (10) ===
+{"input": "アヌア ドクダミ トナー 250ml × 5本", "expected": "5"}
+{"input": "COSRX マスクシート 10枚入り", "expected": "10"}
+{"input": "メディヒール マスク 10枚パック", "expected": "10"}
+{"input": "ラネージュ リップマスク 3個セット", "expected": "3"}
+{"input": "農心 辛ラーメン 5包入り", "expected": "5"}
+{"input": "ビビゴ 餃子 4袋セット", "expected": "4"}
+{"input": "イニスフリー グリーンティー セラム × 2", "expected": "2"}
+{"input": "ペリペラ ティント 2本セット", "expected": "2"}
+{"input": "オットギ チャパゲティ 8個入り", "expected": "8"}
+{"input": "高麗人参 タブレット 60錠 3個セット", "expected": "3"}
+
+// === 영어/혼합 (5) ===
+{"input": "COSRX Snail 96 Essence Pack of 3", "expected": "3"}
+{"input": "Anua Heartleaf Toner 5x", "expected": "5"}
+{"input": "Beplain Cleanser Bundle of 2", "expected": "2"}
+{"input": "Medicube Ageless Booster Set 4pcs", "expected": "4"}
+{"input": "Skin1004 Centella Toner 2 pack", "expected": "2"}
+
+// === 단일/엣지 (5) ===
+{"input": "아누아 어성초 토너 250ml", "expected": "1"}
+{"input": "메디큐브 에이지알 부스터 프로", "expected": "1"}
+{"input": "기획팩 한정판", "expected": "1"}
+{"input": "롬앤 쥬시 틴트 1+1 행사", "expected": "2"}
+{"input": "코스알엑스 마스크팩 2+1 이벤트", "expected": "3"}

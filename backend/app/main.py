@@ -28,6 +28,9 @@ async def lifespan(app: FastAPI):
     # Startup: DB 테이블 생성 + 브라우저 쿠키 기반 로그인 상태 복원
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 신규 컬럼 idempotent 마이그레이션
+        # (create_all 은 신규 테이블만 만들고 기존 테이블의 컬럼은 추가 안 함)
+        await _migrate_add_columns(conn)
     # 쿠키 파일이 있으면 로그인 유지된 것으로 낙관적 판정 (검증은 첫 사용 시)
     try:
         if settings.COOKIES_PATH.exists():
@@ -41,6 +44,50 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown: 브라우저 종료 (명시적 종료, 로그인 플래그 리셋)
     await browser_manager.close()
+
+
+async def _migrate_add_columns(conn) -> None:
+    """기존 테이블에 신규 컬럼 추가 (idempotent).
+
+    Postgres: ADD COLUMN IF NOT EXISTS
+    SQLite:   PRAGMA 로 컬럼 존재 체크 후 ADD
+    실패는 무시 (이미 존재 등 정상 시나리오 포함).
+    """
+    is_postgres = settings.DATABASE_URL.startswith("postgresql")
+    new_columns = [
+        # (table, column, type)
+        ("keywords", "category_inferred", "TEXT"),
+        ("keywords", "is_brand", "INTEGER DEFAULT 0"),
+        ("keywords", "brand_kr", "TEXT"),
+        ("keywords", "brand_jp", "TEXT"),
+        ("keywords", "brand_en", "TEXT"),
+        ("qoo10_products", "set_count", "INTEGER DEFAULT 1"),
+        ("qoo10_products", "set_count_source", "TEXT"),
+        ("qoo10_products", "set_count_vision", "INTEGER"),
+        ("qoo10_products", "set_count_vision_confidence", "REAL"),
+        ("qoo10_products", "set_count_verified_at", "TIMESTAMP"),
+        ("qoo10_products", "product_name_ko", "TEXT"),
+        ("domestic_products", "image_local_path", "TEXT"),
+        ("domestic_products", "image_score_overall", "REAL"),
+        ("domestic_products", "image_score_json", "TEXT"),
+    ]
+    for table, col, col_type in new_columns:
+        try:
+            if is_postgres:
+                await conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                )
+            else:
+                # SQLite — PRAGMA 로 컬럼 존재 확인
+                res = await conn.exec_driver_sql(f"PRAGMA table_info({table})")
+                cols = [row[1] for row in res.fetchall()]
+                if col not in cols:
+                    await conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
+                    )
+        except Exception:
+            # 이미 있거나 권한 문제 — 다음 시작에 지장 없음
+            pass
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)

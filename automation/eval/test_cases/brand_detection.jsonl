@@ -1,0 +1,45 @@
+// 브랜드 판별 30개. 짧은 형식: {"input": "<키워드>", "expected": "<JSON 부분>"}
+// expected 는 LLM JSON 응답에서 부분 매칭 (eval_runner 의 in 매칭).
+// 가장 신뢰성 있는 표지인 "is_brand": true / "is_brand": false 로만 평가.
+
+// === 명백한 브랜드 — true (10) ===
+{"input": "아누아 어성초 토너", "expected": "\"is_brand\": true"}
+{"input": "메디큐브 에이지알 부스터", "expected": "\"is_brand\": true"}
+{"input": "닥터자르트 시카페어", "expected": "\"is_brand\": true"}
+{"input": "라네즈 워터 슬리핑 마스크", "expected": "\"is_brand\": true"}
+{"input": "코스알엑스 스네일 에센스", "expected": "\"is_brand\": true"}
+{"input": "토리든 다이브인 세럼", "expected": "\"is_brand\": true"}
+{"input": "농심 신라면", "expected": "\"is_brand\": true"}
+{"input": "비비고 만두", "expected": "\"is_brand\": true"}
+{"input": "고려은단 비타민C", "expected": "\"is_brand\": true"}
+{"input": "마이프로틴 임팩트 웨이", "expected": "\"is_brand\": true"}
+
+// === 명백한 일반명사 — false (10) ===
+{"input": "수분크림 추천", "expected": "\"is_brand\": false"}
+{"input": "토너", "expected": "\"is_brand\": false"}
+{"input": "다이어트 보조제", "expected": "\"is_brand\": false"}
+{"input": "건강식품", "expected": "\"is_brand\": false"}
+{"input": "비타민D", "expected": "\"is_brand\": false"}
+{"input": "마스크팩 50매", "expected": "\"is_brand\": false"}
+{"input": "선크림 추천", "expected": "\"is_brand\": false"}
+{"input": "립밤", "expected": "\"is_brand\": false"}
+{"input": "콜라겐 젤리", "expected": "\"is_brand\": false"}
+{"input": "프로틴 쉐이크", "expected": "\"is_brand\": false"}
+
+// === 엣지 (10) ===
+// 일본어 표기 브랜드
+{"input": "アヌア ドクダミ トナー", "expected": "\"is_brand\": true"}
+{"input": "メディキューブ ブースター", "expected": "\"is_brand\": true"}
+// 영어 표기 브랜드
+{"input": "Anua Heartleaf Toner", "expected": "\"is_brand\": true"}
+{"input": "COSRX Snail 96 Essence", "expected": "\"is_brand\": true"}
+// 화이트리스트 미등록 신규 브랜드 (자동 추가 동작 확인)
+{"input": "구달 청귤 비타C 잔티도트 잡티 세럼", "expected": "\"is_brand\": true"}
+{"input": "스킨1004 마다가스카르 센텔라 토너", "expected": "\"is_brand\": true"}
+// 모호 케이스 — 일반명사처럼 보이지만 브랜드
+{"input": "롬앤 쥬시 래스팅 틴트", "expected": "\"is_brand\": true"}
+// 한국 일반 명사 — false
+{"input": "녹두 클렌저", "expected": "\"is_brand\": false"}
+{"input": "어성초 화장수", "expected": "\"is_brand\": false"}
+// 가짜 브랜드 (모르는 영어 단어가 일반명사) — false
+{"input": "Hydrating Toner", "expected": "\"is_brand\": false"}

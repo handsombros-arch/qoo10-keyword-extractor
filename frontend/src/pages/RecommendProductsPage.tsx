@@ -21,9 +21,6 @@ import {
   type CompositionOption,
 } from '../store/productSheet';
 import CompositionsPanel, { summarizeBestComposition } from '../components/common/CompositionsPanel';
-import {
-  clearShopCache, loadShopCache, saveShopCache,
-} from '../store/shopCache';
 import { fetchCloud, makeDebouncedPusher } from '../store/cloudSync';
 import {
   calculateMargin, marginVerdict,
@@ -44,21 +41,6 @@ const myTheme = themeQuartz.withParams({
   foregroundColor: '#1f2937',
   headerFontWeight: 700,
 });
-
-interface ShopProduct {
-  product_name: string;
-  price_jpy?: number;
-  product_url?: string;
-  cover_image_url?: string;
-  shop_rank?: number;
-  review_count?: number;
-}
-interface ShopResult {
-  shop_id: string;
-  shop_url: string;
-  products: ShopProduct[];
-  error?: string;
-}
 
 const fmt = {
   krw: (n: number) => (n == null ? '' : Math.round(n).toLocaleString()),
@@ -1503,176 +1485,6 @@ function AutoSourcingBlock({ onAddRows, interestKeywords }: { onAddRows: (rows: 
   );
 }
 
-// ─── 샵 벤치마크 섹션 ────────────────────────────────
-function ShopBenchmark({ onAddRows }: { onAddRows: (rows: SheetRow[]) => void }) {
-  const [urls, setUrls] = useState('https://www.qoo10.jp/shop/tsurutsuru\nhttps://www.qoo10.jp/shop/jjunabeauty');
-  const [limit, setLimit] = useState(30);
-  const [sortType, setSortType] = useState<'ranking' | 'review' | 'new' | 'price_high' | 'price_low'>('review');
-  const [results, setResults] = useState<ShopResult[] | null>(() => {
-    const cached = loadShopCache();
-    return cached.length > 0 ? cached : null;
-  });
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const cachedAt = useMemo(() => {
-    const c = loadShopCache();
-    return c[0]?.fetched_at || null;
-  }, [results]);
-
-  const fetch = async () => {
-    const list = urls.split(/\s+/).map(u => u.trim()).filter(u => u);
-    if (list.length === 0) return;
-    setLoading(true); setErr(null);
-    try {
-      const { data } = await api.post('/recommendations/from-shop', {
-        shop_urls: list, limit_per_shop: limit, sort_type: sortType,
-      });
-      if (data.error) { setErr(data.error); return; }
-      const newResults = data.results || [];
-      setResults(newResults);
-      // localStorage 캐시에 저장 (fetched_at 포함)
-      const now = new Date().toISOString();
-      saveShopCache(newResults.map((r: any) => ({ ...r, sort_type: sortType, fetched_at: now })));
-    } catch (e: any) {
-      setErr(e?.response?.data?.detail || e?.message || '실패');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const clearCache = () => {
-    if (!confirm('샵 벤치마크 결과를 지우시겠습니까?')) return;
-    clearShopCache();
-    setResults(null);
-  };
-
-  const addProductsToSheet = async (shop: ShopResult, products: ShopProduct[]) => {
-    // 일본어 상품명을 한글로 일괄 번역
-    let translations: string[] = [];
-    try {
-      const { data } = await api.post('/utils/translate-batch', {
-        texts: products.map(p => p.product_name),
-        source: 'ja', target: 'ko',
-      });
-      translations = data.translations || [];
-    } catch {
-      translations = products.map(() => '');
-    }
-
-    const rows = products.map((p, i) => newSheetRow({
-      product_name: p.product_name,
-      product_name_ko: translations[i] || '',
-      product_url: p.product_url,
-      cover_image_url: p.cover_image_url,
-      competitor_price_jpy: p.price_jpy || 0,
-      sell_price_jpy: p.price_jpy || 0,
-      shop_rank: p.shop_rank,
-      review_count: p.review_count,
-      source: `shop:${shop.shop_id}`,
-    }));
-    onAddRows(rows);
-  };
-
-  return (
-    <div className="bg-white rounded-lg shadow p-5 mb-5">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-semibold">🎯 샵 벤치마크</h3>
-        {cachedAt && (
-          <div className="flex items-center gap-2 text-xs text-gray-500">
-            마지막 조회: {new Date(cachedAt).toLocaleString('ko-KR')}
-            <button onClick={clearCache} className="text-red-500 hover:text-red-700">✕ 캐시 삭제</button>
-          </div>
-        )}
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-[1fr,auto,auto,auto] gap-3 items-end mb-3">
-        <label className="text-sm">
-          <div className="text-xs text-gray-600 mb-1">샵 URL (줄바꿈으로 여러 개)</div>
-          <textarea rows={2} value={urls} onChange={e => setUrls(e.target.value)}
-            className="w-full border rounded px-2 py-1 text-xs font-mono" />
-        </label>
-        <label className="text-sm">
-          <div className="text-xs text-gray-600 mb-1">정렬</div>
-          <select value={sortType} onChange={e => setSortType(e.target.value as any)}
-            className="border rounded px-2 py-1.5 text-sm">
-            <option value="ranking">랭킹순 (기본)</option>
-            <option value="review">리뷰 많은순 ⭐</option>
-            <option value="new">신착순</option>
-            <option value="price_high">가격 높은순</option>
-            <option value="price_low">가격 낮은순</option>
-          </select>
-        </label>
-        <label className="text-sm">
-          <div className="text-xs text-gray-600 mb-1">샵당 상품 수</div>
-          <input type="number" value={limit} onChange={e => setLimit(+e.target.value)}
-            className="w-24 border rounded px-2 py-1.5" />
-        </label>
-        <button onClick={fetch} disabled={loading}
-          className="px-4 py-2 bg-purple-600 text-white text-sm rounded hover:bg-purple-700 disabled:opacity-50">
-          {loading ? '수집 중...' : '🎯 상품 가져오기'}
-        </button>
-      </div>
-      {err && <div className="bg-red-50 text-red-700 text-xs p-2 rounded mb-2">{err}</div>}
-
-      {results && (
-        <div className="space-y-3">
-          {results.map(shop => (
-            <div key={shop.shop_id} className="border rounded">
-              <div className="px-3 py-2 bg-gray-50 border-b flex items-center justify-between">
-                <div>
-                  <span className="font-semibold">{shop.shop_id}</span>
-                  <span className="ml-2 text-xs text-gray-500">{shop.products.length}개</span>
-                  {shop.error && <span className="ml-2 text-xs text-red-600">{shop.error}</span>}
-                </div>
-                {shop.products.length > 0 && (
-                  <button
-                    onClick={() => addProductsToSheet(shop, shop.products)}
-                    className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700"
-                    title="한글명 자동 번역 후 시트에 추가"
-                  >
-                    ➕ 전체 시트에 추가 (자동 번역)
-                  </button>
-                )}
-              </div>
-              <div className="max-h-60 overflow-y-auto">
-                <table className="w-full text-xs">
-                  <thead className="bg-gray-50 sticky top-0">
-                    <tr>
-                      <th className="px-2 py-1 w-10 text-right">#</th>
-                      <th className="px-2 py-1 text-left">상품명</th>
-                      <th className="px-2 py-1 text-right">가격(¥)</th>
-                      <th className="px-2 py-1 text-right">리뷰</th>
-                      <th className="px-2 py-1 w-16 text-center">추가</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {shop.products.map((p, i) => (
-                      <tr key={i} className="border-b hover:bg-gray-50">
-                        <td className="px-2 py-1 text-gray-400 text-right">{p.shop_rank || i + 1}</td>
-                        <td className="px-2 py-1">
-                          {p.product_url
-                            ? <a href={p.product_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{p.product_name}</a>
-                            : p.product_name}
-                        </td>
-                        <td className="px-2 py-1 text-right font-mono">{p.price_jpy?.toLocaleString() || '-'}</td>
-                        <td className="px-2 py-1 text-right font-mono">{p.review_count || '-'}</td>
-                        <td className="px-2 py-1 text-center">
-                          <button
-                            onClick={() => addProductsToSheet(shop, [p])}
-                            className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
-                          >➕</button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 interface CollectProgress {
   task_id: string;

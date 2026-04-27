@@ -56,6 +56,184 @@ async def list_keyword_categories(session: AsyncSession = Depends(get_session)):
     ]
 
 
+@router.post("/classify-categories")
+async def classify_categories(body: dict | None = None):
+    """LLM 카테고리 분류 백그라운드 시작.
+
+    body:
+      date:  'YYYY-MM-DD' (선택, 기본 오늘)
+      limit: int (선택, unique 키워드 처리 상한)
+
+    동작:
+      - 해당 날짜의 keywords 중 category_inferred IS NULL/'' 인 행 대상
+      - 같은 (keyword_kr or keyword_jp) 는 1회만 LLM 호출 → 동일 텍스트의 모든 행 일괄 UPDATE
+      - 진행상황: task_manager 로 폴링 가능
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel, func as _func, and_ as _and, or_ as _or
+    from app.db.models import Keyword as _Keyword
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    raw_limit = body.get("limit")
+    limit = int(raw_limit) if raw_limit else None
+
+    # reset_label: 이 라벨로 분류된 행을 NULL 로 되돌리고 재분류 대상에 포함
+    # 예: reset_label="기타" → 기존에 "기타" 로 잘못 박힌 행들을 다시 시도
+    reset_label = (body.get("reset_label") or "").strip()
+    reset_count = 0
+    if reset_label:
+        from sqlalchemy import update as _upd_reset
+        from app.db.models import Keyword as _K_reset
+        async with async_session() as session:
+            res = await session.execute(
+                _upd_reset(_K_reset)
+                .where(_K_reset.lookup_date == target_date)
+                .where(_K_reset.category_inferred == reset_label)
+                .values(category_inferred=None)
+            )
+            await session.commit()
+            reset_count = res.rowcount or 0
+
+    # 대상 unique 키워드 수 카운트 (task total)
+    async with async_session() as session:
+        stmt = (
+            _sel(_func.count(_func.distinct(_func.coalesce(_Keyword.keyword_kr, _Keyword.keyword_jp))))
+            .where(
+                _and(
+                    _Keyword.lookup_date == target_date,
+                    _or(_Keyword.category_inferred.is_(None), _Keyword.category_inferred == ""),
+                )
+            )
+        )
+        unique_count = (await session.execute(stmt)).scalar_one() or 0
+
+    if limit:
+        unique_count = min(unique_count, limit)
+
+    if unique_count == 0:
+        return {
+            "task_id": None,
+            "candidates": 0,
+            "reset_count": reset_count,
+            "message": f"{target_date}: 분류 대상 0개",
+        }
+
+    task_id = task_manager.create_task(
+        name=f"카테고리 분류 ({target_date})",
+        total=unique_count,
+    )
+    _asyncio.create_task(_run_classify_categories(task_id, target_date, limit))
+    return {
+        "task_id": task_id,
+        "candidates": unique_count,
+        "reset_count": reset_count,
+        "date": str(target_date),
+    }
+
+
+async def _run_classify_categories(task_id: str, target_date, limit: int | None) -> None:
+    """백그라운드 분류 실행 — 카테고리 + 브랜드 동시.
+
+    unique 키워드 단위로 LLM 호출 (category + brand 각각). 같은 텍스트의 모든 행 UPDATE.
+    """
+    from sqlalchemy import select as _sel, update as _upd, and_ as _and, or_ as _or
+    from app.db.models import Keyword as _Keyword
+    from app.services.llm.category import classify_category_async
+    from app.services.llm.brand import is_brand_keyword_async
+
+    task_manager.start_task(task_id)
+    processed = 0
+    failed = 0
+
+    try:
+        # 1) 대상 행 수집 (category_inferred 가 비어있는 것만 — brand 도 같이 채움)
+        async with async_session() as session:
+            stmt = _sel(_Keyword.id, _Keyword.keyword_jp, _Keyword.keyword_kr).where(
+                _and(
+                    _Keyword.lookup_date == target_date,
+                    _or(_Keyword.category_inferred.is_(None), _Keyword.category_inferred == ""),
+                )
+            )
+            rows = (await session.execute(stmt)).all()
+
+        # 2) (keyword_kr or keyword_jp) → row_ids 매핑
+        text_to_ids: dict[str, list[int]] = {}
+        for row in rows:
+            kid, kw_jp, kw_kr = row
+            text = (kw_kr or kw_jp or "").strip()
+            if not text:
+                continue
+            text_to_ids.setdefault(text, []).append(kid)
+
+        unique_texts = list(text_to_ids.keys())
+        if limit:
+            unique_texts = unique_texts[:limit]
+
+        # 3) 순차 분류 + UPDATE (카테고리 + 브랜드 둘 다)
+        for idx, text in enumerate(unique_texts, 1):
+            label = "기타"
+            brand_info = {
+                "is_brand": False, "brand_kr": "", "brand_jp": "", "brand_en": "",
+            }
+            try:
+                label = await classify_category_async(text)
+            except Exception:
+                failed += 1
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(unique_texts)}] 카테고리 실패: {text[:30]}",
+                )
+                continue
+
+            try:
+                brand_info = await is_brand_keyword_async(text)
+            except Exception:
+                pass  # 브랜드 판별 실패해도 카테고리만이라도 저장
+
+            ids = text_to_ids[text]
+            try:
+                async with async_session() as session:
+                    await session.execute(
+                        _upd(_Keyword)
+                        .where(_Keyword.id.in_(ids))
+                        .values(
+                            category_inferred=label,
+                            is_brand=1 if brand_info.get("is_brand") else 0,
+                            brand_kr=(brand_info.get("brand_kr") or "")[:200],
+                            brand_jp=(brand_info.get("brand_jp") or "")[:200],
+                            brand_en=(brand_info.get("brand_en") or "")[:200],
+                        )
+                    )
+                    await session.commit()
+                processed += 1
+            except Exception:
+                failed += 1
+            finally:
+                brand_tag = f" ★{brand_info.get('brand_kr')}" if brand_info.get("is_brand") else ""
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(unique_texts)}] {text[:20]} → {label}{brand_tag}",
+                )
+
+        task_manager.complete_task(
+            task_id,
+            message=f"완료 — 분류 {processed}, 실패 {failed} (unique {len(unique_texts)})",
+        )
+    except Exception as e:
+        task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+
 @router.post("/retranslate")
 async def retranslate_keywords(only_missing: bool = False):
     """기존 DB 키워드의 keyword_kr을 구글 번역으로 일괄 재번역.

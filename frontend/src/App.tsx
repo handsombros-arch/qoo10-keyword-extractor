@@ -16,6 +16,7 @@ import BestsellerPage from './pages/BestsellerPage';
 import MarginPage from './pages/MarginPage';
 import RecommendProductsPage from './pages/RecommendProductsPage';
 import ShopBenchmarkPage from './pages/ShopBenchmarkPage';
+import SettingsPage from './pages/SettingsPage';
 
 const queryClient = new QueryClient();
 
@@ -40,6 +41,7 @@ function App() {
             <Route path="/margin" element={<MarginPage />} />
             <Route path="/recommend-products" element={<RecommendProductsPage />} />
             <Route path="/shop-benchmark" element={<ShopBenchmarkPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

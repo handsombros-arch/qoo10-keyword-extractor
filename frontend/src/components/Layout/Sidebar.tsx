@@ -20,6 +20,7 @@ const moreItems = [
   { path: '/products', label: '상품 검색', icon: '🛒' },
   { path: '/tracking', label: '순위 추적', icon: '📍' },
   { path: '/bestsellers', label: '인기상품', icon: '🏆' },
+  { path: '/settings', label: 'AI 설정', icon: '⚙️' },
 ];
 
 const MORE_STATE_KEY = 'sidebar.moreOpen.v1';
