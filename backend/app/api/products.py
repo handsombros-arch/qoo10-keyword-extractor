@@ -655,6 +655,11 @@ class Qoo10ExportRow(BaseModel):
     notes: str = ""
     source: str = ""
     search_keyword: str = ""
+    # Phase 4-B — 큐텐 등록 LLM 콘텐츠 (옵셔널)
+    qoo10_title_jp: str = ""
+    qoo10_tags: list[str] = []
+    qoo10_option_name: str = ""
+    qoo10_marketing: list[str] = []
 
 
 class Qoo10ExportDefaults(BaseModel):

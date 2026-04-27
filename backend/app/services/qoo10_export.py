@@ -89,28 +89,44 @@ def build_qoo10_excel(
     for i, r in enumerate(rows):
         target_row = DATA_START_ROW + i
 
-        # 상품별
-        _set(ws, target_row, "item_name", r.get("product_name") or r.get("product_name_ko") or "")
+        # 상품명 — 큐텐 fit title_jp 우선 (Phase 4-B LLM), 없으면 한국명/번역명 폴백
+        item_name = (
+            r.get("qoo10_title_jp")
+            or r.get("product_name")
+            or r.get("product_name_ko")
+            or ""
+        )
+        _set(ws, target_row, "item_name", item_name)
         _set(ws, target_row, "price_yen", int(r.get("sell_price_jpy") or 0))
         _set(ws, target_row, "image_main_url", r.get("cover_image_url") or "")
 
-        # 무게: 큐텐은 kg 단위 문자열 (소수점 허용) 권장. 2글자 이하 제한이지만 일반적 기본값
+        # 무게: 큐텐은 kg 단위 문자열. weight_g 가 +200g 적용된 등록용 무게
         weight_g = r.get("weight_g")
         if weight_g:
             weight_kg = round(float(weight_g) / 1000, 2)
             _set(ws, target_row, "item_weight", weight_kg)
 
-        # 상세: 메모 + 기본 설명
-        desc = r.get("notes") or default_desc
+        # 상세 — 마케팅 포인트 줄바꿈 포함 + notes/default_description
+        marketing = r.get("qoo10_marketing") or []
+        marketing_text = ""
+        if isinstance(marketing, list) and marketing:
+            marketing_text = "\n".join(f"・{m}" for m in marketing if m)
+        notes = r.get("notes") or ""
+        desc_parts = [s for s in [marketing_text, notes, default_desc] if s]
+        desc = "\n\n".join(desc_parts)
         _set(ws, target_row, "item_description", desc)
 
-        # 검색 키워드: source가 "자동:xxx" 또는 "관심:xxx" 형태면 파싱
-        src = r.get("source") or ""
-        sk = ""
-        if ":" in src:
-            sk = src.split(":", 1)[1].strip()
-        elif r.get("search_keyword"):
-            sk = r["search_keyword"]
+        # 검색 키워드 — qoo10_tags 우선 (LLM 생성, 공백 join), 없으면 source 파싱
+        tags = r.get("qoo10_tags") or []
+        if isinstance(tags, list) and tags:
+            sk = " ".join(t for t in tags if t)
+        else:
+            src = r.get("source") or ""
+            sk = ""
+            if ":" in src:
+                sk = src.split(":", 1)[1].strip()
+            elif r.get("search_keyword"):
+                sk = r["search_keyword"]
         _set(ws, target_row, "search_keyword", sk)
 
         # 공통 기본값
