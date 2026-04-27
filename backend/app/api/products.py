@@ -1249,3 +1249,167 @@ async def _run_extract_weights(task_id: str, rows: list, packaging_g: float) -> 
     except Exception as e:
         task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
         traceback.print_exc()
+
+
+@router.post("/qoo10/generate-content")
+async def generate_qoo10_listing_content(body: dict | None = None):
+    """큐텐 등록용 콘텐츠 LLM 생성 (Phase 4-B).
+
+    body:
+      date:           YYYY-MM-DD (기본 오늘)
+      only_accepted:  bool (기본 True — 매칭된 큐텐 상품만)
+      limit:          int
+      reset:          bool (True 면 qoo10_content_generated_at 채워진 행도 재처리)
+
+    출력 컬럼:
+      qoo10_title_jp / qoo10_tags(JSON) / qoo10_option_name / qoo10_marketing(JSON)
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel
+    from app.db.models import (
+        Qoo10Product as _Q, DomesticMatchCandidate as _DMC,
+        DomesticProduct as _DP, Keyword as _K,
+    )
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    only_accepted = body.get("only_accepted", True)
+    raw_limit = body.get("limit")
+    limit = int(raw_limit) if raw_limit else None
+    do_reset = bool(body.get("reset"))
+
+    # 대상 큐텐 상품 + 매칭 한국 상품명 + 카테고리
+    async with async_session() as session:
+        cols = (
+            _Q.id, _Q.product_name, _Q.product_name_ko, _Q.search_keyword,
+            _DP.product_name.label("d_name"), _DP.price_krw.label("d_price"),
+            _K.category_inferred.label("cat"),
+        )
+        if only_accepted:
+            stmt = (
+                _sel(*cols)
+                .join(_DMC, _DMC.qoo10_product_id == _Q.id)
+                .join(_DP, _DP.id == _DMC.domestic_product_id)
+                .outerjoin(_K, _K.keyword_jp == _Q.search_keyword)
+                .where(_Q.lookup_date == target_date)
+                .where(_DMC.decision == "accepted")
+                .distinct()
+            )
+        else:
+            stmt = (
+                _sel(*cols)
+                .outerjoin(_DP, _DP.search_keyword == _Q.product_name_ko)
+                .outerjoin(_K, _K.keyword_jp == _Q.search_keyword)
+                .where(_Q.lookup_date == target_date)
+            )
+        if not do_reset:
+            stmt = stmt.where(_Q.qoo10_content_generated_at.is_(None))
+        rows = (await session.execute(stmt)).all()
+
+    if limit:
+        rows = list(rows)[:limit]
+
+    if not rows:
+        return {
+            "task_id": None, "candidates": 0,
+            "message": f"{target_date}: 처리 대상 0건 (only_accepted={only_accepted})",
+        }
+
+    task_id = task_manager.create_task(
+        name=f"큐텐 콘텐츠 생성 ({target_date}, {len(rows)}건)", total=len(rows),
+    )
+    _asyncio.create_task(_run_generate_qoo10_content(task_id, rows))
+    return {
+        "task_id": task_id, "candidates": len(rows),
+        "only_accepted": only_accepted, "date": str(target_date),
+    }
+
+
+async def _run_generate_qoo10_content(task_id: str, rows: list) -> None:
+    """백그라운드 — 큐텐 등록 콘텐츠 LLM 생성 + DB UPDATE."""
+    import json as _json
+    from datetime import datetime as _dt
+    from sqlalchemy import update as _upd
+    from app.db.models import Qoo10Product as _Q
+    from app.services.llm.qoo10_content import generate_qoo10_content_async
+
+    task_manager.start_task(task_id)
+    ok_n = fail_n = 0
+
+    try:
+        for idx, row in enumerate(rows, 1):
+            qid, q_name, q_ko, q_kw, d_name, d_price, cat = row
+            # 입력: 한국 상품명 우선 (실제 등록 대상), 없으면 큐텐 ko, 그것도 없으면 jp
+            input_name = (d_name or q_ko or q_name or "").strip()
+            if not input_name:
+                fail_n += 1
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] SKIP q={qid} (빈 이름)",
+                )
+                continue
+
+            try:
+                res = await generate_qoo10_content_async(
+                    product_name_kr=input_name,
+                    category=cat or "기타",
+                    price_krw=int(d_price or 0) or None,
+                    option_name_kr="default",
+                )
+            except Exception as e:
+                fail_n += 1
+                logger.warning(f"[qoo10_content] LLM 실패 q={qid}: {e}")
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] FAIL q={qid} ({type(e).__name__})",
+                )
+                continue
+
+            if not res.get("ok"):
+                fail_n += 1
+                # ok=False 라도 부분 생성된 데이터는 저장
+                pass
+            else:
+                ok_n += 1
+
+            try:
+                async with async_session() as db:
+                    await db.execute(_upd(_Q).where(_Q.id == qid).values(
+                        qoo10_title_jp=res.get("title_jp") or None,
+                        qoo10_tags=_json.dumps(res.get("tags") or [], ensure_ascii=False),
+                        qoo10_option_name=res.get("option_name") or None,
+                        qoo10_marketing=_json.dumps(res.get("marketing_points") or [], ensure_ascii=False),
+                        qoo10_content_generated_at=_dt.utcnow(),
+                    ))
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"[qoo10_content] DB UPDATE 실패 q={qid}: {e}")
+
+            tag = "OK" if res.get("ok") else "PARTIAL"
+            title_short = (res.get("title_jp") or "")[:25]
+            tags_n = len(res.get("tags") or [])
+            mkt_n = len(res.get("marketing_points") or [])
+            task_manager.update_progress(
+                task_id, increment=1,
+                message=(
+                    f"[{idx}/{len(rows)}] {tag} q={qid} title={title_short!r} "
+                    f"tags={tags_n} mkt={mkt_n}"
+                ),
+            )
+
+        task_manager.complete_task(
+            task_id,
+            message=f"완료 — OK {ok_n}, 실패/부분 {fail_n} (대상 {len(rows)})",
+        )
+    except Exception as e:
+        task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        traceback.print_exc()

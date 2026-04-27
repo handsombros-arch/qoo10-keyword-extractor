@@ -1,0 +1,171 @@
+"""큐텐 등록용 콘텐츠 생성 (Phase 4-B).
+
+명세 (MASTER_SPEC § 3.3#12, 4-3):
+    - title_jp — 큐텐 fit 일본어 상품명 (40자 SEO)
+    - tags — 검색 태그 5~10개
+    - option_name — 단품/세트 표기
+    - marketing_points — 마케팅 포인트 3~4개
+
+env: QOO10_CONTENT_MODEL=<provider:model>  (기본 추천 ollama:qwen3:14b — 일본어/한국어 전환 강함)
+prompt: app/services/llm/prompts/qoo10_content.txt
+
+사용:
+    res = await generate_qoo10_content_async(
+        product_name_kr="메디큐브 AGE-R 부스터 프로",
+        category="03.뷰티&화장품",
+        price_krw=180_000,
+        option_name_kr="default",
+    )
+    # res = {"title_jp": "...", "tags": [...], "option_name": "...", "marketing_points": [...]}
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+
+from ._sync import run_sync
+from .router import get_client_for, load_prompt
+
+logger = logging.getLogger(__name__)
+
+
+def _strip_codefence(s: str) -> str:
+    s = re.sub(r"^```(?:json)?\s*", "", s.strip())
+    s = re.sub(r"\s*```\s*$", "", s)
+    return s
+
+
+def _empty() -> dict:
+    return {
+        "title_jp": "",
+        "tags": [],
+        "option_name": "",
+        "marketing_points": [],
+        "ok": False,
+    }
+
+
+def _truncate_title(s: str, limit: int = 40) -> str:
+    s = (s or "").strip()
+    return s[:limit]
+
+
+def _normalize_tags(tags) -> list[str]:
+    if not isinstance(tags, list):
+        return []
+    out = []
+    seen = set()
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        t = t.strip()
+        if not t or len(t) > 12 or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= 10:
+            break
+    return out
+
+
+def _normalize_marketing(points) -> list[str]:
+    if not isinstance(points, list):
+        return []
+    out = []
+    for p in points:
+        if not isinstance(p, str):
+            continue
+        p = p.strip()
+        if not p:
+            continue
+        out.append(p[:50])
+        if len(out) >= 4:
+            break
+    return out
+
+
+async def generate_qoo10_content_async(
+    product_name_kr: str,
+    category: str = "기타",
+    price_krw: int | None = None,
+    option_name_kr: str = "default",
+) -> dict:
+    """한국 상품 → 큐텐 등록용 콘텐츠 (LLM 호출).
+
+    실패 시 ok=False, 빈 필드 반환 (자동화 막지 않음).
+    """
+    name = (product_name_kr or "").strip()
+    if not name:
+        return _empty()
+
+    try:
+        client = get_client_for("qoo10_content")
+    except Exception as e:
+        logger.error(f"[qoo10_content] 클라이언트 생성 실패 ({e})")
+        return _empty()
+
+    template = load_prompt("qoo10_content")
+    prompt = (
+        template
+        .replace("{product_name_kr}", name)
+        .replace("{category}", category or "기타")
+        .replace("{price_krw}", str(price_krw or "(미상)"))
+        .replace("{option_name_kr}", option_name_kr or "default")
+    )
+
+    try:
+        # qwen3:14b 같은 reasoning 모델은 thinking 토큰 포함이라 num_predict 넉넉히
+        result = await client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.3,
+            json_mode=True,
+            max_tokens=2048,
+        )
+    except Exception as e:
+        logger.error(f"[qoo10_content] LLM 호출 실패 ({e})")
+        return _empty()
+
+    text = (result.text or "").strip()
+    if not text:
+        logger.warning(f"[qoo10_content] 빈 응답")
+        return _empty()
+
+    s = _strip_codefence(text)
+    try:
+        parsed = json.loads(s)
+    except json.JSONDecodeError:
+        logger.warning(f"[qoo10_content] JSON 파싱 실패: {text[:120]!r}")
+        return _empty()
+
+    if not isinstance(parsed, dict):
+        return _empty()
+
+    title = _truncate_title(parsed.get("title_jp") or "", 40)
+    tags = _normalize_tags(parsed.get("tags") or [])
+    option_name = _truncate_title(parsed.get("option_name") or option_name_kr, 100)
+    marketing = _normalize_marketing(parsed.get("marketing_points") or [])
+
+    ok = bool(title and tags and marketing)  # 핵심 3개 다 있으면 OK
+    return {
+        "title_jp": title,
+        "tags": tags,
+        "option_name": option_name,
+        "marketing_points": marketing,
+        "ok": ok,
+    }
+
+
+def generate_qoo10_content(
+    product_name_kr: str,
+    category: str = "기타",
+    price_krw: int | None = None,
+    option_name_kr: str = "default",
+) -> dict:
+    """동기 래퍼."""
+    return run_sync(
+        generate_qoo10_content_async(product_name_kr, category, price_krw, option_name_kr)
+    )
+
+
+__all__ = ["generate_qoo10_content", "generate_qoo10_content_async"]

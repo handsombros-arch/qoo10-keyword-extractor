@@ -308,7 +308,7 @@ decision    = "accepted" if (image_ok AND
 | 10 | ★★ | 시트 인라인 수정 → 마진 즉시 재계산 | Phase 3 (명세 3.5) |
 | 11 | ★ | LLM 카테고리 분류 결함 — 메디큐브/dasique 등 K-뷰티가 「기타」 분류 | Phase 1 분리 이슈 |
 | 12 | 🟡 부분 | Phase 4-A 무게 추출 + 200g 룰 — 정규식 OK, 시운전 9% 매칭 (데이터 한계). cover OCR 보류 (+5~10% 만, 비용↑). 사장님 시트 수동입력 보완. PHASE4_OCR_WEIGHT.md | Phase 4 |
-| 13 | ★ | 큐텐 fit 상품명/태그/옵션명 (SEO) 생성 | Phase 4 (명세 3.3#12) |
+| 13 | ✅ 완료 | Phase 4-B 큐텐 fit 콘텐츠 — title_jp/tags/option_name/marketing_points LLM(qwen3:14b) 생성. 시운전 5/5 OK. PHASE4_OCR_WEIGHT.md § 6. | Phase 4 |
 | 14 | ★ | Windows 작업 스케줄러 등록 | Phase 5 (명세 3.1) |
 
 ---

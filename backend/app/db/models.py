@@ -116,6 +116,12 @@ class Qoo10Product(Base):
     set_count_vision_confidence = Column(Float)
     set_count_verified_at = Column(DateTime)
     product_name_ko = Column(String)                # 일본어 → 한국어 번역 (번역 캐시 활용)
+    # ─── Phase 4-B — 큐텐 등록용 LLM 생성 콘텐츠 ───
+    qoo10_title_jp = Column(String)                  # 큐텐 fit 일본어 상품명 (SEO 최적화, 40자 이내)
+    qoo10_tags = Column(Text)                        # JSON 배열 — 검색 태그 5~10개
+    qoo10_option_name = Column(String)               # 큐텐 등록 옵션명 (단품/세트 표기)
+    qoo10_marketing = Column(Text)                   # JSON 배열 — 마케팅 포인트 3~4개
+    qoo10_content_generated_at = Column(DateTime)    # 콘텐츠 생성 시각
 
 
 class DomesticProduct(Base):
