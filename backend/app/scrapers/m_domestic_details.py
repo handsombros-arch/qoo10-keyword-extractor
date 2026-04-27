@@ -301,6 +301,204 @@ async def _fetch_coupang(url: str) -> dict:
     return out
 
 
+# ─── 쿠팡 (browser_manager 헤드풀 + 검색→클릭) ────────────
+
+
+async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str = "") -> dict:
+    """쿠팡 헤드풀 진입 — kc-cert-checker 패턴 (검색→클릭 + 2~4초 대기 + OCR 폴백).
+
+    AKAMAI 우회 핵심: vp/products 직접 X, /np/search?q=상품명 → 자연스러운 클릭.
+    browser_manager 의 큐텐 헤드풀 Chrome 컨텍스트에 새 탭 추가.
+    """
+    out: dict[str, Any] = {
+        "options": [], "shipping_text": "", "extra_image_urls": [],
+    }
+    try:
+        from app.browser.manager import browser_manager
+        bm_page = await browser_manager.get_page()
+        ctx = bm_page.context
+    except Exception as e:
+        logger.warning(f"[detail/coupang] browser_manager 획득 실패: {e}")
+        return out
+
+    page: Page | None = None
+    try:
+        page = await ctx.new_page()
+        try:
+            from tf_playwright_stealth import stealth_async
+            await stealth_async(page)
+        except Exception:
+            pass
+
+        # 1단계 — 검색 페이지 (정당한 진입)
+        if product_name:
+            from urllib.parse import quote
+            search_url = f"https://www.coupang.com/np/search?q={quote(product_name[:80])}&channel=user"
+            try:
+                await page.goto(
+                    search_url,
+                    referer="https://www.google.com/",
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+                await page.wait_for_timeout(random.randint(2000, 4000))
+                # 자연스러운 스크롤
+                await page.mouse.wheel(0, random.randint(400, 800))
+                await page.wait_for_timeout(random.randint(1000, 2000))
+            except Exception as e:
+                logger.warning(f"[detail/coupang] 검색 페이지 진입 실패: {e}")
+
+        # 2단계 — 실제 product_url 진입 (검색 결과의 자연스러운 다음 페이지)
+        try:
+            await page.goto(
+                product_url,
+                referer=page.url or "https://www.coupang.com/",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+        except Exception as e:
+            logger.warning(f"[detail/coupang] goto 실패 {product_url[:60]}: {e}")
+            return out
+        try:
+            await page.wait_for_timeout(random.randint(2000, 4000))
+            await page.mouse.wheel(0, random.randint(600, 1200))
+            await page.wait_for_timeout(random.randint(1000, 2000))
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # 차단 검사
+        title = (await page.title()) or ""
+        if "Access Denied" in title:
+            logger.warning(f"[detail/coupang] 차단 (title={title!r})")
+            return out
+
+        # 가격 — selector + HTML 정규식 + OCR 폴백
+        price_main = None
+        for sel in [
+            ".prod-price__sale .total-price strong",
+            ".total-price strong",
+            ".prod-price__price",
+            "[class*='priceArea'] [class*='price']",
+            "[class*='price'] strong",
+            "[data-coupang-display-price]",
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count():
+                    txt = (await el.inner_text(timeout=2000)).strip()
+                    v = _parse_int_krw(txt)
+                    if v:
+                        price_main = v
+                        break
+            except Exception:
+                continue
+        if price_main is None:
+            try:
+                html = await page.content()
+                nums = [int(s.replace(",", "")) for s in re.findall(r"\d{1,3}(?:,\d{3})+", html)]
+                nums = [n for n in nums if 1000 <= n <= 10_000_000]
+                if nums:
+                    price_main = Counter(nums).most_common(1)[0][0]
+            except Exception:
+                pass
+        if price_main is None:
+            try:
+                screenshot = await page.screenshot(full_page=False, type="png")
+                from app.services.ocr import ocr_image_async, extract_price_main
+                ocr_text = await ocr_image_async(screenshot)
+                if ocr_text:
+                    price_main = extract_price_main(ocr_text)
+                    if price_main:
+                        logger.info(f"[detail/coupang] OCR 폴백 가격: {price_main}")
+            except Exception as e:
+                logger.warning(f"[detail/coupang] OCR 폴백 실패: {e}")
+        if price_main:
+            out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
+
+        # 옵션 — 옵션 셀렉트 li/option 텍스트
+        try:
+            for sel in [
+                "ul[class*='prod-option'] li", "[class*='Option'] li",
+                "select[class*='option'] option",
+            ]:
+                els = page.locator(sel)
+                cnt = await els.count()
+                if cnt and cnt < 30:
+                    cnt_added = 0
+                    for i in range(cnt):
+                        try:
+                            t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                            t = re.sub(r"\s+", " ", t)
+                            if not t or len(t) > 80:
+                                continue
+                            price = _parse_int_krw(t)
+                            if price and price != price_main and price >= 1000:
+                                # 옵션명 정제 — 가격 텍스트 제거
+                                name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t).strip()[:60]
+                                if name:
+                                    out["options"].append({
+                                        "name": name, "price_krw": price, "in_stock": True,
+                                    })
+                                    cnt_added += 1
+                        except Exception:
+                            pass
+                    if cnt_added:
+                        break
+        except Exception:
+            pass
+
+        # 배송비
+        ship_text = ""
+        for sel in [
+            ".prod-shipping-fee", ".shipping-fee",
+            "[class*='shipping']", "[class*='Shipping']",
+            "[class*='Delivery'] [class*='fee']",
+        ]:
+            try:
+                els = page.locator(sel)
+                cnt = await els.count()
+                for i in range(min(cnt, 3)):
+                    t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                    if t and len(ship_text) < 200:
+                        ship_text += " " + t
+            except Exception:
+                continue
+        out["shipping_text"] = ship_text.strip()
+
+        # 추가 이미지
+        try:
+            img_locs = page.locator(
+                ".prod-image img, [class*='ProductImage'] img, img[src*='coupangcdn.com']"
+            )
+            cnt = await img_locs.count()
+            seen: set[str] = set()
+            for i in range(min(cnt, 10)):
+                try:
+                    src = await img_locs.nth(i).get_attribute("src")
+                    if src and src.startswith("http") and src not in seen:
+                        seen.add(src)
+                        out["extra_image_urls"].append(src)
+                    if len(out["extra_image_urls"]) >= 6:
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    return out
+
+
 # ─── 네이버 (browser_manager 의 큐텐 컨텍스트에 새 탭) ──────
 
 
@@ -392,7 +590,7 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
         if price_main:
             out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
 
-        # 옵션
+        # 옵션 — textnode 노이즈 제거 (수량감소/판매가/공백)
         try:
             for sel in [
                 "ul[class*='option'] li", "[class*='Option'] li",
@@ -405,11 +603,17 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
                     for i in range(cnt):
                         try:
                             t = (await els.nth(i).inner_text(timeout=1500)).strip()
-                            if t and len(t) < 100:
-                                price = _parse_int_krw(t)
-                                if price and price != price_main:
+                            t = re.sub(r"\s+", " ", t)
+                            if not t or len(t) > 80:
+                                continue
+                            price = _parse_int_krw(t)
+                            if price and price != price_main and price >= 1000:
+                                # 옵션명 정제 — 가격/수량 컨트롤 텍스트 제거
+                                name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t)
+                                name = re.sub(r"수량\s*(증가|감소)|판매가|배송비", "", name).strip()[:60]
+                                if name:
                                     out["options"].append({
-                                        "name": t[:80], "price_krw": price, "in_stock": True,
+                                        "name": name, "price_krw": price, "in_stock": True,
                                     })
                                     cnt_added += 1
                         except Exception:
@@ -499,8 +703,10 @@ async def scrape_domestic_detail(
 
     try:
         if is_coupang:
-            parsed = await _fetch_coupang(product_url)
+            # 쿠팡: kc 패턴 — Playwright 헤드풀 + 검색→클릭 + 2~4초 대기
+            parsed = await _fetch_coupang_via_browser_manager(product_url, product_name_kr)
         else:
+            # 네이버 / 외부 셀러: browser_manager 새 탭 + OCR 폴백
             parsed = await _fetch_naver_via_browser_manager(product_url)
     except Exception as e:
         logger.warning(f"[detail] {src} 스크래핑 실패 {product_url[:60]}: {e}")

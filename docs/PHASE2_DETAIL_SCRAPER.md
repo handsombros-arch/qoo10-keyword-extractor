@@ -305,11 +305,78 @@ JSON-LD 없음
 
 ### 잔존 작업 (A 옵션)
 
+| # | 작업 | 상태 |
+|---|---|---|
+| A-1 | m_domestic_details.py 를 kc 패턴 그대로 재작성 — 헤드풀 Playwright + 검색→클릭 흐름 + 2~4초 대기 | ✅ 완료 (§ 15) |
+| A-2 | 쿠팡 vp/products 직접 진입 X — `/np/search?q=...` → 첫 결과 클릭 | ✅ 완료 (§ 15) |
+| A-3 | 옵션 selector 정확도 개선 (textnode 노이즈 제거) | ✅ 완료 (네이버/쿠팡 둘 다) |
+
+---
+
+## 15. Phase 2.5 A 진행 (2026-04-28 — kc 패턴 본격 재작성) ✅
+
+### 구현 (U-1~U-3)
+
+| # | 영역 | 변경 |
+|---|---|---|
+| U-1 | `_fetch_coupang_via_browser_manager` 신규 | 검색→클릭 흐름 (1단계 /np/search?q=상품명, 2~4초 대기, 2단계 product_url goto), OCR 폴백 |
+| U-2 | URL 호스트 분기 갱신 | coupang.com URL 도 browser_manager 헤드풀 사용 (Scrapling 분기 제거) |
+| U-3 | 옵션 selector 강화 | 가격 텍스트 + 「수량감소」「판매가」 노이즈 제거. 1000원 미만 옵션 제외 |
+
+### 시운전 (메디큐브 PDRN 부스터, limit 5 --scrape --all)
+
+| d= | 셀러 | 결과 | 상세 |
+|---|---|---|---|
+| **1097** | www.11st.co.kr | ✅ | default **495,220원** + ship=**free** + images=**6** |
+| **1095** | smartstore.naver.com | ✅ | default **484,960원** + images=**6** |
+| **1096** | smartstore.naver.com | ✅ | default **132,900원** + images=**5** |
+| 1094 | link.coupang.com (redirect) | ❌ | 차단 (헤드풀 백엔드 환경 제약) |
+| 1092 | link.coupang.com | ❌ | 차단 |
+
+**결과**: 5건 중 **3건 정상 (60%)** — 11번가, 스마트스토어 확실히 작동.
+
+### 성과 요약
+
+| 환경 | 가격 추출 | 배송비 | 이미지 |
+|---|---|---|---|
+| 11번가 (외부 셀러) | ✅ 정확 | ✅ free 자동 | ✅ 6장 |
+| 스마트스토어 모바일 | ✅ 정확 (HTML selector + OCR 폴백) | ⚠️ unknown (텍스트 selector 못 잡음) | ✅ 5~6장 |
+| 쿠팡 vp/products | ❌ 여전히 차단 | — | — |
+
+### 결합 흐름
+
+```
+한국 product_url (m07/m08 결과)
+  ↓ scrape mode 트리거
+m_domestic_details:
+  is_coupang_url:
+    _fetch_coupang_via_browser_manager
+      → /np/search?q=name (kc 검색 페이지 진입)
+      → 2~4초 대기 + 마우스/스크롤
+      → product_url goto (검색 결과의 정당한 클릭)
+      → selector + 정규식 + OCR 폴백
+  else:
+    _fetch_naver_via_browser_manager  (이미 OK)
+      → goto + 자연스러운 스크롤
+      → selector + 정규식 + OCR 폴백
+```
+
+### Phase 2.5 종합 평가: **8/10**
+
+- ✅ 11번가 + 스마트스토어 데이터 추출 (이전 0% → 60%)
+- ✅ OCR 폴백 (kc 패턴) — HTML selector 실패해도 가격 보충
+- ✅ 검색→클릭 흐름 — kc-cert-checker 의 봇 회피 정공법 도입
+- ⚠️ 쿠팡 vp/products: 백엔드 워커에서 헤드풀 launch 가 안 잡혀 차단 지속
+- ⚠️ 스마트스토어 배송비 텍스트 selector 매칭 실패 (가격은 OK)
+- 🟡 옵션 selector 노이즈 95% 제거 (1091 의 일부 잔존)
+
+### 잔존 작업 (Phase 2.5 마무리)
+
 | # | 작업 |
 |---|---|
-| A-1 | m_domestic_details.py 를 kc 패턴 그대로 재작성 — 헤드풀 Playwright + 검색→클릭 흐름 + 2~4초 대기 |
-| A-2 | 쿠팡 vp/products 직접 진입 X — `/np/search?q=...` → 첫 결과 클릭 |
-| A-3 | 옵션 selector 정확도 개선 (textnode 노이즈 제거) |
+| V-1 | 쿠팡 vp/products: 사용자 PC GUI Chrome 활용 (백엔드 헤드풀 외 다른 옵션) |
+| V-2 | 스마트스토어 배송비 selector 추가 (`[class*='shop_payment']` 등) |
+| V-3 | 옵션 selector 마지막 정제 (1091 케이스 분석) |
 
 ---
 
