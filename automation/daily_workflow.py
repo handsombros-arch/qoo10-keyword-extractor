@@ -196,6 +196,56 @@ async def step_health_check(client: httpx.AsyncClient) -> None:
     except Exception as e:
         raise StepFailed(f"백엔드 응답 없음 ({BACKEND}): {e}") from e
 
+    # 디버그 Chrome (9222) 점검 — 없으면 자동 launch (Phase 2.5 V-1)
+    await _ensure_chrome_debug()
+
+
+async def _ensure_chrome_debug() -> None:
+    """포트 9222 connect 시도 → 없으면 launch_chrome_debug.bat 자동 실행.
+
+    헤드풀 GUI 환경 의존이라 사용자 로그인 세션이어야 함 (작업 스케줄러 Interactive 권한).
+    실패해도 자동화는 계속 (browser_manager fallback).
+    """
+    import socket
+    import subprocess
+    from pathlib import Path
+
+    def _port_open(host: str = "127.0.0.1", port: int = 9222, timeout: float = 1.0) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except Exception:
+            return False
+
+    if _port_open():
+        log.info("디버그 Chrome 9222 살아있음 (CDP attach 사용 가능)")
+        return
+
+    bat_path = Path(__file__).parent / "launch_chrome_debug.bat"
+    if not bat_path.exists():
+        log.warning(f"launch_chrome_debug.bat 없음 — Chrome 디버그 스킵 ({bat_path})")
+        return
+
+    log.info(f"디버그 Chrome 자동 시작: {bat_path}")
+    try:
+        # CREATE_NEW_PROCESS_GROUP + DETACHED_PROCESS — 백엔드 워커와 분리된 GUI 프로세스
+        subprocess.Popen(
+            ["cmd.exe", "/c", str(bat_path)],
+            cwd=str(bat_path.parent.parent),
+            creationflags=0x00000200 | 0x00000008,  # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
+        )
+    except Exception as e:
+        log.warning(f"Chrome 디버그 launch 실패 (browser_manager fallback): {e}")
+        return
+
+    # 5초 대기 후 재점검 (로드 시간)
+    for i in range(10):
+        await asyncio.sleep(1)
+        if _port_open():
+            log.info(f"디버그 Chrome 9222 활성화 ({i+1}초)")
+            return
+    log.warning("디버그 Chrome 5초 내 응답 없음 — fallback")
+
 
 async def step_login_status(client: httpx.AsyncClient) -> None:
     log.info("=== STEP 2: 로그인 상태 확인 ===")

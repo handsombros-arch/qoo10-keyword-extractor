@@ -76,11 +76,23 @@ VBA → Python(FastAPI) + React 재구축. 두 PC(메인 + Tailscale 노트북) 
 
 쿠팡 vp/products / 스마트스토어 captcha 같은 봇 차단 우회 — 사용자가 띄운 디버그 Chrome 에 백엔드가 attach.
 
-### 한 번 셋업
+### 옵션 1: 수동 셋업 (즉시 사용)
 ```
 automation\launch_chrome_debug.bat 더블클릭
 ```
 
+### 옵션 2: 부팅 자동 시작 (작업 스케줄러)
+```powershell
+cd C:\Users\Admin\qoo10-keyword-extractor\automation
+powershell -ExecutionPolicy Bypass -File .\setup_scheduler.ps1 -Time "03:00" -IncludeChromeDebug
+```
+→ daily_workflow + 디버그 Chrome 둘 다 등록. 사용자 로그인 1분 후 Chrome 자동 시작.
+
+### 옵션 3: 매번 자동 (daily_workflow 가 처리)
+- `daily_workflow.py` STEP 1 헬스체크에 9222 자동 점검 + launch 로직 통합
+- 작업 스케줄러 시작 시 자동으로 Chrome 디버그 실행됨 (사용자 GUI 세션 필요)
+
+### 공통 안내
 - 별도 프로필 (`%USERPROFILE%\qoo10-chrome-debug-profile`) 이라 평소 Chrome 안 닫아도 OK
 - 디버그 Chrome 창 뜨면 네이버/쿠팡 등 한 번 로그인 → 다음부터 쿠키 누적
 - 자동화가 차단(번호 입력 captcha)되면 그 창에서 직접 풀어주세요 — 자동화 계속

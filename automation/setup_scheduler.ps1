@@ -19,7 +19,8 @@
 param(
     [string]$Time = "03:00",
     [switch]$Force,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$IncludeChromeDebug
 )
 
 $ErrorActionPreference = "Stop"
@@ -108,6 +109,48 @@ Register-ScheduledTask `
     -Principal $Principal `
     -Description "Qoo10 키워드 추출 + AI 분류 + 매칭 + 추천 빌드 (매일 $Time)" `
     | Out-Null
+
+# Chrome 디버그 부팅 자동시작 (선택)
+if ($IncludeChromeDebug) {
+    $ChromeTaskName = "Qoo10ChromeDebug"
+    $ChromeBat = Join-Path $ProjectRoot "automation\launch_chrome_debug.bat"
+
+    if (-not (Test-Path $ChromeBat)) {
+        Write-Host "[WARN] launch_chrome_debug.bat 없음 — Chrome 디버그 자동시작 스킵" -ForegroundColor Yellow
+    } else {
+        $ExistingChrome = Get-ScheduledTask -TaskName $ChromeTaskName -ErrorAction SilentlyContinue
+        if ($ExistingChrome -and $Force) {
+            Unregister-ScheduledTask -TaskName $ChromeTaskName -Confirm:$false
+            $ExistingChrome = $null
+        }
+
+        if ($ExistingChrome) {
+            Write-Host "[기존 $ChromeTaskName 작업 발견 — 스킵 (덮어쓰려면 -Force)]" -ForegroundColor Yellow
+        } else {
+            $ChromeAction = New-ScheduledTaskAction `
+                -Execute "cmd.exe" `
+                -Argument "/c `"$ChromeBat`"" `
+                -WorkingDirectory $ProjectRoot
+            # 부팅 후 1분 지연 — 사용자 GUI 세션 안정화 대기
+            $ChromeTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
+            $ChromeTrigger.Delay = "PT1M"
+            $ChromeSettings = New-ScheduledTaskSettingsSet `
+                -StartWhenAvailable `
+                -DontStopIfGoingOnBatteries `
+                -AllowStartIfOnBatteries
+
+            Register-ScheduledTask `
+                -TaskName $ChromeTaskName `
+                -Action $ChromeAction `
+                -Trigger $ChromeTrigger `
+                -Settings $ChromeSettings `
+                -Principal $Principal `
+                -Description "Qoo10 자동화용 디버그 Chrome (포트 9222, 사용자 로그인 시 1분 지연 후 자동 시작)" `
+                | Out-Null
+            Write-Host "[OK] '$ChromeTaskName' 등록 완료 — 사용자 로그인 1분 후 디버그 Chrome 자동 시작" -ForegroundColor Green
+        }
+    }
+}
 
 Write-Host ""
 Write-Host "[OK] 등록 완료. 매일 $Time 에 자동 실행됩니다." -ForegroundColor Green
