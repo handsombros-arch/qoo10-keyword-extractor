@@ -1,36 +1,24 @@
 """한국 상품 상세 페이지 진입 — 옵션별 가격 + 배송비 + 추가 이미지.
 
-대상: 매칭된 (DomesticMatchCandidate.decision='accepted') 한국 상품의 product_url.
-
-흐름:
-    1) 쿠팡: Scrapling StealthyFetcher 로 상세 페이지 HTML 획득 (AKAMAI 우회)
-    2) 네이버: product_url 이 외부 셀러 사이트 — best-effort httpx GET
-    3) 옵션 셀렉트 추출 (있으면) — 셀렉트 옵션 텍스트 + 가격 매핑
-       1차 단순화: 단일 가격이면 단일 옵션 ("default"/price_krw) 1건만 저장.
-       옵션 클릭 후 가격 변동 캡처는 후속 단계.
-    4) 배송비 텍스트 + 정규식 → shipping_kind/amount/threshold
-    5) 추가 이미지 URL 리스트 (상세 갤러리) → image/{date}/{name}/extras/ 에 저장
-
-반환:
-    {
-      "ok": bool,
-      "options": [{"name": str, "price_krw": int, "in_stock": bool}, ...],
-      "shipping": {"kind": "free"|"paid"|"conditional"|"unknown", "amount": int, "threshold": int},
-      "extra_image_urls": [url, ...],
-      "extra_image_paths": [local_path, ...],
-      "note": str,
-    }
+분기 (사용자 힌트 2026-04-28):
+    - 쿠팡 (coupang.com / link.coupang.com): Scrapling StealthyFetcher
+      (m07_coupang.py 와 동일 패턴 — camoufox stealth Firefox 가 AKAMAI 우회 검증됨)
+    - 네이버 (smartstore.naver.com 등): 기존 큐텐 로그인된 browser_manager 의
+      Chrome 컨텍스트에 새 탭 추가 (큐텐 _page 그대로, ctx.new_page() 분리)
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 import httpx
+from playwright.async_api import Page
 
 from app.services.domestic_image_pipeline import IMAGE_ROOT, _safe_folder_name
 
@@ -39,19 +27,17 @@ logger = logging.getLogger(__name__)
 _PRICE_RE = re.compile(r"\d{1,3}(?:,\d{3})+(?:\s*원)?")
 _NUMERIC_RE = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")
 
-# 배송비 키워드
 _FREE_KW = (
-    "무료배송", "무료 배송", "무료셔틀", "Free shipping", "배송비 무료",
-    "택배 무료", "FREE",
+    "무료배송", "무료 배송", "무료셔틀", "Free shipping",
+    "배송비 무료", "택배 무료", "FREE",
 )
 _CONDITIONAL_RE = re.compile(
-    r"(\d+(?:\,\d{3})*)\s*원?\s*이상.*(?:무료|free)",
+    r"(\d+(?:[,\.]\d{3})*)\s*원?\s*이상.*?(?:무료|free)",
     re.IGNORECASE,
 )
 
 
 def _parse_int_krw(s: str) -> int | None:
-    """'2,500원' / '2500' / 'KRW 2,500' → 2500."""
     if not s:
         return None
     m = _NUMERIC_RE.search(s)
@@ -64,48 +50,56 @@ def _parse_int_krw(s: str) -> int | None:
 
 
 def parse_shipping(text: str) -> dict:
-    """상세 페이지의 배송비 텍스트 → {kind, amount, threshold}.
-
-    우선순위: 조건부 (이상 무료) → 무료 키워드 → 가격 텍스트 (paid) → unknown.
-    """
+    """배송비 텍스트 → {kind, amount, threshold}."""
     if not text:
         return {"kind": "unknown", "amount": None, "threshold": None}
     t = text.strip()
-
-    # 1) 조건부 무료 — "5만원 이상 무료" / "50,000원 이상 무료배송"
     m = _CONDITIONAL_RE.search(t)
     if m:
-        thr_str = m.group(1).replace(",", "")
+        thr_str = m.group(1).replace(",", "").replace(".", "")
         try:
             threshold = int(thr_str)
-            # "5만원" 같이 만원 단위면 *10000
             if threshold < 100 and "만원" in t:
                 threshold *= 10000
             return {"kind": "conditional", "amount": 0, "threshold": threshold}
         except ValueError:
             pass
-
-    # 2) 무료 키워드
     for kw in _FREE_KW:
         if kw.lower() in t.lower():
             return {"kind": "free", "amount": 0, "threshold": None}
-
-    # 3) 유료 가격 (가격 패턴 발견 — 최저값 채택)
-    nums = [
-        int(s.replace(",", ""))
-        for s in re.findall(r"\d{1,3}(?:,\d{3})+", t)
-    ]
+    nums = [int(s.replace(",", "")) for s in re.findall(r"\d{1,3}(?:,\d{3})+", t)]
     if nums:
         return {"kind": "paid", "amount": min(nums), "threshold": None}
-
     return {"kind": "unknown", "amount": None, "threshold": None}
 
 
-# ─── 쿠팡 상세 ─────────────────────────────────────────────
+# ─── 세션 ──────────────────────────────────────────────────
+
+
+class DomesticDetailSession:
+    """워커 단위 세션 — 셀러 분기 시 별도 launch 없음.
+
+    쿠팡: Scrapling 은 호출당 fetch (세션 무관)
+    네이버: 기존 browser_manager 의 page 를 빌려서 새 탭 추가
+
+    __aenter__/__aexit__ 는 향후 캐시/통계용 빈 컨텍스트.
+    """
+
+    def __init__(self):
+        self._korean_pages_opened = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        pass
+
+
+# ─── 쿠팡 (Scrapling StealthyFetcher — m07 검증된 패턴) ────
 
 
 def _stealth_fetch_coupang(url: str):
-    """동기. Scrapling StealthyFetcher 로 쿠팡 상세 HTML 획득."""
+    """동기 — m07_coupang.py 와 동일 패턴, wait 길게."""
     try:
         from scrapling.fetchers import StealthyFetcher
     except ImportError as e:
@@ -115,10 +109,10 @@ def _stealth_fetch_coupang(url: str):
         "headless": True,
         "network_idle": True,
         "google_search": True,
-        "block_images": False,  # 상세 이미지 URL 추출 위해 이미지 허용
+        "block_images": False,
         "humanize": True,
         "solve_cloudflare": True,
-        "wait": 4000,
+        "wait": 5000,
     }
     optional = ["solve_cloudflare", "humanize", "google_search"]
     for attempt in range(len(optional) + 1):
@@ -172,7 +166,6 @@ def _attr(node, key: str) -> str:
 
 
 def _css_first(page, sel):
-    """page.css(sel) 첫 번째 요소 (Scrapling Response 호환)."""
     try:
         els = page.css(sel)
     except Exception:
@@ -181,41 +174,96 @@ def _css_first(page, sel):
     return items[0] if items else None
 
 
-def _extract_coupang_detail(page) -> dict:
-    """쿠팡 상품 상세 페이지에서 옵션/배송/이미지 추출."""
+async def _fetch_coupang(url: str) -> dict:
+    """쿠팡 vp/products + 옵션/배송비/이미지 (Scrapling StealthyFetcher)."""
     out: dict[str, Any] = {
-        "options": [],
-        "shipping_text": "",
-        "extra_image_urls": [],
+        "options": [], "shipping_text": "", "extra_image_urls": [],
     }
+    try:
+        page = await asyncio.to_thread(_stealth_fetch_coupang, url)
+    except Exception as e:
+        logger.warning(f"[detail/coupang] fetch 실패 {url[:60]}: {e}")
+        return out
+    if page is None:
+        return out
 
-    # 1) 가격 (메인) — .prod-price__sale .total-price strong
+    # 차단 검사
+    try:
+        body_text = (page.text if hasattr(page, "text") else None) or ""
+    except Exception:
+        body_text = ""
+    if isinstance(body_text, str) and "Access Denied" in body_text:
+        logger.warning("[detail/coupang] Access Denied")
+        return out
+
+    # 가격 — selector + 정규식 fallback
     price_main = None
     for sel in [
         ".prod-price__sale .total-price strong",
         ".total-price strong",
         ".prod-price__price",
         "[class*='priceArea'] [class*='price']",
+        "[class*='price'] strong",
     ]:
         el = _css_first(page, sel)
         if el:
-            txt = _text(el)
-            v = _parse_int_krw(txt)
+            v = _parse_int_krw(_text(el))
             if v:
                 price_main = v
                 break
+    if price_main is None:
+        # Scrapling Response 에서 .body / .html_content / str() 로 HTML 추출
+        try:
+            html = ""
+            for attr in ("html_content", "text"):
+                v = getattr(page, attr, None)
+                if isinstance(v, str):
+                    html = v; break
+                if callable(v):
+                    r = v()
+                    if isinstance(r, str): html = r; break
+            if not html:
+                html = str(page)
+            nums = [int(s.replace(",", "")) for s in re.findall(r"\d{1,3}(?:,\d{3})+", html)]
+            nums = [n for n in nums if 1000 <= n <= 10_000_000]
+            if nums:
+                price_main = Counter(nums).most_common(1)[0][0]
+        except Exception:
+            pass
     if price_main:
-        out["options"].append({
-            "name": "default",
-            "price_krw": price_main,
-            "in_stock": True,
-        })
+        out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
 
-    # 2) 배송비 영역 — '.prod-shipping-fee' / '.shipping-fee' / 배송 관련 텍스트
-    shipping_text = ""
+    # 옵션 (li 텍스트 + 가격 정규식)
+    try:
+        for sel in [
+            "ul[class*='prod-option'] li",
+            "[class*='Option'] li",
+            "select[class*='option'] option",
+        ]:
+            try:
+                els = page.css(sel)
+            except Exception:
+                els = []
+            opts_cnt = 0
+            for el in list(els)[:20]:
+                t = _text(el)
+                if not t or len(t) > 100:
+                    continue
+                price = _parse_int_krw(t)
+                if price and price != price_main:
+                    out["options"].append({"name": t[:80], "price_krw": price, "in_stock": True})
+                    opts_cnt += 1
+            if opts_cnt:
+                break
+    except Exception:
+        pass
+
+    # 배송비
+    ship_text = ""
     for sel in [
         ".prod-shipping-fee", ".shipping-fee",
         "[class*='shipping']", "[class*='Shipping']",
+        "[class*='Delivery'] [class*='fee']",
     ]:
         try:
             els = page.css(sel)
@@ -223,14 +271,15 @@ def _extract_coupang_detail(page) -> dict:
             els = []
         for el in list(els)[:3]:
             t = _text(el)
-            if t and len(shipping_text) < 200:
-                shipping_text += " " + t
-    out["shipping_text"] = shipping_text.strip()
+            if t and len(ship_text) < 200:
+                ship_text += " " + t
+    out["shipping_text"] = ship_text.strip()
 
-    # 3) 상세 이미지 — img[src*='thumbnail'] 또는 .prod-image img
+    # 추가 이미지
     seen: set[str] = set()
     for sel in [
-        ".prod-image img", "[class*='ProductImage'] img",
+        ".prod-image img",
+        "[class*='ProductImage'] img",
         "img[src*='coupangcdn.com']",
     ]:
         try:
@@ -250,49 +299,157 @@ def _extract_coupang_detail(page) -> dict:
     return out
 
 
-# ─── 네이버 상세 (best-effort) ────────────────────────────
+# ─── 네이버 (browser_manager 의 큐텐 컨텍스트에 새 탭) ──────
 
 
-async def _fetch_naver_detail(url: str) -> dict:
-    """네이버 product_url → 외부 셀러 사이트. best-effort httpx GET.
+async def _fetch_naver_via_browser_manager(url: str) -> dict:
+    """browser_manager 의 살아있는 큐텐 Chrome 컨텍스트에 새 탭 추가 → 한국 셀러 페이지 진입.
 
-    네이버 쇼핑은 셀러 페이지가 너무 다양해 일반화 어렵다. 1차는
-    HTML 텍스트에서 가격/배송비 정규식만 시도. 실패 시 빈 결과.
+    헤드풀 + 큐텐 로그인 쿠키 (도메인 다르니 한국 쇼핑은 영향 X)
+    + 사용자 GUI 환경 → 봇 탐지 우회.
     """
     out: dict[str, Any] = {
         "options": [], "shipping_text": "", "extra_image_urls": [],
     }
     try:
-        async with httpx.AsyncClient(
-            timeout=15.0,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0)"},
-            follow_redirects=True,
-        ) as client:
-            resp = await client.get(url)
-            html = resp.text
+        from app.browser.manager import browser_manager
+        bm_page = await browser_manager.get_page()
+        ctx = bm_page.context
     except Exception as e:
-        logger.warning(f"[detail/naver] fetch 실패 {url[:60]}: {e}")
+        logger.warning(f"[detail/naver] browser_manager 획득 실패: {e}")
         return out
 
-    # 가격 — 첫 번째 큰 가격 텍스트 (정규식)
-    prices = [
-        int(s.replace(",", ""))
-        for s in re.findall(r"\d{1,3}(?:,\d{3})+", html)
-    ]
-    # 너무 큰 값(100만 이상) + 너무 작은 값 필터
-    prices = [p for p in prices if 1000 <= p <= 1_000_000]
-    if prices:
-        # 가장 빈번한 값 — 메인 가격일 가능성 (셀러 페이지에서 같은 가격이 여러 곳 표기)
-        from collections import Counter
-        top = Counter(prices).most_common(1)[0][0]
-        out["options"].append({"name": "default", "price_krw": top, "in_stock": True})
+    page: Page | None = None
+    try:
+        page = await ctx.new_page()
+        try:
+            from tf_playwright_stealth import stealth_async
+            await stealth_async(page)
+        except Exception:
+            pass
+        try:
+            await page.goto(
+                url,
+                referer="https://search.naver.com/",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+        except Exception as e:
+            logger.warning(f"[detail/naver] goto 실패 {url[:60]}: {e}")
+            return out
+        await page.wait_for_timeout(2000)
+        try:
+            await page.mouse.wheel(0, 800)
+            await page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
 
-    # 배송비 — 무료/유료/조건부 텍스트 검색
-    for chunk in re.findall(r".{0,50}(?:배송|무료|delivery|shipping).{0,80}", html, re.IGNORECASE):
-        out["shipping_text"] += " " + chunk
-        if len(out["shipping_text"]) > 500:
-            break
-    out["shipping_text"] = out["shipping_text"].strip()[:500]
+        # 차단/에러 페이지
+        title = (await page.title()) or ""
+        if "에러" in title or "Error" in title:
+            logger.warning(f"[detail/naver] 에러 페이지 (title={title!r})")
+            return out
+
+        # 가격 — selector + HTML 정규식 fallback
+        price_main = None
+        for sel in [
+            "strong[class*='price']", "div[class*='price'] strong",
+            "[class*='Price'] strong", ".price em", "._1LY7DqCnwR strong",
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count():
+                    txt = (await el.inner_text(timeout=2000)).strip()
+                    v = _parse_int_krw(txt)
+                    if v:
+                        price_main = v
+                        break
+            except Exception:
+                continue
+        if price_main is None:
+            try:
+                html = await page.content()
+                nums = [int(s.replace(",", "")) for s in re.findall(r"\d{1,3}(?:,\d{3})+", html)]
+                nums = [n for n in nums if 1000 <= n <= 10_000_000]
+                if nums:
+                    price_main = Counter(nums).most_common(1)[0][0]
+            except Exception:
+                pass
+        if price_main:
+            out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
+
+        # 옵션
+        try:
+            for sel in [
+                "ul[class*='option'] li", "[class*='Option'] li",
+                "select option",
+            ]:
+                els = page.locator(sel)
+                cnt = await els.count()
+                if cnt and cnt < 30:
+                    cnt_added = 0
+                    for i in range(cnt):
+                        try:
+                            t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                            if t and len(t) < 100:
+                                price = _parse_int_krw(t)
+                                if price and price != price_main:
+                                    out["options"].append({
+                                        "name": t[:80], "price_krw": price, "in_stock": True,
+                                    })
+                                    cnt_added += 1
+                        except Exception:
+                            pass
+                    if cnt_added:
+                        break
+        except Exception:
+            pass
+
+        # 배송비
+        ship_text = ""
+        for sel in [
+            "[class*='delivery']", "[class*='Delivery']",
+            "[class*='shipping']", "[class*='Shipping']",
+        ]:
+            try:
+                els = page.locator(sel)
+                cnt = await els.count()
+                for i in range(min(cnt, 3)):
+                    t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                    if t and len(ship_text) < 200:
+                        ship_text += " " + t
+            except Exception:
+                continue
+        out["shipping_text"] = ship_text.strip()
+
+        # 추가 이미지
+        try:
+            img_locs = page.locator(
+                "img[src*='shop-phinf.pstatic.net'], "
+                "img[src*='phinf.pstatic.net'], "
+                "[class*='thumb'] img, [class*='Thumb'] img"
+            )
+            cnt = await img_locs.count()
+            seen: set[str] = set()
+            for i in range(min(cnt, 10)):
+                try:
+                    src = await img_locs.nth(i).get_attribute("src")
+                    if src and src.startswith("http") and src not in seen:
+                        seen.add(src)
+                        out["extra_image_urls"].append(src)
+                    if len(out["extra_image_urls"]) >= 6:
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
 
     return out
 
@@ -302,16 +459,14 @@ async def _fetch_naver_detail(url: str) -> dict:
 
 async def scrape_domestic_detail(
     *,
+    session: DomesticDetailSession,
     domestic_id: int,
-    source: str,             # "coupang" | "naver"
+    source: str,
     product_url: str,
     product_name_kr: str,
     date_str: str,
 ) -> dict:
-    """한 한국 상품의 상세 페이지 진입 + 옵션/배송/이미지 추출 + 로컬 이미지 저장.
-
-    실패해도 자동화 막지 않음: ok=False + note.
-    """
+    """한 한국 상품 상세 진입 — 셀러별 fetch + DB 저장용 결과."""
     result: dict[str, Any] = {
         "ok": False,
         "options": [],
@@ -320,28 +475,19 @@ async def scrape_domestic_detail(
         "extra_image_paths": [],
         "note": "",
     }
-
     if not product_url:
         result["note"] = "no_url"
         return result
 
     src = (source or "").lower()
-    # URL 호스트로 실제 분기 결정 — naver 검색 결과의 product_url 이
-    # link.coupang.com / coupang.com 으로 redirect 되는 경우 다수.
     url_lower = product_url.lower()
-    is_coupang_url = "coupang.com" in url_lower
+    is_coupang = "coupang.com" in url_lower
+
     try:
-        if is_coupang_url or src == "coupang":
-            page = await asyncio.to_thread(_stealth_fetch_coupang, product_url)
-            if page is None:
-                result["note"] = "coupang_fetch_none"
-                return result
-            parsed = _extract_coupang_detail(page)
-        elif src == "naver":
-            parsed = await _fetch_naver_detail(product_url)
+        if is_coupang:
+            parsed = await _fetch_coupang(product_url)
         else:
-            result["note"] = f"unsupported_source:{src}"
-            return result
+            parsed = await _fetch_naver_via_browser_manager(product_url)
     except Exception as e:
         logger.warning(f"[detail] {src} 스크래핑 실패 {product_url[:60]}: {e}")
         result["note"] = f"fetch_error:{type(e).__name__}"
@@ -351,7 +497,7 @@ async def scrape_domestic_detail(
     result["shipping"] = parse_shipping(parsed.get("shipping_text", ""))
     result["extra_image_urls"] = parsed.get("extra_image_urls", [])
 
-    # 추가 이미지 다운로드 → image/{date}/{name}/extras/{idx}.jpg
+    # 추가 이미지 다운로드
     if result["extra_image_urls"]:
         folder_name = _safe_folder_name(product_name_kr or f"product_{domestic_id}")
         extras_dir = IMAGE_ROOT / date_str / folder_name / "extras"
@@ -388,4 +534,4 @@ async def scrape_domestic_detail(
     return result
 
 
-__all__ = ["scrape_domestic_detail", "parse_shipping"]
+__all__ = ["scrape_domestic_detail", "parse_shipping", "DomesticDetailSession"]

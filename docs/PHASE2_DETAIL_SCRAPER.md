@@ -152,3 +152,86 @@ JSON-LD 없음
 - **1차 시운전 결과**: 0/3 OK — httpx/StealthyFetcher 단독으론 한국 상품 상세 진입 차단됨
 - **인프라는 완성** (DB/엔드포인트/트리거/정규식) — 후속 Playwright 작업이 그대로 활용 가능
 - **다음 액션**: 별도 세션에서 Playwright async + 셀러별 fetch 정밀 작업
+
+---
+
+## 10. 2차 시운전 (2026-04-28 02:40 ~ 03:00) — 추가 negative
+
+진단 보고서(§ 5) 권장 A 옵션 (Playwright async) + 사용자 힌트 적용:
+- (a) Scrapling StealthyFetcher 패턴 (m07 검증 — 검색 결과 OK)
+- (b) browser_manager 의 기존 큐텐 Chrome 컨텍스트에 새 탭
+
+### 시도 1 — Playwright async 헤드리스 + tf-playwright-stealth
+
+| 셀러 | 결과 |
+|---|---|
+| 쿠팡 vp/products | Access Denied (title) — 헤드리스 + stealth 도 AKAMAI 못 뚫음 |
+| 스마트스토어 모바일 | 「[에러페이지] 에러페이지」 (title) — 봇 차단 |
+
+### 시도 2 — Playwright launch_persistent_context (헤드풀 + user_data_dir)
+
+직접 디버그 (스크립트):
+| 셀러 | 결과 |
+|---|---|
+| 쿠팡 vp/products | ✅ title 정확, html 2.9MB, 가격 정규식 다수 (104,000 등) — **로드 성공** |
+| 스마트스토어 | title 빈, html 52KB, 가격 정규식 0 — **로드는 되나 가격 미렌더** |
+
+→ 헤드풀 직접 호출은 쿠팡 가능, 스마트스토어는 SPA 렌더링 못 받음.
+
+백엔드 워커에서 같은 코드 호출 시:
+| 셀러 | 결과 |
+|---|---|
+| 모두 | empty_parse — 헤드풀 GUI 가 떠야 하는데 백엔드 프로세스에서 launch 됐는지 불명확 |
+
+### 시도 3 — Scrapling (쿠팡) + browser_manager 새 탭 (네이버)
+
+| 셀러 | 결과 |
+|---|---|
+| 쿠팡 vp/products (Scrapling wait=5000) | **403** — `Fetched (302)` redirect 후 `Fetched (403)`. 검색 결과(m07)는 OK, 상세 페이지는 차단 |
+| 스마트스토어 (browser_manager.ctx.new_page) | title 빈, html 52KB, 가격 정규식 0 — networkidle 15초 대기 후도 동일 |
+
+### 핵심 본질적 한계
+
+- **쿠팡 vp/products**: AKAMAI 차단이 검색 결과보다 훨씬 강함. Scrapling/Playwright/StealthyFetcher 모두 실패.
+- **스마트스토어**: 페이지는 로드되나 **가격이 React SPA 로 동적 렌더링** + 봇 감지로 가격 숨김.
+  - JSON-LD 없음
+  - meta[property=product:price:amount] 없음
+  - 가격 selector 매칭 0
+
+### 시도하지 않은 마지막 옵션
+
+| 옵션 | 평가 |
+|---|---|
+| 모바일 앱 트래픽 분석 → 내부 API | ToS 위반 위험 + 큰 작업 (역공학) |
+| Proxy 풀 + 사용자 행동 시뮬레이션 | 월 $50+ 비용 + 안정성↓ |
+| 사용자가 수동으로 페이지 열어 데이터 추출 | 자동화 무의미 |
+| **명세 축소 — 검색 API 데이터만 활용** | 옵션/배송비/내용물 포기. 가격 + cover image + 검색 link 만. 현재 m08 결과 그대로 사용. |
+
+## 11. 권장 결정 (사장님 의사 결정 필요)
+
+| # | 옵션 | 트레이드오프 |
+|---|---|---|
+| **A** | **명세 축소** — Phase 2 의 옵션/배송비/내용물 포기. 검색 API 결과(m08)만으로 진행. | ✅ 즉시 가능, ❌ 명세 미달 (옵션별 가격 X, 세트 제안 X) |
+| B | 모바일 앱 트래픽 분석 — 내부 API 발견 | ❌ 1주+ 작업, ToS 위험 |
+| C | Proxy 풀 + 헤드풀 + 사용자 행동 시뮬레이션 | ❌ 월 비용 + 인프라 큰 작업 |
+| D | 일부 셀러만 (예: 다른 쇼핑몰 e.g. 11번가/G마켓 — 봇 차단 약함) | ❌ 데이터 커버리지 ↓ |
+
+### 권장: **A (명세 축소)** 단기, 추후 **B 검토**
+
+- m08 검색 API 가 이미 가격/링크/이미지 줌 — 그걸로 추천 시트 빌드 가능
+- Phase 2 인프라 (DB/엔드포인트/정규식) 는 그대로 두고, 데이터 채움은 m08 결과로
+- 옵션별 가격 + 누끼/내용물 이미지 + 세트 제안은 Phase 2.5 로 분리, B 옵션 (모바일 API) 가 풀릴 때 진입
+
+## 12. 인프라 잔존 가치 (재확인)
+
+| 그대로 둠 | 폐기 또는 후속 |
+|---|---|
+| ✅ DB `domestic_product_options` 테이블 | — |
+| ✅ `domestic_products` 신규 컬럼 5개 | — |
+| ✅ `POST /api/products/domestic/scrape-details` | 호출자만 변경 (m08 결과 활용) |
+| ✅ `automation/trigger_domestic_details.py` | — |
+| ✅ `parse_shipping` 정규식 | — |
+| ✅ URL 호스트 자동 분기 | — |
+| ⚠️ `_fetch_coupang` (Scrapling) | vp/products 못 뚫어 무용 — 후속 작업 시 재활용 |
+| ⚠️ `_fetch_naver_via_browser_manager` | SPA 렌더 못 받아 무용 — 후속 작업 시 재활용 |
+| ❌ 옵션 클릭 시뮬레이션 | 미구현 — 후속 |
