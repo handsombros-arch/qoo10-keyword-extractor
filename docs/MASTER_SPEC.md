@@ -280,7 +280,7 @@ decision    = "accepted" if (image_ok AND
 | **「マキシム」 → 「맥시멈」 의역** | 한국 정착 표기 「맥심」 미반영. 후처리 사전 필요 | 보고서 § 1 |
 | **번역 시 브랜드명 누락** | 「コスノリ 眉毛脱色」 → 「이지브로우 톤체인지」 (코스노리 빠짐). 매칭 측 keyword_kr 토큰 합치기로 우회. 프롬프트 강화로 신규 번역에서 완화 예상. | PHASE1_POSITIVE_TEST § 5 |
 | **번역 JSON 파싱 폴백 결함** | 달바: `{"ko": "..."` raw 가 ko 컬럼에 박힘. translate.py B-2 패치로 향후 None 반환. 기존 깨진 ko 는 reset + 재번역. | PHASE1_POSITIVE_TEST § 5 |
-| **LLM 카테고리 분류 결함 (K-뷰티)** | 메디큐브/달바/dasique 등 명백 K-뷰티가 「기타」로 분류. 4/27 is_brand=1 인 29개 모두 「기타」. category.py 프롬프트/모델 점검 필요. | PHASE1_POSITIVE_TEST § 9 |
+| ~~LLM 카테고리 분류 결함 (K-뷰티)~~ | ✅ 2026-04-28 해결. classify_category_async 에 examples=list[str] 추가, prompt 에 「참고 상품명」 블록. caller(api/keywords.py)가 큐텐/한국 상품명 5개 컨텍스트 자동 전달. 4/27 32건 재분류: is_brand=1 0→19, 메디큐브/달바/코스노리 → 03.뷰티 정확 분류. | DIAGNOSIS § 2-3 #3 |
 | **4/25 큐텐 데이터 22 키워드만** | 트렌드 추출은 670개/일이지만 m09 큐텐 상품 수집은 22 키워드만 진행. daily_workflow 단계 차이 점검 필요. | PHASE1_POSITIVE_TEST § 1 |
 | **이미지 폴더명 특수문자 sanitize** | `[`, `]`, `(`, `)` 등 — 2026-04-27 보강 완료 (`_safe_folder_name`) | 이번 작업 |
 | **상대경로 + cwd 미스 → FileNotFoundError** | `image_local_path` 가 `image/...` 상대경로. 백엔드 cwd 다를 때 fail. 절대경로 변환 패치로 해결 | 이번 작업 |

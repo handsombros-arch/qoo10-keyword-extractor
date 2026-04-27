@@ -89,8 +89,14 @@ def _normalize_response(text: str) -> str:
     return FALLBACK
 
 
-async def classify_category_async(product_name: str) -> str:
-    """상품명을 큐텐 카테고리로 분류 (async).
+async def classify_category_async(
+    product_name: str,
+    examples: list[str] | None = None,
+) -> str:
+    """상품명/키워드를 큐텐 카테고리로 분류 (async).
+
+    examples (선택): 같은 키워드의 큐텐/네이버 상품명 N개. 키워드가 브랜드 단독
+    같이 짧을 때 컨텍스트로 활용 — 「メディキューブ」 단독이면 「기타」 폴백되던 결함 회피.
 
     빈 입력은 즉시 '기타' 반환 (LLM 호출 안 함).
     호출 실패 시 '기타' 반환 — 자동화 파이프라인을 막지 않는다.
@@ -106,7 +112,15 @@ async def classify_category_async(product_name: str) -> str:
         return FALLBACK
 
     template = load_prompt("category_classification")
-    prompt = template.replace("{product_name}", name)
+    # examples 블록 — 비면 빈 줄, 있으면 max 5건 한 줄씩
+    examples_block = ""
+    if examples:
+        sample = [e.strip() for e in examples if e and e.strip()][:5]
+        if sample:
+            examples_block = "\n참고 상품명 (해당 키워드의 실제 상품 예시):\n" + "\n".join(
+                f"- {s[:80]}" for s in sample
+            )
+    prompt = template.replace("{product_name}", name).replace("{examples_block}", examples_block)
 
     try:
         result = await client.chat(
@@ -141,12 +155,12 @@ async def classify_category_async(product_name: str) -> str:
     return _normalize_response(label_text)
 
 
-def classify_category(product_name: str) -> str:
+def classify_category(product_name: str, examples: list[str] | None = None) -> str:
     """동기 래퍼 — CLI / 검증용.
 
     이미 event loop 안에서 호출되면 RuntimeError 가 난다 → 그땐 async 버전 직접 사용.
     """
-    return run_sync(classify_category_async(product_name))
+    return run_sync(classify_category_async(product_name, examples))
 
 
 __all__ = ["LABELS", "FALLBACK", "classify_category", "classify_category_async"]

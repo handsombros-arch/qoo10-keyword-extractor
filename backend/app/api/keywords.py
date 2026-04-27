@@ -147,7 +147,7 @@ async def _run_classify_categories(task_id: str, target_date, limit: int | None)
     unique 키워드 단위로 LLM 호출 (category + brand 각각). 같은 텍스트의 모든 행 UPDATE.
     """
     from sqlalchemy import select as _sel, update as _upd, and_ as _and, or_ as _or
-    from app.db.models import Keyword as _Keyword
+    from app.db.models import Keyword as _Keyword, Qoo10Product as _Q, DomesticProduct as _DP
     from app.services.llm.category import classify_category_async
     from app.services.llm.brand import is_brand_keyword_async
 
@@ -166,18 +166,59 @@ async def _run_classify_categories(task_id: str, target_date, limit: int | None)
             )
             rows = (await session.execute(stmt)).all()
 
-        # 2) (keyword_kr or keyword_jp) → row_ids 매핑
+        # 2) (keyword_kr or keyword_jp) → row_ids + jp/kr 매핑 (examples 조회용)
         text_to_ids: dict[str, list[int]] = {}
+        text_to_jp: dict[str, str] = {}
+        text_to_kr: dict[str, str] = {}
         for row in rows:
             kid, kw_jp, kw_kr = row
             text = (kw_kr or kw_jp or "").strip()
             if not text:
                 continue
             text_to_ids.setdefault(text, []).append(kid)
+            if kw_jp and text not in text_to_jp:
+                text_to_jp[text] = kw_jp
+            if kw_kr and text not in text_to_kr:
+                text_to_kr[text] = kw_kr
 
         unique_texts = list(text_to_ids.keys())
         if limit:
             unique_texts = unique_texts[:limit]
+
+        # 2-b) 각 키워드의 큐텐(jp) / 한국(kr) 상품명 5개 examples 한 번에 모음
+        # 같은 search_keyword 의 어떤 lookup_date 든 OK — 가장 최근 5개.
+        examples_map: dict[str, list[str]] = {}
+        if unique_texts:
+            async with async_session() as session:
+                jps = sorted({text_to_jp.get(t, "") for t in unique_texts if text_to_jp.get(t)})
+                krs = sorted({text_to_kr.get(t, "") for t in unique_texts if text_to_kr.get(t)})
+                if jps:
+                    q_rows = (await session.execute(
+                        _sel(_Q.search_keyword, _Q.product_name)
+                        .where(_Q.search_keyword.in_(jps))
+                        .where(_Q.product_name.is_not(None))
+                        .order_by(_Q.lookup_date.desc(), _Q.id.desc())
+                    )).all()
+                    for kw, pn in q_rows:
+                        if not kw or not pn:
+                            continue
+                        # 키워드 텍스트는 kr 우선 매핑이라 jp 로 들어왔어도 text 로 변환
+                        for t in unique_texts:
+                            if text_to_jp.get(t) == kw and len(examples_map.setdefault(t, [])) < 5:
+                                examples_map[t].append(pn)
+                if krs:
+                    d_rows = (await session.execute(
+                        _sel(_DP.search_keyword, _DP.product_name)
+                        .where(_DP.search_keyword.in_(krs))
+                        .where(_DP.product_name.is_not(None))
+                        .order_by(_DP.lookup_date.desc(), _DP.id.desc())
+                    )).all()
+                    for kw, pn in d_rows:
+                        if not kw or not pn:
+                            continue
+                        for t in unique_texts:
+                            if text_to_kr.get(t) == kw and len(examples_map.setdefault(t, [])) < 5:
+                                examples_map[t].append(pn)
 
         # 3) 순차 분류 + UPDATE (카테고리 + 브랜드 둘 다)
         for idx, text in enumerate(unique_texts, 1):
@@ -186,7 +227,7 @@ async def _run_classify_categories(task_id: str, target_date, limit: int | None)
                 "is_brand": False, "brand_kr": "", "brand_jp": "", "brand_en": "",
             }
             try:
-                label = await classify_category_async(text)
+                label = await classify_category_async(text, examples=examples_map.get(text))
             except Exception:
                 failed += 1
                 task_manager.update_progress(
