@@ -1,4 +1,4 @@
-"""일본어 ↔ 한국어 텍스트 번역 (LLM + DB 캐시).
+"""일본어 ↔ 한국어 텍스트 번역 (LLM + DB 캐시 + 폴백 체인).
 
 용도:
     - 큐텐 상품명(일본어) → 한국어 검색 키워드 변환 (3-1 매칭용)
@@ -8,17 +8,20 @@
     TranslationCache 테이블 PK = (source_text, source_lang, target_lang).
     같은 원문은 1회만 LLM 호출하고 다음부터 DB hit.
 
-env: TRANSLATE_MODEL=<provider:model>  (기본 추천 ollama:qwen2.5:7b)
+env:
+    TRANSLATE_MODEL=<provider:model>            (기본 모델)
+    TRANSLATE_FALLBACK_MODELS=<spec1>,<spec2>   (선택, 콤마 구분 — 첫 모델 실패 시 순차 폴백)
+
 prompt: app/services/llm/prompts/jp_ko_translation.txt
 
 사용:
     ko = await translate_jp_to_ko_async("メディキューブ ゼロ毛穴パッド 70枚")
-    # → "메디큐브 제로 모공패드 70매"
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 from sqlalchemy import select
@@ -28,7 +31,8 @@ from app.db.connection import async_session
 from app.db.models import TranslationCache
 
 from ._sync import run_sync
-from .router import get_client_for, load_prompt
+from .base import LLMClient
+from .router import _build_client, get_client_for, load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +44,7 @@ def _strip_codefence(s: str) -> str:
 
 
 def _parse_translation(raw: str) -> str | None:
-    """LLM 응답에서 'ko' 필드 추출.
-
-    JSON 파싱 실패 / 'ko' 필드 누락 시 None 반환 (DB UPDATE 스킵).
-    이전 버전은 raw 첫 줄을 폴백 사용했으나 '{"ko": "...' 같은 JSON 잔재가
-    그대로 ko 컬럼에 박히는 결함이 있어 제거.
-    """
+    """LLM 응답에서 'ko' 필드 추출. 파싱 실패 시 None."""
     if not raw:
         return None
     s = _strip_codefence(raw)
@@ -88,16 +87,56 @@ async def _cache_put(source_text: str, src: str, tgt: str, translated: str, mode
             ))
             await session.commit()
     except IntegrityError:
-        # 동시성으로 다른 워커가 먼저 INSERT — 정상
         pass
     except Exception as e:
         logger.warning(f"[translate] 캐시 저장 실패: {e}")
 
 
-async def translate_jp_to_ko_async(product_name: str) -> str | None:
-    """일본어 상품명 → 한국어 번역. 캐시 hit 면 LLM 호출 없음.
+def _fallback_specs() -> list[str]:
+    """env TRANSLATE_FALLBACK_MODELS 콤마 구분 → 모델 spec 리스트."""
+    raw = (os.getenv("TRANSLATE_FALLBACK_MODELS") or "").strip()
+    if not raw:
+        return []
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
-    빈/None 입력은 None 반환. 호출 실패 시 None 반환 (caller 가 폴백 처리).
+
+async def _try_translate_with(client: LLMClient, prompt: str) -> tuple[str | None, str]:
+    """단일 클라이언트로 번역 시도. (ko, model_name) 반환. 실패 시 ko=None."""
+    try:
+        result = await client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            json_mode=True,
+            max_tokens=2048,
+        )
+    except Exception as e:
+        logger.warning(f"[translate] {client.name} 호출 실패: {e}")
+        return None, client.name
+
+    text = (result.text or "").strip()
+    if not text:
+        logger.warning(
+            f"[translate] {client.name} 빈 응답 "
+            f"(in_tok={result.input_tokens}, out_tok={result.output_tokens})"
+        )
+        return None, result.model
+
+    ko = _parse_translation(text)
+    if not ko:
+        logger.warning(f"[translate] {client.name} 파싱 실패: {text[:100]!r}")
+        return None, result.model
+
+    return ko, result.model
+
+
+async def translate_jp_to_ko_async(product_name: str) -> str | None:
+    """일본어 상품명 → 한국어 번역. 캐시 + 폴백 체인.
+
+    흐름:
+        1) translation_cache hit 시 즉시 반환
+        2) TRANSLATE_MODEL 으로 1차 시도
+        3) 빈 응답/파싱 실패 시 TRANSLATE_FALLBACK_MODELS 의 모델로 순차 재시도
+        4) 모두 실패 시 None
     """
     name = (product_name or "").strip()
     if not name:
@@ -107,43 +146,37 @@ async def translate_jp_to_ko_async(product_name: str) -> str | None:
     if cached:
         return cached
 
-    try:
-        client = get_client_for("translate")
-    except Exception as e:
-        logger.error(f"[translate] 클라이언트 생성 실패 ({e})")
-        return None
-
     template = load_prompt("jp_ko_translation")
     prompt = template.replace("{product_name}", name)
 
+    # 1차 — TRANSLATE_MODEL
     try:
-        # qwen3:14b 같은 reasoning 모델은 thinking 토큰을 num_predict 안에 포함하므로
-        # 2048 이상 필요. qwen2.5:7b 는 500도 충분하지만 통일.
-        result = await client.chat(
-            [{"role": "user", "content": prompt}],
-            temperature=0.0,
-            json_mode=True,
-            max_tokens=2048,
-        )
+        primary = get_client_for("translate")
     except Exception as e:
-        logger.error(f"[translate] LLM 호출 실패 ({e})")
-        return None
+        logger.error(f"[translate] 1차 클라이언트 생성 실패 ({e})")
+        primary = None
 
-    text = (result.text or "").strip()
-    if len(text) < 1:
-        logger.warning(
-            f"[translate] 빈 응답 "
-            f"(in_tok={result.input_tokens}, out_tok={result.output_tokens})"
-        )
-        return None
+    if primary is not None:
+        ko, used_model = await _try_translate_with(primary, prompt)
+        if ko:
+            await _cache_put(name, "ja", "ko", ko, used_model)
+            return ko
 
-    ko = _parse_translation(text)
-    if not ko:
-        logger.warning(f"[translate] 파싱 실패: {text[:100]!r}")
-        return None
+    # 2차+ — 폴백 체인
+    for spec in _fallback_specs():
+        try:
+            fb_client = _build_client(spec)
+        except Exception as e:
+            logger.warning(f"[translate] 폴백 {spec} 빌드 실패: {e}")
+            continue
+        ko, used_model = await _try_translate_with(fb_client, prompt)
+        if ko:
+            logger.info(f"[translate] 폴백 hit ({spec}) for {name[:30]!r}")
+            await _cache_put(name, "ja", "ko", ko, used_model)
+            return ko
 
-    await _cache_put(name, "ja", "ko", ko, result.model)
-    return ko
+    logger.warning(f"[translate] 모든 모델 실패: {name[:50]!r}")
+    return None
 
 
 def translate_jp_to_ko(product_name: str) -> str | None:
