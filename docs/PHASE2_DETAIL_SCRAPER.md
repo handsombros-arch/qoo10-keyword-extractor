@@ -235,3 +235,57 @@ JSON-LD 없음
 | ⚠️ `_fetch_coupang` (Scrapling) | vp/products 못 뚫어 무용 — 후속 작업 시 재활용 |
 | ⚠️ `_fetch_naver_via_browser_manager` | SPA 렌더 못 받아 무용 — 후속 작업 시 재활용 |
 | ❌ 옵션 클릭 시뮬레이션 | 미구현 — 후속 |
+
+---
+
+## 13. A 옵션 진행 결과 (2026-04-28 03:10) ✅
+
+사장님 결정 → A (명세 축소) 진행. 검색 API 데이터(이미 DB 의 `DomesticProduct.price_krw`)를 옵션 1건으로 INSERT.
+
+### 패치 3건
+
+| # | 영역 | 변경 |
+|---|---|---|
+| J-1 | `api/products.py` | scrape-details 에 `mode` 파라미터 추가 (기본 `api_only`, 옵션 `scrape`). `_run_fill_from_api` 신규. |
+| J-2 | `automation/trigger_domestic_details.py` | `--scrape` 플래그 추가 (기본 api_only) |
+| J-3 | rows SELECT 6-tuple (id/source/name/url/**price_krw/cover_url** 추가) | `_run_scrape_details` 도 6-tuple 받도록 동기화 |
+
+### 시운전 결과 (4/25 accepted 13건, api_only 모드)
+
+| 항목 | 값 |
+|---|---|
+| 처리 결과 | **OK 13 / SKIP 0 / 실패 0** |
+| `domestic_product_options` 행 | **13** (모두 default 옵션 1개) |
+| `domestic_products.detail_scraped_at` 채워짐 | 13 |
+| `shipping_kind` | 모두 "unknown" (검색 API 한계) |
+
+### 샘플
+
+| domestic_id | 상품명 | 옵션 |
+|---|---|---|
+| d=14 | 코스노리 이지 브로우 톤 체인저 눈썹 탈색제 5회분 | default = 20,800원 |
+| d=58 | 짱구 캐릭터즈 봉봉 드롭씰 3D 입체 스티커 | default = 4,000원 |
+| d=339 | 짱구 캐릭터즈 봉봉 드롭씰 3D 입체 스티커 | default = 4,000원 |
+| d=1022 | 두바이 초콜릿 피스타치오 카다이프 얇은 초콜릿 크리스피 디저트 | default = 3,500원 |
+| d=1063 | 짱구 캐릭터즈 봉봉 드롭씰 3D 입체 스티커 | default = 4,000원 |
+
+### 한계 명세 (Phase 2 미달 부분)
+
+| 명세 (사장님 원함) | 현재 (api_only) | Phase 2.5 후속 |
+|---|---|---|
+| 옵션별 가격 (옵션 N개) | default 1개만 | 모바일 API 또는 헤드풀 자동화 |
+| 배송비 (무료/유료/조건부) | unknown | 모바일 API |
+| 누끼 + 식품/화장품 내용물 이미지 | 없음 (cover 만 — 이전 단계에서 저장) | 헤드풀 자동화 + 사용자 GUI |
+| 세트 제안 (2만원 이하 3개 묶음) | 미구현 | 옵션 데이터 들어온 후 |
+
+### Phase 2 결론 (인프라 + 데이터 흐름)
+
+- ✅ **DB 와 추천 시트 연결 가능** — domestic_product_options 에 가격이 들어왔으니 마진 계산/추천 빌드에 활용 가능
+- ❌ **Phase 2 명세 100% 미달** — 옵션 N개 / 배송비 / 누끼 — Phase 2.5 (모바일 API 또는 별도 인프라) 로 분리
+- 📌 **Phase 3 (시트 UI + 실시간 재계산) 진입 가능** — 데이터가 일관된 형태로 채워졌으므로
+
+### 다음 단계 권장 (사장님 결정)
+
+1. ★★★ **Phase 3 시트 UI 진입** — 시트가 옵션·가격 보여주고 인라인 수정·재계산
+2. ★★ Phase 2.5 — 모바일 앱 트래픽 분석 (옵션 N개 / 배송비 / 누끼) 별도 세션
+3. ★ daily_workflow 통합 — 매일 야간 자동 흐름에 api_only 단계 추가

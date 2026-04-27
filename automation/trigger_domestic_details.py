@@ -27,15 +27,18 @@ POLL_INTERVAL = 5
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="한국 상품 상세 진입 트리거")
+    p = argparse.ArgumentParser(description="한국 상품 옵션 채움 트리거")
     p.add_argument("--date", help="YYYY-MM-DD (기본 오늘)")
     p.add_argument("--limit", type=int, help="처리 상한")
-    p.add_argument("--sources", nargs="+", default=["coupang"],
-                   help="쇼핑몰 (기본 coupang). naver 는 best-effort")
+    p.add_argument("--sources", nargs="+", default=["naver", "coupang"],
+                   help="쇼핑몰 (기본 naver coupang)")
     p.add_argument("--all", action="store_true",
-                   help="accepted 무관 — 전체 한국 상품 (위험: 비용↑)")
+                   help="accepted 무관 — 전체 한국 상품")
     p.add_argument("--reset", action="store_true",
-                   help="이미 처리된 케이스도 재진입")
+                   help="이미 처리된 케이스도 재처리")
+    p.add_argument("--scrape", action="store_true",
+                   help="상세 페이지 진입 시도 (Playwright/Scrapling — 봇 차단 다발). "
+                        "기본은 api_only 모드 (m08 검색 결과만 사용)")
     p.add_argument("--no-wait", action="store_true")
     p.add_argument("--backend", default=BACKEND)
     args = p.parse_args()
@@ -43,6 +46,7 @@ def main() -> int:
     body: dict = {
         "only_accepted": not args.all,
         "sources": args.sources,
+        "mode": "scrape" if args.scrape else "api_only",
     }
     if args.date: body["date"] = args.date
     if args.limit: body["limit"] = args.limit
