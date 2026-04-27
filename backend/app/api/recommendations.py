@@ -706,35 +706,62 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
         q_rows = (await session.execute(q_stmt)).all()
 
         # 2) jp → kr 매핑 (q_rows 인덱스: 0=id 1=name 2=name_ko 3=cover_url 4=search_kw)
+        # ① keywords (legacy) — keyword_jp == search_keyword
+        # ② expanded_keywords (Phase 1-D) — parent_jp == search_keyword (1:N)
+        # 하나의 jp 에 여러 kr 후보가 있을 수 있도록 1:N dict.
+        from app.db.models import ExpandedKeyword as _EK
+
         unique_jp = sorted({r[4] for r in q_rows if r[4]})
-        kr_map: dict[str, str] = {}
+        kr_map: dict[str, list[str]] = {}
+        repr_kr: dict[str, str] = {}  # jp 별 대표 kr (legacy 우선) — pairs 의 qkw_kr 에 사용
         if unique_jp:
+            # ① legacy keywords
             kr_rows = await session.execute(
                 _sel(_K.keyword_jp, _K.keyword_kr).where(_K.keyword_jp.in_(unique_jp))
                 .where(_K.keyword_kr.is_not(None))
             )
             for jp, kr in kr_rows.all():
-                if jp and kr and jp not in kr_map:
-                    kr_map[jp] = kr
+                if jp and kr:
+                    kr_map.setdefault(jp, []).append(kr)
+                    repr_kr.setdefault(jp, kr)
+
+            # ② expanded_keywords (parent_jp 기준)
+            ek_rows = await session.execute(
+                _sel(_EK.parent_jp, _EK.keyword_kr).where(_EK.parent_jp.in_(unique_jp))
+                .where(_EK.keyword_kr.is_not(None))
+                .where(_EK.keyword_kr != "")
+            )
+            for pjp, kr in ek_rows.all():
+                if pjp and kr and kr not in kr_map.get(pjp, []):
+                    kr_map.setdefault(pjp, []).append(kr)
+                    repr_kr.setdefault(pjp, kr)
 
         # 3) 한국 후보 — 같은 search_keyword(kr) 의 top N (product_name 도 같이)
-        unique_kr = sorted(set(kr_map.values()))
+        all_kr_list: list[str] = []
+        for vs in kr_map.values():
+            all_kr_list.extend(vs)
+        unique_kr = sorted(set(all_kr_list))
         kr_to_candidates: dict[str, list[tuple[int, str | None, str | None, str | None]]] = {}
         if unique_kr:
+            # 한국 후보 검색 — target_date 우선, 없으면 같은 search_keyword 의 가장 최근 행.
+            # expanded keyword 검색은 다른 날짜에 진행될 수 있어 lookup_date 제한 풀어둠.
             d_stmt = (
                 _sel(_DP.id, _DP.product_name, _DP.search_keyword,
                      _DP.image_local_path, _DP.cover_image_url,
-                     _DP.image_score_overall, _DP.price_krw)
+                     _DP.image_score_overall, _DP.price_krw, _DP.lookup_date)
                 .where(_DP.search_keyword.in_(unique_kr))
-                .where(_DP.lookup_date == target_date)
+                .order_by(_DP.lookup_date.desc(), _DP.id.desc())
             )
             d_rows = (await session.execute(d_stmt)).all()
+            # 한 search_keyword 당 같은 id 중복 방지 (lookup_date 다른 동일 상품 케이스)
             tmp: dict[str, list] = {}
-            for did, dname, dkw, lp, cu, sc, pk in d_rows:
-                if not dkw:
+            seen_ids: set[int] = set()
+            for did, dname, dkw, lp, cu, sc, pk, _ld in d_rows:
+                if not dkw or did in seen_ids:
                     continue
                 if not (lp or cu):
                     continue
+                seen_ids.add(did)
                 tmp.setdefault(dkw, []).append((did, dname, lp, cu, sc or 0.0, pk or 10**9))
             for dkw, lst in tmp.items():
                 lst.sort(key=lambda r: (-r[4], r[5]))  # image_score DESC, price ASC
@@ -752,20 +779,28 @@ async def match_qoo10_to_domestic_by_image(body: dict | None = None):
                 existing_pairs.add((qid, did))
 
     # 5) 비교 작업 리스트 — 큐텐(jp/ko/cover/kw_kr) + 한국(name/lp/cu)
-    # 큐텐 측 텍스트 매칭 입력에 keyword_kr (브랜드 토큰 등) 도 합쳐서 번역 누락 회피.
+    # 큐텐 1개 → 매핑된 모든 keyword_kr (legacy + expanded) 의 한국 후보 풀에서 선정.
+    # qkw_kr 은 대표 kr (legacy 우선) — 텍스트 매칭 토큰 보너스에 사용.
     pairs: list[dict] = []
     for qid, qname, qko, qurl, qjp in q_rows:
-        kw_kr = kr_map.get(qjp or "")
-        if not kw_kr:
+        kr_list = kr_map.get(qjp or "", [])
+        if not kr_list:
             continue
-        for did, dname, dlp, dcu in kr_to_candidates.get(kw_kr, []):
-            if (qid, did) in existing_pairs:
-                continue
-            pairs.append({
-                "qid": qid, "qname": qname, "qko": qko, "qurl": qurl,
-                "qkw_kr": kw_kr,
-                "did": did, "dname": dname, "dlp": dlp, "dcu": dcu,
-            })
+        rep_kr = repr_kr.get(qjp or "", kr_list[0])
+        # 한 큐텐 상품 → 모든 매핑 kr 의 한국 후보 합침
+        # 같은 (qid, did) pair 가 여러 kw_kr (legacy + expanded) 경유로 중복 방지
+        for kw_kr in kr_list:
+            for did, dname, dlp, dcu in kr_to_candidates.get(kw_kr, []):
+                if (qid, did) in existing_pairs:
+                    continue
+                pairs.append({
+                    "qid": qid, "qname": qname, "qko": qko, "qurl": qurl,
+                    "qkw_kr": rep_kr,
+                    "did": did, "dname": dname, "dlp": dlp, "dcu": dcu,
+                })
+                existing_pairs.add((qid, did))
+                if overall_limit and len(pairs) >= overall_limit:
+                    break
             if overall_limit and len(pairs) >= overall_limit:
                 break
         if overall_limit and len(pairs) >= overall_limit:

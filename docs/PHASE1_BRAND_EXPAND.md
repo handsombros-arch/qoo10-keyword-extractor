@@ -111,6 +111,47 @@ domestic_match_candidates (높은 정확도)
 - recommendations.py `match-images` 가 expanded_keywords 의 parent_jp 도 인식
 - 또는 별도 `/api/recommendations/match-images-expanded` 신규
 
+---
+
+## 9. R-2 매칭 통합 결과 (2026-04-28) ✅
+
+### 구현
+- `recommendations.py /match-images` 의 jp→kr 매핑이 1:1 → 1:N
+- 매핑 우선순위:
+  ① keywords (legacy): keyword_jp == search_keyword → keyword_kr
+  ② **expanded_keywords**: parent_jp == search_keyword → keyword_kr (1:N)
+- 한국 후보 풀에 expanded 검색 결과(다른 lookup_date) 포함 (lookup_date 제한 풀고 desc 정렬)
+- 같은 (qid, did) pair 는 여러 kw_kr 경유로 와도 1번만 (existing_pairs.add)
+
+### 시운전 (메디큐브 美顔器, top 3, limit 30)
+
+| 항목 | 값 |
+|---|---|
+| 큐텐 상품 | 50 |
+| 비교 후보 | 30 (limit) |
+| accepted | 0 |
+| rejected | 30 |
+
+### 분석 — 통합은 작동, 매칭 데이터 한계
+
+샘플:
+- 큐텐 q=643: 「AGE-R ブースタープロミニプラス/美顔器」 (ko: 「AGE-R 부스터 프로 미용기」)
+- 한국 d=904: 「이지템 메디큐브 ATS 에어샷 디바이스 화이트」 (kw=「메디큐브 미안기」, 4/25)
+
+→ 다른 모델 (큐텐 = 부스터 프로 미니 플러스, 한국 = ATS 에어샷) 매칭 시도. text_score 0.09 (정상 — 토큰 거의 안 겹침).
+
+기대: expanded 「메디큐브 PDRN 부스터」 한국 상품(4/28 30개) 도 후보 풀에 포함. 그러나 첫 큐텐 q=643 부스터 프로 시리즈와 PDRN 부스터는 다른 모델이라 텍스트 0.0~0.1 만.
+
+**진짜 매칭은 큐텐의 다른 q (예: 「AGE-R PDRNブースター」 큐텐 상품) 가 있어야 한국 PDRN 부스터와 매칭됨**. 그러나 4/25 큐텐은 「メディキューブ 美顔器」 키워드로 50개만 수집 — PDRN 부스터 모델이 없을 수 있음.
+
+### 통합 자체는 ✅, 매칭 정확도는 데이터 의존
+
+- 인프라: jp ↔ multiple kr (legacy + expanded) ✅
+- 한국 후보 풀: expanded 결과 자동 포함 ✅
+- pair 중복 방지 ✅
+
+다음 단계 (R-3): daily_workflow STEP 4.5 자동 통합 + Phase 1-D 흐름 매일 야간 자동.
+
 ## 7. MASTER_SPEC § 8 갱신
 
 - ★★★ 갭 #3 (1-D 브랜드 키워드 확장) → ✅ **핵심 LLM 추출 완료**, 한국 검색 통합은 후속 (R-1~R-3)
