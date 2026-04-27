@@ -304,6 +304,27 @@ async def _resolve_categories(client: httpx.AsyncClient) -> list[str] | None:
     return None
 
 
+async def _resolve_filter_thresholds(client: httpx.AsyncClient) -> tuple[float, float, int]:
+    """자동 필터 임계값 조회. 우선순위: UserData > env > 하드코딩.
+
+    UserData key 'auto_filter_thresholds' 데이터 모양:
+        {"competition_max": 2.0, "kr_ratio_min": 0.3, "volume_min": 40}
+
+    프론트 SettingsPage 슬라이더 → /api/user-data/auto_filter_thresholds 저장.
+    """
+    try:
+        d = await _get(client, "/api/user-data/auto_filter_thresholds", timeout=10)
+        payload = d.get("data") or {}
+        if isinstance(payload, dict) and "competition_max" in payload:
+            cm = float(payload.get("competition_max") or FILTER_COMPETITION_MAX)
+            kr = float(payload.get("kr_ratio_min") or FILTER_KR_RATIO_MIN)
+            vm = int(payload.get("volume_min") or FILTER_VOLUME_MIN)
+            return cm, kr, vm
+    except Exception as e:
+        log.warning(f"UserData auto_filter_thresholds 조회 실패 (env 폴백): {e}")
+    return FILTER_COMPETITION_MAX, FILTER_KR_RATIO_MIN, FILTER_VOLUME_MIN
+
+
 async def step_auto_filter(client: httpx.AsyncClient, target_date: date) -> list[dict]:
     log.info("=== STEP 4: 자동 필터 ===")
     categories = await _resolve_categories(client)
@@ -312,11 +333,17 @@ async def step_auto_filter(client: httpx.AsyncClient, target_date: date) -> list
     else:
         log.info("카테고리 화이트리스트: (미설정 — 전체 통과)")
 
+    cm, kr, vm = await _resolve_filter_thresholds(client)
+    log.info(
+        f"임계값: competition_max={cm} kr_ratio_min={kr} volume_min={vm} "
+        f"(UserData → env → 하드코딩 순)"
+    )
+
     async def _call() -> dict:
         body = {
-            "competition_max": FILTER_COMPETITION_MAX,
-            "kr_ratio_min": FILTER_KR_RATIO_MIN,
-            "search_volume_min": FILTER_VOLUME_MIN,
+            "competition_max": cm,
+            "kr_ratio_min": kr,
+            "search_volume_min": vm,
             "date": str(target_date),
             "brand_filter": "all",  # 사용자 결정 2c — 표시만, 통과
         }
