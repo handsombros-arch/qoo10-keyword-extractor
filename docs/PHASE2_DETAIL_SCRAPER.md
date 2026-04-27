@@ -269,6 +269,50 @@ JSON-LD 없음
 | d=1022 | 두바이 초콜릿 피스타치오 카다이프 얇은 초콜릿 크리스피 디저트 | default = 3,500원 |
 | d=1063 | 짱구 캐릭터즈 봉봉 드롭씰 3D 입체 스티커 | default = 4,000원 |
 
+## 14. Phase 2.5 OCR 폴백 진입 (2026-04-28 — kc-cert-checker 패턴)
+
+### 핵심 통찰 (kc-cert-checker 분석)
+
+| 항목 | qoo10 (이전) | kc-cert-checker |
+|---|---|---|
+| 라이브러리 | Scrapling 헤드리스 / Playwright 헤드리스 | Playwright **헤드풀** |
+| 직접 vp/products | 시도 → 403 | **절대 안 함** (검색→클릭) |
+| 봇 탐지 회피 | stealth 플러그인 | `--disable-blink-features=AutomationControlled` |
+| 대기 시간 | 빠름 | 2~4초 랜덤 + 마우스/스크롤 |
+| 폴백 | 없음 | **EasyOCR** (한+영, GPU, 2단계 전처리) |
+
+### 구현 (T-1~T-3)
+
+| # | 영역 | 변경 |
+|---|---|---|
+| T-1 | `services/ocr.py` 신규 | EasyOCR Reader 싱글톤 + 전처리 (확대+CLAHE+이진화) + 가격 정규식 |
+| T-2 | `m_domestic_details.py _fetch_naver_via_browser_manager` | HTML 가격 selector + 정규식 fallback 실패 시 `page.screenshot()` → OCR |
+| T-3 | 백엔드 재시작 + 시운전 | 메디큐브 PDRN 부스터 한국 상품 |
+
+### 시운전 결과 (limit 2, --scrape)
+
+| d= | URL | 결과 |
+|---|---|---|
+| **1091 (11st.co.kr)** | 11번가 외부 셀러 | ✅ **OK** opts=2 img=6 **ship=free** price=335,010원 |
+| 1092 (link.coupang.com) | 쿠팡 redirect | ❌ 실패 (Scrapling 분기 — 쿠팡 vp/products 여전히 차단) |
+
+### 평가
+
+- ✅ **browser_manager 헤드풀 + OCR 폴백** 으로 11번가 같은 외부 셀러 데이터 추출 성공
+- ✅ 가격 / 배송비 / 이미지 6개 동시 추출 (api_only 모드의 default 1건 → 풀 데이터)
+- ⚠️ 옵션 selector 노이즈 (40원 같은 잘못된 값 포함) — 후속 튜닝
+- ⚠️ 쿠팡 (link.coupang.com) 은 여전히 차단 — Phase 2.6 (A) 본격 재작성 필요
+
+### 잔존 작업 (A 옵션)
+
+| # | 작업 |
+|---|---|
+| A-1 | m_domestic_details.py 를 kc 패턴 그대로 재작성 — 헤드풀 Playwright + 검색→클릭 흐름 + 2~4초 대기 |
+| A-2 | 쿠팡 vp/products 직접 진입 X — `/np/search?q=...` → 첫 결과 클릭 |
+| A-3 | 옵션 selector 정확도 개선 (textnode 노이즈 제거) |
+
+---
+
 ### 한계 명세 (Phase 2 미달 부분)
 
 | 명세 (사장님 원함) | 현재 (api_only) | Phase 2.5 후속 |

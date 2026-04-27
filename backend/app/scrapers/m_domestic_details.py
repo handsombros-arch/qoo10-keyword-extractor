@@ -230,6 +230,8 @@ async def _fetch_coupang(url: str) -> dict:
                 price_main = Counter(nums).most_common(1)[0][0]
         except Exception:
             pass
+    # OCR 폴백 (kc-cert-checker 패턴) — Scrapling 은 page.screenshot 없음, 추가 이미지 다운로드 X.
+    # 쿠팡은 후속 작업에서 Playwright 헤드풀로 전환 시 OCR 적용.
     if price_main:
         out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
 
@@ -375,6 +377,18 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
                     price_main = Counter(nums).most_common(1)[0][0]
             except Exception:
                 pass
+        # OCR 폴백 — HTML 정규식도 실패 시 페이지 스크린샷 → EasyOCR (kc-cert-checker 패턴)
+        if price_main is None:
+            try:
+                screenshot = await page.screenshot(full_page=False, type="png")
+                from app.services.ocr import ocr_image_async, extract_price_main
+                ocr_text = await ocr_image_async(screenshot)
+                if ocr_text:
+                    price_main = extract_price_main(ocr_text)
+                    if price_main:
+                        logger.info(f"[detail/naver] OCR 폴백으로 가격 추출: {price_main}")
+            except Exception as e:
+                logger.warning(f"[detail/naver] OCR 폴백 실패: {e}")
         if price_main:
             out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
 
