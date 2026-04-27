@@ -1110,3 +1110,142 @@ async def _run_scrape_details(task_id: str, rows: list, date_str: str) -> None:
     except Exception as e:
         task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
         traceback.print_exc()
+
+
+@router.post("/domestic/extract-weights")
+async def extract_domestic_weights(body: dict | None = None):
+    """한국 상품의 무게 추출 (상품명 정규식) + 200g 패키지 룰 (Phase 4-A).
+
+    body:
+      date:          YYYY-MM-DD (기본 오늘)
+      only_accepted: bool (기본 True — DomesticMatchCandidate.decision='accepted')
+      packaging_g:   float (기본 200.0)
+      reset:         bool (True 면 weight_g 채워진 행도 재처리)
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel
+    from app.db.models import DomesticProduct as _DP, DomesticMatchCandidate as _DMC
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    only_accepted = body.get("only_accepted", True)
+    packaging_g = float(body.get("packaging_g", 200.0))
+    do_reset = bool(body.get("reset"))
+
+    # 한국 d_id 와 매칭 큐텐 q.product_name(jp) + product_name_ko 도 함께 SELECT.
+    # 한국 product_name 에는 무게 정보 거의 없음 — 큐텐 상품명이 핵심 소스.
+    from app.db.models import Qoo10Product as _Q
+
+    async with async_session() as session:
+        if only_accepted:
+            stmt = (
+                _sel(
+                    _DP.id, _DP.product_name,
+                    _Q.product_name.label("q_name"),
+                    _Q.product_name_ko.label("q_name_ko"),
+                )
+                .join(_DMC, _DMC.domestic_product_id == _DP.id)
+                .join(_Q, _Q.id == _DMC.qoo10_product_id)
+                .where(_DP.lookup_date == target_date)
+                .where(_DP.product_name.is_not(None))
+                .where(_DMC.decision == "accepted")
+                .distinct()
+            )
+        else:
+            stmt = (
+                _sel(
+                    _DP.id, _DP.product_name,
+                    _DP.product_name.label("q_name"),  # 매칭 없으면 한국 이름만
+                    _DP.product_name.label("q_name_ko"),
+                )
+                .where(_DP.lookup_date == target_date)
+                .where(_DP.product_name.is_not(None))
+            )
+        if not do_reset:
+            stmt = stmt.where(_DP.weight_g.is_(None))
+        rows = (await session.execute(stmt)).all()
+
+    if not rows:
+        return {
+            "task_id": None, "candidates": 0,
+            "message": f"{target_date}: 처리 대상 0건 (only_accepted={only_accepted})",
+        }
+
+    task_id = task_manager.create_task(
+        name=f"한국 상품 무게 추출 ({target_date}, {len(rows)}건, +{packaging_g:.0f}g)",
+        total=len(rows),
+    )
+    _asyncio.create_task(_run_extract_weights(task_id, rows, packaging_g))
+    return {
+        "task_id": task_id, "candidates": len(rows),
+        "only_accepted": only_accepted, "packaging_g": packaging_g,
+        "date": str(target_date),
+    }
+
+
+async def _run_extract_weights(task_id: str, rows: list, packaging_g: float) -> None:
+    """백그라운드 — 상품명 정규식 무게 추출 + 200g 룰 + DB UPDATE.
+
+    추출 우선순위 (한국 상품명에 무게 정보 거의 없음):
+      ① 매칭 큐텐 product_name (jp) — 「3g×40개」 같은 패턴 풍부
+      ② 매칭 큐텐 product_name_ko — 폴백
+      ③ 한국 product_name — 거의 안 잡힘
+    """
+    from sqlalchemy import update as _upd
+    from app.db.models import DomesticProduct as _DP
+    from app.services.weight_extractor import extract_weight_grams, apply_packaging_rule
+
+    task_manager.start_task(task_id)
+    matched = unmatched = 0
+
+    try:
+        for idx, row in enumerate(rows, 1):
+            did, name, q_name, q_name_ko = row
+            # 우선순위: 큐텐 jp → 큐텐 ko → 한국 name
+            raw_g = (
+                extract_weight_grams(q_name or "")
+                or extract_weight_grams(q_name_ko or "")
+                or extract_weight_grams(name or "")
+            )
+            final_g = apply_packaging_rule(raw_g, packaging_g) if raw_g is not None else None
+            source = "name" if final_g is not None else "default"
+
+            try:
+                async with async_session() as db:
+                    await db.execute(_upd(_DP).where(_DP.id == did).values(
+                        weight_g=final_g, weight_source=source,
+                    ))
+                    await db.commit()
+            except Exception as e:
+                logger.warning(f"[weight] DB UPDATE 실패 d={did}: {e}")
+
+            if final_g is not None:
+                matched += 1
+                tag = f"OK raw={raw_g:.0f} +200={final_g:.0f}"
+            else:
+                unmatched += 1
+                tag = "MISS"
+            task_manager.update_progress(
+                task_id, increment=1,
+                message=f"[{idx}/{len(rows)}] {tag} d={did} {(name or '')[:35]}",
+            )
+
+        task_manager.complete_task(
+            task_id,
+            message=(
+                f"완료 — 매칭 {matched}, 미매칭 {unmatched} "
+                f"({100*matched//max(len(rows),1)}% / 대상 {len(rows)})"
+            ),
+        )
+    except Exception as e:
+        task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        traceback.print_exc()

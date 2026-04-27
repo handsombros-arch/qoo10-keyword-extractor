@@ -141,6 +141,9 @@ class DomesticProduct(Base):
     shipping_threshold = Column(Integer)      # conditional 시 무료 기준 (예: 50000)
     detail_scraped_at = Column(DateTime)      # 상세 진입 처리 시점
     detail_image_paths = Column(Text)         # 누끼/내용물 이미지 로컬 경로 JSON 배열
+    # ─── Phase 4 — 무게 추출 ───
+    weight_g = Column(Float)                  # +200g 패키지 룰 적용된 등록용 무게 (g)
+    weight_source = Column(String)            # "name" / "ocr" / "manual" / "default"
 
 
 class DomesticProductOption(Base):
