@@ -313,22 +313,31 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
     out: dict[str, Any] = {
         "options": [], "shipping_text": "", "extra_image_urls": [],
     }
-    try:
-        from app.browser.manager import browser_manager
-        bm_page = await browser_manager.get_page()
-        ctx = bm_page.context
-    except Exception as e:
-        logger.warning(f"[detail/coupang] browser_manager 획득 실패: {e}")
-        return out
+
+    # ① 사용자 디버그 Chrome attach 시도
+    pw_user, browser_user, ctx = await _get_user_chrome_context()
+    using_cdp = ctx is not None
+    bm_page = None
+
+    # ② fallback — browser_manager
+    if ctx is None:
+        try:
+            from app.browser.manager import browser_manager
+            bm_page = await browser_manager.get_page()
+            ctx = bm_page.context
+        except Exception as e:
+            logger.warning(f"[detail/coupang] browser_manager 획득 실패: {e}")
+            return out
 
     page: Page | None = None
     try:
         page = await ctx.new_page()
-        try:
-            from tf_playwright_stealth import stealth_async
-            await stealth_async(page)
-        except Exception:
-            pass
+        if not using_cdp:
+            try:
+                from tf_playwright_stealth import stealth_async
+                await stealth_async(page)
+            except Exception:
+                pass
 
         # 1단계 — 검색 페이지 (정당한 진입)
         if product_name:
@@ -495,6 +504,17 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
                 await page.close()
             except Exception:
                 pass
+        if using_cdp:
+            try:
+                if browser_user:
+                    await browser_user.close()
+            except Exception:
+                pass
+            try:
+                if pw_user:
+                    await pw_user.stop()
+            except Exception:
+                pass
 
     return out
 
@@ -502,31 +522,81 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
 # ─── 네이버 (browser_manager 의 큐텐 컨텍스트에 새 탭) ──────
 
 
-async def _fetch_naver_via_browser_manager(url: str) -> dict:
-    """browser_manager 의 살아있는 큐텐 Chrome 컨텍스트에 새 탭 추가 → 한국 셀러 페이지 진입.
+async def _get_user_chrome_context(timeout_ms: int = 2000):
+    """사용자가 launch_chrome_debug.bat 으로 띄운 디버그 Chrome 에 attach (CDP).
 
-    헤드풀 + 큐텐 로그인 쿠키 (도메인 다르니 한국 쇼핑은 영향 X)
-    + 사용자 GUI 환경 → 봇 탐지 우회.
+    9222 포트로 connect_over_cdp 시도. 실패 시 None 반환 → caller 가 fallback.
+
+    이게 가장 강력한 봇 회피 — 사용자의 평소 Chrome (또는 별도 디버그 프로필) 의
+    모든 쿠키/세션/플러그인을 그대로 사용. 차단(번호 입력 captcha) 시 사용자가
+    그 창에서 직접 풀어주면 자동화 계속 진행.
+
+    Returns:
+        (browser, context) 튜플 또는 (None, None)
+    """
+    import os
+    port = int(os.getenv("CHROME_DEBUG_PORT", "9222"))
+    try:
+        from playwright.async_api import async_playwright
+        pw = await async_playwright().start()
+        try:
+            browser = await pw.chromium.connect_over_cdp(
+                f"http://localhost:{port}", timeout=timeout_ms,
+            )
+        except Exception as e:
+            logger.debug(f"[detail/cdp] 9222 포트 attach 실패 ({e}) — fallback")
+            await pw.stop()
+            return None, None, None
+        # 첫 컨텍스트 (디버그 Chrome 의 default context) 사용
+        if not browser.contexts:
+            logger.warning("[detail/cdp] 컨텍스트 없음 — fallback")
+            await browser.close()
+            await pw.stop()
+            return None, None, None
+        ctx = browser.contexts[0]
+        return pw, browser, ctx
+    except Exception as e:
+        logger.debug(f"[detail/cdp] 초기화 실패 ({e})")
+        return None, None, None
+
+
+async def _fetch_naver_via_browser_manager(url: str) -> dict:
+    """한국 셀러 페이지 진입 — CDP attach 우선, fallback browser_manager.
+
+    1) **사용자 디버그 Chrome (포트 9222) attach** — 가장 강력. 사용자가
+       launch_chrome_debug.bat 띄워둔 상태면 그 Chrome 에 새 탭 추가.
+       차단(captcha) 시 사용자가 직접 풀어주면 자동화 계속.
+    2) Fallback: browser_manager 의 큐텐 Chrome ctx 새 탭 (kc 패턴).
     """
     out: dict[str, Any] = {
         "options": [], "shipping_text": "", "extra_image_urls": [],
     }
-    try:
-        from app.browser.manager import browser_manager
-        bm_page = await browser_manager.get_page()
-        ctx = bm_page.context
-    except Exception as e:
-        logger.warning(f"[detail/naver] browser_manager 획득 실패: {e}")
-        return out
+
+    # ① 사용자 디버그 Chrome attach 시도
+    pw_user, browser_user, ctx = await _get_user_chrome_context()
+    using_cdp = ctx is not None
+    bm_page = None
+
+    # ② fallback — browser_manager
+    if ctx is None:
+        try:
+            from app.browser.manager import browser_manager
+            bm_page = await browser_manager.get_page()
+            ctx = bm_page.context
+        except Exception as e:
+            logger.warning(f"[detail/naver] browser_manager 획득 실패: {e}")
+            return out
 
     page: Page | None = None
     try:
         page = await ctx.new_page()
-        try:
-            from tf_playwright_stealth import stealth_async
-            await stealth_async(page)
-        except Exception:
-            pass
+        # CDP attach 인 경우 stealth 적용 X (사용자 실제 Chrome 이라 더 자연스러움)
+        if not using_cdp:
+            try:
+                from tf_playwright_stealth import stealth_async
+                await stealth_async(page)
+            except Exception:
+                pass
         try:
             await page.goto(
                 url,
@@ -537,17 +607,19 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
         except Exception as e:
             logger.warning(f"[detail/naver] goto 실패 {url[:60]}: {e}")
             return out
-        await page.wait_for_timeout(2000)
+        # 사용자 GUI 환경이면 차단 시 captcha 풀 시간 더 줌
+        wait_ms = random.randint(3000, 5000) if using_cdp else random.randint(2000, 3000)
+        await page.wait_for_timeout(wait_ms)
         try:
             await page.mouse.wheel(0, 800)
-            await page.wait_for_load_state("networkidle", timeout=8000)
+            await page.wait_for_load_state("networkidle", timeout=10000)
         except Exception:
             pass
 
         # 차단/에러 페이지
         title = (await page.title()) or ""
         if "에러" in title or "Error" in title:
-            logger.warning(f"[detail/naver] 에러 페이지 (title={title!r})")
+            logger.warning(f"[detail/naver] 에러 페이지 (title={title!r}, cdp={using_cdp})")
             return out
 
         # 가격 — selector + HTML 정규식 fallback
@@ -666,6 +738,18 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
         if page is not None:
             try:
                 await page.close()
+            except Exception:
+                pass
+        # CDP attach 였으면 browser/playwright cleanup (디버그 Chrome 자체는 살아있음)
+        if using_cdp:
+            try:
+                if browser_user:
+                    await browser_user.close()
+            except Exception:
+                pass
+            try:
+                if pw_user:
+                    await pw_user.stop()
             except Exception:
                 pass
 

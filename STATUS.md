@@ -72,6 +72,30 @@ VBA → Python(FastAPI) + React 재구축. 두 PC(메인 + Tailscale 노트북) 
 4) start.pyw 더블클릭 → 자동 마이그레이션이 신규 컬럼/테이블 생성
 ```
 
+## 한국 셀러 페이지 차단 우회 — 사용자 Chrome attach (Phase 2.5 권장)
+
+쿠팡 vp/products / 스마트스토어 captcha 같은 봇 차단 우회 — 사용자가 띄운 디버그 Chrome 에 백엔드가 attach.
+
+### 한 번 셋업
+```
+automation\launch_chrome_debug.bat 더블클릭
+```
+
+- 별도 프로필 (`%USERPROFILE%\qoo10-chrome-debug-profile`) 이라 평소 Chrome 안 닫아도 OK
+- 디버그 Chrome 창 뜨면 네이버/쿠팡 등 한 번 로그인 → 다음부터 쿠키 누적
+- 자동화가 차단(번호 입력 captcha)되면 그 창에서 직접 풀어주세요 — 자동화 계속
+
+### 동작 흐름
+- `m_domestic_details.py` 가 9222 포트 connect_over_cdp 우선 시도
+- 사용자 Chrome attach 성공 시 → 그 ctx 의 새 탭으로 진입 (봇 탐지 거의 0)
+- attach 실패 시 → browser_manager (큐텐 헤드풀) 의 ctx fallback
+
+### 검증
+```
+curl http://localhost:9222/json/version
+```
+응답 있으면 attach 가능 상태.
+
 ## 야간 자동화 — Windows 작업 스케줄러 등록 (Phase 5)
 
 매일 새벽 3시 자동 실행 등록 (사장님 PC 에서 한 번만):
