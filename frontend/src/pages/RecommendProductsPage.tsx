@@ -1559,16 +1559,24 @@ function InterestKeywordBlock({ onAddRows }: { onAddRows: (rows: SheetRow[]) => 
       const filtered = (data.items || [])
         .filter((it: any) => it.cheapest_domestic && it.qoo10_stats.avg_jpy > 0);
 
-      // 국내 상품명이 이미 한글이므로 별도 번역 불필요. product_name_ko는 빈 값으로 둬도 됨
-      const rows = filtered.map((it: any) => newSheetRow({
-        product_name: it.cheapest_domestic.product_name,
-        product_name_ko: it.cheapest_domestic.product_name,  // 이미 한글
-        product_url: it.cheapest_domestic.product_url,
-        competitor_price_jpy: Math.round(it.qoo10_stats.avg_jpy),
-        sell_price_jpy: Math.round(it.qoo10_stats.avg_jpy),
-        item_price_krw: it.cheapest_domestic.price_krw,
-        source: `관심:${it.keyword_kr || it.keyword_jp}`,
-      }));
+      // 옵션 단위 행 펼치기 — 한 큐텐 키워드 + 한국 상품 옵션 N개 → N행
+      // (api_only 모드에서는 default 옵션 1개라 1행, 추후 옵션 N개 들어오면 N행 자동)
+      const rows = filtered.flatMap((it: any) => {
+        const cd = it.cheapest_domestic;
+        const opts = (cd.options && cd.options.length > 0)
+          ? cd.options
+          : [{ name: 'default', price_krw: cd.price_krw, in_stock: true }];
+        const matchTag = cd.match_source === 'matched' ? '★ ' : '';
+        return opts.map((o: any) => newSheetRow({
+          product_name: matchTag + cd.product_name + (o.name !== 'default' ? ` [${o.name}]` : ''),
+          product_name_ko: cd.product_name + (o.name !== 'default' ? ` [${o.name}]` : ''),
+          product_url: cd.product_url,
+          competitor_price_jpy: Math.round(it.qoo10_stats.avg_jpy),
+          sell_price_jpy: Math.round(it.qoo10_stats.avg_jpy),
+          item_price_krw: o.price_krw || cd.price_krw,
+          source: `관심:${it.keyword_kr || it.keyword_jp}` + (o.name !== 'default' ? ` / ${o.name}` : ''),
+        }));
+      });
       onAddRows(rows);
       alert(`${rows.length}개 행이 시트에 추가되었습니다.`);
     } catch (e: any) {

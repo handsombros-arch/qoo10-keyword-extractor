@@ -209,28 +209,67 @@ async def auto_build(req: AutoBuildRequest):
             qoo10_count, qoo10_min, qoo10_avg, qoo10_max, qoo10_avg_set = q.one()
             qoo10_count = qoo10_count or 0
 
-            # 3) 국내 최저가 (구매가 후보)
+            # 3) 국내 매칭 한국 상품 (구매가 후보)
+            #    우선순위:
+            #      ① DomesticMatchCandidate.decision='accepted' (Phase 1 결합 룰 통과) 의 최저가
+            #      ② 없으면 같은 search_keyword 의 단순 최저가 (legacy fallback)
+            #    옵션 정보 (DomesticProductOption) 도 같이 조회해서 payload 에 포함.
+            from app.db.models import DomesticMatchCandidate as _DMC, DomesticProductOption as _DPO
+
             kw_ko = meta.get("keyword_kr") or ""
             cheapest = None
-            if kw_ko:
-                d = await session.execute(
+
+            # ① 매칭된 한국 상품 — 큐텐 search_keyword(jp) 기준 join
+            row = (await session.execute(
+                select(DomesticProduct)
+                .join(_DMC, _DMC.domestic_product_id == DomesticProduct.id)
+                .join(Qoo10Product, Qoo10Product.id == _DMC.qoo10_product_id)
+                .where(Qoo10Product.search_keyword == jp)
+                .where(_DMC.decision == "accepted")
+                .where(DomesticProduct.price_krw > 0)
+                .order_by(DomesticProduct.price_krw.asc())
+                .limit(1)
+            )).scalar_one_or_none()
+            match_source = "matched" if row else None
+
+            # ② legacy fallback — 같은 keyword_ko 단순 최저가
+            if row is None and kw_ko:
+                row = (await session.execute(
                     select(DomesticProduct)
-                    .where(
-                        DomesticProduct.search_keyword == kw_ko,
-                        DomesticProduct.price_krw > 0,
-                    )
+                    .where(DomesticProduct.search_keyword == kw_ko)
+                    .where(DomesticProduct.price_krw > 0)
                     .order_by(DomesticProduct.price_krw.asc())
                     .limit(1)
-                )
-                row = d.scalar_one_or_none()
-                if row:
-                    cheapest = {
-                        "source": row.source,
-                        "product_name": row.product_name,
-                        "price_krw": row.price_krw,
-                        "product_url": row.product_url,
-                        "cover_image_url": row.cover_image_url,
-                    }
+                )).scalar_one_or_none()
+                match_source = "cheapest" if row else None
+
+            if row:
+                # DomesticProductOption 조회
+                opt_rows = (await session.execute(
+                    select(_DPO.option_name, _DPO.option_price_krw, _DPO.in_stock)
+                    .where(_DPO.domestic_product_id == row.id)
+                    .order_by(_DPO.option_price_krw.asc().nullslast())
+                )).all()
+                cheapest = {
+                    "id": row.id,
+                    "source": row.source,
+                    "product_name": row.product_name,
+                    "price_krw": row.price_krw,
+                    "product_url": row.product_url,
+                    "cover_image_url": row.cover_image_url,
+                    "match_source": match_source,
+                    "shipping_kind": row.shipping_kind,
+                    "shipping_amount": row.shipping_amount,
+                    "shipping_threshold": row.shipping_threshold,
+                    "options": [
+                        {
+                            "name": on or "default",
+                            "price_krw": op,
+                            "in_stock": bool(ist),
+                        }
+                        for on, op, ist in opt_rows
+                    ],
+                }
 
             # 4) 마진 계산 — 단품, 부족 시 구성 분석 후 최선 채택
             margin_block = None

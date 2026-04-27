@@ -483,24 +483,63 @@ async def report(req: ReportRequest, session: AsyncSession = Depends(get_session
         qoo10_count, qoo10_min_jpy, qoo10_avg_jpy, qoo10_max_jpy, qoo10_avg_set = q.one()
         qoo10_count = qoo10_count or 0
 
-        # 3) 국내 최저가 (구매가 후보)
+        # 3) 국내 매칭 한국 상품 (구매가 후보)
+        #    우선순위: ① DomesticMatchCandidate.decision='accepted' (Phase 1 결합 룰)
+        #              ② 없으면 같은 keyword_kr 단순 최저가 (legacy)
+        #    옵션 정보 (DomesticProductOption) 도 같이 조회.
+        from app.db.models import DomesticMatchCandidate as _DMC, DomesticProductOption as _DPO
+
         kw_ko = meta["keyword_kr"] or ""
         cheapest_domestic = None
-        if kw_ko:
-            d = await session.execute(
+        match_source = None
+
+        # ① 매칭된 한국 상품 (큐텐 jp → DMC.qid → 한국 dp)
+        r = (await session.execute(
+            select(DomesticProduct)
+            .join(_DMC, _DMC.domestic_product_id == DomesticProduct.id)
+            .join(Qoo10Product, Qoo10Product.id == _DMC.qoo10_product_id)
+            .where(Qoo10Product.search_keyword == jp)
+            .where(_DMC.decision == "accepted")
+            .where(DomesticProduct.price_krw > 0)
+            .order_by(DomesticProduct.price_krw.asc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if r:
+            match_source = "matched"
+
+        # ② legacy fallback
+        if r is None and kw_ko:
+            r = (await session.execute(
                 select(DomesticProduct)
                 .where(DomesticProduct.search_keyword == kw_ko, DomesticProduct.price_krw > 0)
                 .order_by(DomesticProduct.price_krw.asc())
                 .limit(1)
-            )
-            r = d.scalar_one_or_none()
+            )).scalar_one_or_none()
             if r:
-                cheapest_domestic = {
-                    "source": r.source,
-                    "product_name": r.product_name,
-                    "price_krw": r.price_krw,
-                    "product_url": r.product_url,
-                }
+                match_source = "cheapest"
+
+        if r:
+            opt_rows = (await session.execute(
+                select(_DPO.option_name, _DPO.option_price_krw, _DPO.in_stock)
+                .where(_DPO.domestic_product_id == r.id)
+                .order_by(_DPO.option_price_krw.asc().nullslast())
+            )).all()
+            cheapest_domestic = {
+                "id": r.id,
+                "source": r.source,
+                "product_name": r.product_name,
+                "price_krw": r.price_krw,
+                "product_url": r.product_url,
+                "cover_image_url": r.cover_image_url,
+                "match_source": match_source,
+                "shipping_kind": r.shipping_kind,
+                "shipping_amount": r.shipping_amount,
+                "shipping_threshold": r.shipping_threshold,
+                "options": [
+                    {"name": on or "default", "price_krw": op, "in_stock": bool(ist)}
+                    for on, op, ist in opt_rows
+                ],
+            }
 
         # 4) 마진 계산 (국내 최저가를 구매가로, 큐텐 평균가를 판매가로 가정)
         margin = None
