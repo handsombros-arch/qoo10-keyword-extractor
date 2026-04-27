@@ -23,6 +23,8 @@ import json
 import logging
 import os
 import re
+from functools import lru_cache
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -35,6 +37,36 @@ from .base import LLMClient
 from .router import _build_client, get_client_for, load_prompt
 
 logger = logging.getLogger(__name__)
+
+_KANA_DICT_PATH = Path(__file__).resolve().parents[2] / "data" / "jp_kana_to_ko.json"
+
+
+@lru_cache(maxsize=1)
+def _load_kana_dict() -> list[tuple[str, str]]:
+    """jp_kana_to_ko.json 매핑을 (jp, ko) 튜플 리스트로. 긴 매핑 우선 정렬."""
+    if not _KANA_DICT_PATH.exists():
+        return []
+    try:
+        data = json.loads(_KANA_DICT_PATH.read_text(encoding="utf-8"))
+        m = data.get("mappings", {})
+        return sorted(m.items(), key=lambda x: -len(x[0]))
+    except Exception as e:
+        logger.warning(f"[translate] 카나 사전 로드 실패: {e}")
+        return []
+
+
+def postprocess_ko(ko: str) -> str:
+    """LLM 번역 결과에 카나 후처리 적용. 잔존 카타카나/히라가나 단어 substitution.
+
+    긴 매핑 우선. 매칭이 없으면 원문 그대로 반환.
+    """
+    if not ko:
+        return ko
+    out = ko
+    for jp, ko_repl in _load_kana_dict():
+        if jp in out:
+            out = out.replace(jp, ko_repl)
+    return out
 
 
 def _strip_codefence(s: str) -> str:
@@ -159,6 +191,7 @@ async def translate_jp_to_ko_async(product_name: str) -> str | None:
     if primary is not None:
         ko, used_model = await _try_translate_with(primary, prompt)
         if ko:
+            ko = postprocess_ko(ko)
             await _cache_put(name, "ja", "ko", ko, used_model)
             return ko
 
@@ -172,6 +205,7 @@ async def translate_jp_to_ko_async(product_name: str) -> str | None:
         ko, used_model = await _try_translate_with(fb_client, prompt)
         if ko:
             logger.info(f"[translate] 폴백 hit ({spec}) for {name[:30]!r}")
+            ko = postprocess_ko(ko)
             await _cache_put(name, "ja", "ko", ko, used_model)
             return ko
 
@@ -184,4 +218,4 @@ def translate_jp_to_ko(product_name: str) -> str | None:
     return run_sync(translate_jp_to_ko_async(product_name))
 
 
-__all__ = ["translate_jp_to_ko", "translate_jp_to_ko_async"]
+__all__ = ["translate_jp_to_ko", "translate_jp_to_ko_async", "postprocess_ko"]
