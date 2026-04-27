@@ -70,6 +70,11 @@ async def _migrate_add_columns(conn) -> None:
         ("domestic_products", "image_local_path", "TEXT"),
         ("domestic_products", "image_score_overall", "REAL"),
         ("domestic_products", "image_score_json", "TEXT"),
+        ("domestic_products", "shipping_kind", "TEXT"),
+        ("domestic_products", "shipping_amount", "INTEGER"),
+        ("domestic_products", "shipping_threshold", "INTEGER"),
+        ("domestic_products", "detail_scraped_at", "TIMESTAMP"),
+        ("domestic_products", "detail_image_paths", "TEXT"),
     ]
     for table, col, col_type in new_columns:
         try:

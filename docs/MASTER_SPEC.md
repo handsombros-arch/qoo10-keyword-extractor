@@ -299,7 +299,7 @@ decision    = "accepted" if (image_ok AND
 | 1 | ✅ 완료 | ~~정상 K-뷰티 결합 룰 검증~~ — 2026-04-27 23:30 완료 (accept 0% → 23%, 코스노리 7/7) | `PHASE1_POSITIVE_TEST.md § 10` |
 | 2 | ✅ 완료 | ~~깨진 번역 케이스 reset + 재번역~~ — 2026-04-28 00:00 완료 (JSON 잔재 12→0, 일본어 잔존 271→189, accept 23→26, 코스노리 7→10) | `PHASE1_POSITIVE_TEST.md § 11` |
 | 3 | ★★★ | 1-D 브랜드 키워드 확장 (큐텐 상위 10개 상품명 토큰 재검색) | Phase 1 (명세 3.3#1~3) |
-| 4 | ★★★ | 한국 상품 옵션별 가격 스크래퍼 (Playwright 옵션 클릭 → DOM) | Phase 2 (명세 3.3#7) |
+| 4 | ★★★ | Phase 2 옵션 스크래퍼 — **인프라 완성, Playwright async 본격 진입 필요** (PHASE2_DETAIL_SCRAPER.md). 1차 시운전 0/3 OK — httpx/StealthyFetcher 만으로 차단됨 (쿠팡 vp 403 / 네이버 스마트스토어 429). 별도 1~2일 작업. | Phase 2 (명세 3.3#7) |
 | 5 | ★★ | 사장님 검수 UI — accepted 케이스 동일 카테고리 다른 SKU 분리 | Phase 1 잔여 |
 | 6 | ★★ | 이미지 매칭 프롬프트 재작성 + 임계값 0.85 (양극화 완화) | Phase 1 잔여 |
 | 7 | ★★ | 번역 후처리 사전 50개 (마키시무=맥심 등) | Phase 1 잔여 |

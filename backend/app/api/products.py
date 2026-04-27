@@ -850,3 +850,171 @@ async def _run_translate_qoo10_names(task_id: str, target_date, limit: int | Non
     except Exception as e:
         task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
         traceback.print_exc()
+
+
+@router.post("/domestic/scrape-details")
+async def scrape_domestic_details(body: dict | None = None):
+    """매칭된 한국 상품의 상세 페이지 진입 → 옵션/배송비/이미지 추출 (백그라운드).
+
+    body:
+      date:           YYYY-MM-DD (기본 오늘)
+      only_accepted:  bool (기본 True — DomesticMatchCandidate.decision='accepted' 만)
+      sources:        list[str] (기본 ["coupang"] — 1차 시운전. naver 는 best-effort)
+      limit:          int (전체 상한)
+      reset:          bool (True 면 detail_scraped_at IS NOT NULL 도 재처리)
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel, update as _upd
+    from app.db.models import DomesticProduct as _DP, DomesticMatchCandidate as _DMC
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    only_accepted = body.get("only_accepted", True)
+    sources = body.get("sources") or ["coupang"]
+    raw_limit = body.get("limit")
+    limit = int(raw_limit) if raw_limit else None
+    do_reset = bool(body.get("reset"))
+
+    # 대상 한국 상품 id 추출
+    async with async_session() as session:
+        if only_accepted:
+            stmt = (
+                _sel(_DP.id, _DP.source, _DP.product_name, _DP.product_url)
+                .join(_DMC, _DMC.domestic_product_id == _DP.id)
+                .where(_DP.lookup_date == target_date)
+                .where(_DP.product_url.is_not(None))
+                .where(_DP.source.in_(sources))
+                .where(_DMC.decision == "accepted")
+                .distinct()
+            )
+        else:
+            stmt = (
+                _sel(_DP.id, _DP.source, _DP.product_name, _DP.product_url)
+                .where(_DP.lookup_date == target_date)
+                .where(_DP.product_url.is_not(None))
+                .where(_DP.source.in_(sources))
+            )
+        if not do_reset:
+            stmt = stmt.where(_DP.detail_scraped_at.is_(None))
+        rows = (await session.execute(stmt)).all()
+
+    if limit:
+        rows = list(rows)[:limit]
+
+    if not rows:
+        return {
+            "task_id": None, "candidates": 0,
+            "message": f"{target_date}: 처리 대상 0건 (only_accepted={only_accepted}, sources={sources})",
+        }
+
+    task_id = task_manager.create_task(
+        name=f"한국 상품 상세 진입 ({target_date}, {len(rows)}건)",
+        total=len(rows),
+    )
+    _asyncio.create_task(_run_scrape_details(task_id, rows, str(target_date)))
+    return {
+        "task_id": task_id, "candidates": len(rows),
+        "only_accepted": only_accepted, "sources": sources,
+        "date": str(target_date),
+    }
+
+
+async def _run_scrape_details(task_id: str, rows: list, date_str: str) -> None:
+    """백그라운드 — 한 상품씩 상세 진입 → 옵션/배송비/이미지 + DB UPDATE."""
+    import json as _json
+    from datetime import datetime as _dt
+    from sqlalchemy import update as _upd, delete as _del
+    from app.db.models import (
+        DomesticProduct as _DP, DomesticProductOption as _DPO,
+    )
+    from app.scrapers.m_domestic_details import scrape_domestic_detail
+
+    task_manager.start_task(task_id)
+    ok_n = fail_n = 0
+
+    try:
+        for idx, (did, src, name, url) in enumerate(rows, 1):
+            try:
+                res = await scrape_domestic_detail(
+                    domestic_id=did,
+                    source=src or "",
+                    product_url=url,
+                    product_name_kr=name or "",
+                    date_str=date_str,
+                )
+            except Exception as e:
+                fail_n += 1
+                logger.warning(f"[detail] 호출 실패 d={did}: {e}")
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] FAIL d={did} ({type(e).__name__})",
+                )
+                continue
+
+            # DB UPDATE
+            try:
+                async with async_session() as session:
+                    # 옵션 — 기존 행 삭제 후 신규 INSERT (스냅샷 갱신)
+                    await session.execute(_del(_DPO).where(_DPO.domestic_product_id == did))
+                    for opt in res.get("options", []):
+                        session.add(_DPO(
+                            domestic_product_id=did,
+                            option_name=str(opt.get("name") or "default")[:200],
+                            option_price_krw=int(opt.get("price_krw") or 0) or None,
+                            in_stock=1 if opt.get("in_stock", True) else 0,
+                        ))
+                    # 상위 컬럼 — 배송비/이미지 경로/타임스탬프
+                    sh = res.get("shipping", {})
+                    payload = {
+                        "shipping_kind": sh.get("kind") or None,
+                        "shipping_amount": sh.get("amount"),
+                        "shipping_threshold": sh.get("threshold"),
+                        "detail_image_paths": _json.dumps(res.get("extra_image_paths", []), ensure_ascii=False)
+                            if res.get("extra_image_paths") else None,
+                        "detail_scraped_at": _dt.utcnow(),
+                    }
+                    await session.execute(_upd(_DP).where(_DP.id == did).values(**payload))
+                    await session.commit()
+            except Exception as e:
+                fail_n += 1
+                logger.warning(f"[detail] DB UPDATE 실패 d={did}: {e}")
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] DB-FAIL d={did}",
+                )
+                continue
+
+            if res.get("ok"):
+                ok_n += 1
+            else:
+                fail_n += 1
+
+            opt_n = len(res.get("options", []))
+            ext_n = len(res.get("extra_image_paths", []))
+            sh_kind = (res.get("shipping") or {}).get("kind") or "?"
+            tag = "OK" if res.get("ok") else "EMPTY"
+            task_manager.update_progress(
+                task_id, increment=1,
+                message=(
+                    f"[{idx}/{len(rows)}] {tag} d={did} "
+                    f"opts={opt_n} img={ext_n} ship={sh_kind} "
+                    f"({(res.get('note') or '')[:25]})"
+                ),
+            )
+
+        task_manager.complete_task(
+            task_id,
+            message=f"완료 — OK {ok_n}, 실패 {fail_n} (대상 {len(rows)})",
+        )
+    except Exception as e:
+        task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        traceback.print_exc()

@@ -135,6 +135,31 @@ class DomesticProduct(Base):
     image_local_path = Column(String)        # image/{date}/{kr_name}/cover.jpg
     image_score_overall = Column(Float)       # 정렬용 종합 점수
     image_score_json = Column(Text)           # 4항목 raw 점수 JSON
+    # ─── Phase 2 — 상세 페이지 진입 결과 ───
+    shipping_kind = Column(String)            # "free" / "paid" / "conditional" / "unknown"
+    shipping_amount = Column(Integer)         # paid/conditional 시 KRW
+    shipping_threshold = Column(Integer)      # conditional 시 무료 기준 (예: 50000)
+    detail_scraped_at = Column(DateTime)      # 상세 진입 처리 시점
+    detail_image_paths = Column(Text)         # 누끼/내용물 이미지 로컬 경로 JSON 배열
+
+
+class DomesticProductOption(Base):
+    """한국 상품 옵션 단위 가격 (1:N).
+
+    상세 페이지에서 옵션 셀렉트(드롭다운/라디오/컬러칩 등)를 클릭하며
+    각 옵션의 가격을 캡처. 같은 product_id 의 옵션은 captured_at 갱신 시 모두 덮어씀
+    (이전 옵션은 별도 테이블에 보존하지 않고 최신 스냅샷만 유지).
+
+    option_name 예시: "30ml", "블랙", "1+1 패키지", "Set A".
+    """
+    __tablename__ = "domestic_product_options"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    domestic_product_id = Column(Integer, ForeignKey("domestic_products.id"), index=True)
+    option_name = Column(String, nullable=False)
+    option_price_krw = Column(Integer)
+    in_stock = Column(Integer, default=1)        # 0=품절, 1=재고
+    captured_at = Column(DateTime, default=datetime.utcnow)
 
 
 class BestsellerItem(Base):
