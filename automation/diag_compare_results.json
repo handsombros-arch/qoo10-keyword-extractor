@@ -1,0 +1,147 @@
+[
+  {
+    "sample": {
+      "jp": "[話題の韓国人気] メラメイトグミ 50粒 / リラックスグミ / ナイトルーティン / 個包装 / タートチェリー味 / ピスタチオ由来原料配合 / ドクターニュートリ",
+      "ko_7b": "{\"ko\": \"한국인기 메라메이트 과일껌 50개입 / 리ラックス 과일껌 / 야간루틴 / 개별포장 / 체리맛 / 피스타치오 원료 협합\"}",
+      "tag": "メラメイト_브랜드"
+    },
+    "models": {
+      "ollama:qwen2.5:7b": {
+        "ko": "한국인기 메라메이트 과일껌 50개입 / 리ラックス 과일껌 / 나이트 루틴 / 개별 포장 / 체리 맛 / 피스타치오 원료 함유 / 드럭니uet",
+        "latency_s": 3.51,
+        "kana_left": true
+      },
+      "ollama:qwen2.5:14b": {
+        "ko": "드럭뉴트리 메라메йт 과자 50개입 페스타치오유래원료함유 타르트체리맛 개별포장",
+        "latency_s": 7.73,
+        "kana_left": false
+      },
+      "ollama:qwen3:14b": {
+        "ko": "",
+        "latency_s": 11.94,
+        "kana_left": false
+      },
+      "gemini:gemini-2.5-flash": {
+        "ko": "[ERR: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\nPlease retry in 8.800134602s. [links {\n  description: \"Learn more about Gemini API quotas\"\n  url: \"https://ai.google.dev/gemini-api/docs/rate-limits\"\n}\n, violations {\n  quota_metric: \"generativelanguage.googleapis.com/generate_content_free_tier_requests\"\n  quota_id: \"GenerateRequestsPerMinutePerProjectPerModel-FreeTier\"\n  quota_dimensions {\n    key: \"model\"\n    value: \"gemini-2.5-flash\"\n  }\n  quota_dimensions {\n    key: \"location\"\n    value: \"global\"\n  }\n  quota_value: 5\n}\n, retry_delay {\n  seconds: 8\n}\n]]",
+        "latency_s": 15.74,
+        "kana_left": false
+      }
+    }
+  },
+  {
+    "sample": {
+      "jp": "[オリーブヤング1位]ドクターニュート リメラメイトグミ 3gX 40粒 植物性melatonin配合/快眠サポート/タートチェリー味/韓国人気おやすみグミ",
+      "ko_7b": "{\"ko\": \"オリーブヤング1위 드كت니우트 리메라메이트 과일젤리 3g×40개/슬러시체리 맛/수면지원\"}",
+      "tag": "올리브영_매장"
+    },
+    "models": {
+      "ollama:qwen2.5:7b": {
+        "ko": "オリーブヤング1位 드كت니우트 리메라메이트 과일젤리 3g×40개 멜라토닌 함유/안정된 잠을 위한 과일맛",
+        "latency_s": 5.0,
+        "kana_left": true
+      },
+      "ollama:qwen2.5:14b": {
+        "ko": "메디큐브 리멜라미트 곰보리 3gx40정 식물성 멜라토닌 함유/자연스러운 수면 지원/타트체리 맛",
+        "latency_s": 7.58,
+        "kana_left": false
+      },
+      "ollama:qwen3:14b": {
+        "ko": "",
+        "latency_s": 11.66,
+        "kana_left": false
+      },
+      "gemini:gemini-2.5-flash": {
+        "ko": "{\"ko\": \"닥터",
+        "latency_s": 4.69,
+        "kana_left": false
+      }
+    }
+  },
+  {
+    "sample": {
+      "jp": "【トイストーリー コラボ】 人気 限定 韓国 スターバックス トイストーリー シリアルボウル 450ml シールステッカー1種付き 朝食 デザート 食器 正規品 ギフト コレクション おしゃれ テーブ",
+      "ko_7b": "{\"ko\": \"トイスト리지 콜라보 인기 한정 스타벅스トイ스트리지 시리얼볼 450ml 라벨 스티커 1종付き 아침식사 디저트 식기 정품 선물 수집용 오シャ레\"}",
+      "tag": "토이스토리_캐릭터"
+    },
+    "models": {
+      "ollama:qwen2.5:7b": {
+        "ko": "トイスト오리 콜라보 인기 제한 한국 스타벅스トイ스트오리 시리얼볼 450ml 라벨 스티커 1종付き 아침 식사 디저트 식기 정품 선물 수집용 오シャ레 테이블",
+        "latency_s": 5.53,
+        "kana_left": true
+      },
+      "ollama:qwen2.5:14b": {
+        "ko": "스타벅스 투이스트ORY 한정판シリ얼볼 450ml 세일 스티커 1종 포함 아침식사 디저트 그릇",
+        "latency_s": 7.39,
+        "kana_left": true
+      },
+      "ollama:qwen3:14b": {
+        "ko": "",
+        "latency_s": 11.54,
+        "kana_left": false
+      },
+      "gemini:gemini-2.5-flash": {
+        "ko": "[ERR: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\nPlease retry in 51.753990332s. [links {\n  description: \"Learn more about Gemini API quotas\"\n  url: \"https://ai.google.dev/gemini-api/docs/rate-limits\"\n}\n, violations {\n  quota_metric: \"generativelanguage.googleapis.com/generate_content_free_tier_requests\"\n  quota_id: \"GenerateRequestsPerMinutePerProjectPerModel-FreeTier\"\n  quota_dimensions {\n    key: \"model\"\n    value: \"gemini-2.5-flash\"\n  }\n  quota_dimensions {\n    key: \"location\"\n    value: \"global\"\n  }\n  quota_value: 5\n}\n, retry_delay {\n  seconds: 51\n}\n]]",
+        "latency_s": 23.59,
+        "kana_left": false
+      }
+    }
+  },
+  {
+    "sample": {
+      "jp": "【韓国正規品】サンリオボンボンドロップシール_ハローキティ・ポチャッコ・シナモロール・マイメロディ・クロミ_ステッカー",
+      "ko_7b": "{\"ko\": \"한국正品][サンリ오보노bondロ드로프시ール_하로키티·포차ッ코·시나모롤·마이멜로디·クロミ_스테커\"}",
+      "tag": "마이멜로디_캐릭터"
+    },
+    "models": {
+      "ollama:qwen2.5:7b": {
+        "ko": "サンリ오 볼보노드로프시어_해로키티·포차ッ코·시나모로일·마이멜로디·크로미_스테커",
+        "latency_s": 4.86,
+        "kana_left": true
+      },
+      "ollama:qwen2.5:14b": {
+        "ko": "サンリオ 보ン бон 드롭 스티커 (하로키티/포카혼토/시나모롤/마이멜로디/크로미)",
+        "latency_s": 7.36,
+        "kana_left": true
+      },
+      "ollama:qwen3:14b": {
+        "ko": "산리오 봉봉 드롭 스티커 헬로키티 포차코 시나모롤 마이멜로디 크로미",
+        "latency_s": 11.04,
+        "kana_left": false
+      },
+      "gemini:gemini-2.5-flash": {
+        "ko": "[ERR: 429 You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-2.5-flash\nPlease retry in 28.050782887s. [links {\n  description: \"Learn more about Gemini API quotas\"\n  url: \"https://ai.google.dev/gemini-api/docs/rate-limits\"\n}\n, violations {\n  quota_metric: \"generativelanguage.googleapis.com/generate_content_free_tier_requests\"\n  quota_id: \"GenerateRequestsPerMinutePerProjectPerModel-FreeTier\"\n  quota_dimensions {\n    key: \"model\"\n    value: \"gemini-2.5-flash\"\n  }\n  quota_dimensions {\n    key: \"location\"\n    value: \"global\"\n  }\n  quota_value: 5\n}\n, retry_delay {\n  seconds: 28\n}\n]]",
+        "latency_s": 0.42,
+        "kana_left": false
+      }
+    }
+  },
+  {
+    "sample": {
+      "jp": "ハパクリスティン 韓国 カラコン ワンデー 1day 10枚入り ビーン ファーストラブ シュガーハイ ワンアンドオンリー",
+      "ko_7b": "{\"ko\": \"하파크리스틴 한국 컬러콘택트 웨이드 1일 10개입 비앙 파스트라브 시가ハイワン앤온리\"}",
+      "tag": "하파크리스틴_브랜드"
+    },
+    "models": {
+      "ollama:qwen2.5:7b": {
+        "ko": "하파크리스틴 한국 카라콘 웨이드 1일 10개입 비앙 파스트라브 시가하이 원앤온리",
+        "latency_s": 4.71,
+        "kana_left": false
+      },
+      "ollama:qwen2.5:14b": {
+        "ko": "하파크리스틴 1일용 일회용 컬러컨택트 렌즈 10매입 파irstラブ 시가ーハ이 와나드온니",
+        "latency_s": 7.5,
+        "kana_left": true
+      },
+      "ollama:qwen3:14b": {
+        "ko": "",
+        "latency_s": 11.67,
+        "kana_left": false
+      },
+      "gemini:gemini-2.5-flash": {
+        "ko": "{\"ko\": \"하파크리스틴 한국",
+        "latency_s": 20.62,
+        "kana_left": false
+      }
+    }
+  }
+]

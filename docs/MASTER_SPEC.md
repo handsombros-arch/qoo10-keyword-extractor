@@ -329,6 +329,10 @@ decision    = "accepted" if (image_ok AND
 | 2026-04-27 | **번역 측 텍스트에 `keyword_kr` 토큰 합치기** (recommendations.py) | 큐텐 ko 가 「코스노리」 같은 브랜드 토큰을 누락하는 케이스 회피. 번역 결함이 매칭 단계에서 치명적이라 매칭 측에서 보완. |
 | 2026-04-27 | translate.py JSON 파싱 폴백 제거 (실패 시 None) | 달바 케이스 — `{"ko": "..."` raw 가 ko 컬럼에 박힘. raw 첫 줄 폴백이 결함. 향후 깨진 ko 는 reset + 재번역 필요. |
 | 2026-04-27 | jp_ko_translation.txt 강화 — 「브랜드명 반드시 포함」 + 중국어 한자 사용 금지 | 코스노리/qwen2.5:7b 의 브랜드 누락 + 한자/중국어 혼입 결함. 다음 번역부터 적용. |
+| 2026-04-28 | **TRANSLATE_MODEL = ollama:qwen3:14b** (qwen2.5:7b → qwen3:14b) | 진단 (DIAGNOSIS_KANA_BRAND.md): 7b 가나 잔존 80%, qwen3:14b 0%. 재번역 후 잔존 189→38 (-80%), accept 26→35 (+9). |
+| 2026-04-28 | translate.py max_tokens 512 → 2048 | qwen3:14b reasoning 토큰을 num_predict 안에 포함 → 512 부족 시 빈 응답. |
+| 2026-04-28 | **BRAND_AUTO_ADD_THRESHOLD = 0.85** (0.9 → 0.85) | 신규 브랜드 자동 추가 비율 ↑. 검수 큐 거치므로 위험 X. |
+| 2026-04-28 | brands whitelist 시드 10개 추가 (코스노리/달바/라운드랩/바이오던스/하파크리스틴/메라메이트/프라이밀/도비아/짱구/코스노리이지브로우) | 자주 등장 브랜드 1차 매칭 → LLM 비용 ↓. (DIAGNOSIS § 2-1) |
 | TBD | 결합 룰 임계값 (0.3 / 0.7) 확정 — 정상 K-뷰티 시운전 후 조정. | 사장님 결정 필요. |
 | TBD | 「マキシム=맥심」 등 표기 사전 시드 50개. | 사장님 검수 필요. |
 | TBD | 세트 제안 룰 — 묶음 개수가 항상 3인지, 큐텐 set_count 따라가는지. 「2만원 이하」 = 환산 KRW. | 사장님 결정 필요. |

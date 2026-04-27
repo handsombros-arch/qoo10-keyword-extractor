@@ -117,11 +117,13 @@ async def translate_jp_to_ko_async(product_name: str) -> str | None:
     prompt = template.replace("{product_name}", name)
 
     try:
+        # qwen3:14b 같은 reasoning 모델은 thinking 토큰을 num_predict 안에 포함하므로
+        # 2048 이상 필요. qwen2.5:7b 는 500도 충분하지만 통일.
         result = await client.chat(
             [{"role": "user", "content": prompt}],
             temperature=0.0,
             json_mode=True,
-            max_tokens=512,
+            max_tokens=2048,
         )
     except Exception as e:
         logger.error(f"[translate] LLM 호출 실패 ({e})")
