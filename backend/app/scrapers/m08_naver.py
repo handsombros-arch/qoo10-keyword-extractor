@@ -78,7 +78,28 @@ class NaverShoppingScraper(BaseScraper):
                     return {"task_id": task_id, "products": [], "error": msg}
                 data = resp.json()
 
-            items = data.get("items") or []
+            raw_items = data.get("items") or []
+            # 카탈로그(price-comparison) 페이지 우선순위 강하게 낮춤 — mallName="네이버"
+            # 또는 link 가 search.shopping.naver.com/catalog/. 이런 페이지는 옵션/배송
+            # 진입이 막혀 후속 단계 (Phase 2 옵션 채움) 에서 dead-end.
+            #
+            # 해결: 동일 상품이 카탈로그 + 직접 셀러 양쪽 있을 때 직접 셀러 우선.
+            # 카탈로그만 있는 경우엔 어쩔 수 없이 받음 (데이터 손실 회피).
+            seller_items = []
+            catalog_items = []
+            for it in raw_items:
+                mall = (it.get("mallName") or "").strip()
+                link = (it.get("link") or "")
+                is_catalog = (
+                    mall == "네이버"
+                    or "search.shopping.naver.com/catalog" in link
+                )
+                if is_catalog:
+                    catalog_items.append(it)
+                else:
+                    seller_items.append(it)
+            # 셀러 우선 → 카탈로그 보충 (max_results 못 채울 때만)
+            items = seller_items + catalog_items
             if not items:
                 self.tasks.complete_task(task_id, "0개 결과")
                 return {"task_id": task_id, "products": []}

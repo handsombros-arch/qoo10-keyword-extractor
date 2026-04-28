@@ -662,6 +662,46 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
         except Exception as e:
             logger.warning(f"[detail/naver] goto 실패 {url[:60]}: {e}")
             return out
+
+        # 카탈로그 URL (price-comparison 페이지) → 첫 셀러 link 추출 후 redirect.
+        # search.shopping.naver.com/catalog/{id} 는 옵션/배송 진입 dead-end.
+        if "search.shopping.naver.com/catalog" in url:
+            try:
+                await page.wait_for_timeout(random.randint(1500, 2500))
+                # 카탈로그 셀러 list 첫 번째 a 태그 (smartstore/외부 셀러)
+                seller_link = None
+                for sel in [
+                    "[class*='productByMall_link']",
+                    "[class*='lowestPrice_item'] a[target='_blank']",
+                    "[class*='priceCompare'] a[href*='smartstore']",
+                    "a[href*='smartstore.naver.com/main/products/']",
+                    "a[href*='link.coupang.com']",
+                    "a[href*='11st.co.kr']",
+                ]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count():
+                            href = await el.get_attribute("href")
+                            if href and href.startswith("http"):
+                                seller_link = href
+                                break
+                    except Exception:
+                        continue
+                if seller_link:
+                    logger.info(f"[detail/naver] catalog → seller redirect: {seller_link[:80]}")
+                    try:
+                        await page.goto(
+                            seller_link,
+                            referer=url,
+                            wait_until="domcontentloaded",
+                            timeout=30000,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[detail/naver] seller redirect 실패: {e}")
+                else:
+                    logger.warning(f"[detail/naver] catalog 셀러 link 추출 실패 — 카탈로그 페이지 그대로 처리")
+            except Exception as e:
+                logger.warning(f"[detail/naver] catalog 처리 예외: {e}")
         # 사용자 GUI 환경이면 차단 시 captcha 풀 시간 더 줌
         wait_ms = random.randint(3000, 5000) if using_cdp else random.randint(2000, 3000)
         await page.wait_for_timeout(wait_ms)
