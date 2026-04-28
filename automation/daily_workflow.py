@@ -38,8 +38,9 @@ _ROOT_DIR = _THIS_DIR.parent
 LOG_DIR = _ROOT_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-# automation/.env 로드 (.env 가 없으면 OS 환경변수만 사용)
+# automation/.env 우선, backend/.env 보충 (NAVER_CLIENT_ID 같은 backend 측 키 공유)
 load_dotenv(_THIS_DIR / ".env")
+load_dotenv(_ROOT_DIR / "backend" / ".env", override=False)
 
 # notify.py 와 같은 디렉토리에서 import
 sys.path.insert(0, str(_THIS_DIR))
@@ -255,19 +256,104 @@ async def _ensure_chrome_debug() -> None:
     log.warning("디버그 Chrome 5초 내 응답 없음 — fallback")
 
 
+async def _check_naver_api() -> tuple[bool, str]:
+    """네이버 쇼핑 API 키 인증 점검. (ok, msg)."""
+    cid = (os.getenv("NAVER_CLIENT_ID") or "").strip()
+    csec = (os.getenv("NAVER_CLIENT_SECRET") or "").strip()
+    if not cid or not csec:
+        return False, "NAVER_CLIENT_ID/SECRET 미설정"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get(
+                "https://openapi.naver.com/v1/search/shop.json",
+                headers={"X-Naver-Client-Id": cid, "X-Naver-Client-Secret": csec},
+                params={"query": "test", "display": 1},
+            )
+        if r.status_code == 200:
+            return True, "OK"
+        if r.status_code == 401:
+            return False, "API 키 인증 실패 (401)"
+        if r.status_code == 429:
+            return False, "API 일일한도 초과 (429)"
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+async def _check_chrome_debug() -> tuple[bool, str]:
+    """9222 포트 + /json/version 응답 확인."""
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", 9222), timeout=2):
+            pass
+    except Exception:
+        return False, "포트 9222 closed"
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as c:
+            r = await c.get("http://127.0.0.1:9222/json/version")
+        if r.status_code == 200:
+            data = r.json()
+            return True, f"OK ({data.get('Browser','unknown')[:30]})"
+        return False, f"HTTP {r.status_code}"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 async def step_login_status(client: httpx.AsyncClient) -> None:
+    """헬스체크 — 큐텐 로그인 + 네이버 API + 디버그 Chrome.
+
+    각 항목 만료/실패 시 텔레그램 즉시 알림 후 CaptchaRequired raise.
+    어느 항목 실패했는지 명시 → 사장님이 눈 뜨자마자 어떤 보안을 풀어야 하는지 즉시 인지.
+    """
     log.info("=== STEP 2: 로그인 상태 확인 ===")
-    data = await _get(client, "/api/auth/status", timeout=10)
-    if data.get("logged_in"):
-        log.info("로그인 OK")
+
+    # 1) 큐텐 (M01)
+    qoo10_ok = qoo10_msg = ""
+    try:
+        data = await _get(client, "/api/auth/status", timeout=10)
+        qoo10_ok = bool(data.get("logged_in"))
+        if qoo10_ok:
+            qoo10_msg = "OK"
+        else:
+            has_cookies = bool(data.get("has_cookies"))
+            qoo10_msg = "쿠키는 있지만 logged_in=False" if has_cookies else "쿠키 없음"
+    except Exception as e:
+        qoo10_ok = False
+        qoo10_msg = f"점검 실패: {type(e).__name__}: {e}"
+
+    # 2) 네이버 API
+    naver_ok, naver_msg = await _check_naver_api()
+
+    # 3) 디버그 Chrome (CDP attach 위해)
+    chrome_ok, chrome_msg = await _check_chrome_debug()
+
+    # 모두 통과
+    log.info(f"큐텐: {'✓' if qoo10_ok else '✗'} {qoo10_msg}")
+    log.info(f"네이버 API: {'✓' if naver_ok else '✗'} {naver_msg}")
+    log.info(f"디버그 Chrome: {'✓' if chrome_ok else '✗'} {chrome_msg}")
+
+    if qoo10_ok and naver_ok:
+        # Chrome 은 critical 아님 (warning 만)
+        if not chrome_ok:
+            log.warning(f"디버그 Chrome 9222 비활성 — 한국 셀러 진입 차단 가능: {chrome_msg}")
         return
 
-    has_cookies = bool(data.get("has_cookies"))
-    if has_cookies:
-        raise CaptchaRequired(
-            "쿠키는 있지만 logged_in=False. 캡차 또는 세션 만료 가능성."
-        )
-    raise CaptchaRequired("쿠키 없음. 수동 로그인 필요.")
+    # 실패 시 — 어느 보안 풀어야 하는지 명시
+    failed = []
+    if not qoo10_ok: failed.append(f"큐텐 ({qoo10_msg})")
+    if not naver_ok: failed.append(f"네이버 ({naver_msg})")
+    if not chrome_ok: failed.append(f"Chrome9222 ({chrome_msg})")
+
+    msg_lines = "\n".join(f"  - {f}" for f in failed)
+    msg = f"보안 점검 실패\n{msg_lines}\n\n사장님 처리 후 자동화 재실행 필요."
+
+    # 즉시 텔레그램 알림 (CaptchaRequired 가 main 에서도 alert 보내지만 여기서 미리)
+    try:
+        await notify.send(msg, level="auth")
+    except Exception:
+        pass
+
+    raise CaptchaRequired(msg)
 
 
 async def step_check_existing_keywords(
