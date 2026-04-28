@@ -85,6 +85,9 @@ MATCH_IMAGES_TOP_N = int(_env("MATCH_IMAGES_TOP_N", "3"))
 ENABLE_SET_COUNT_VERIFY = _env("ENABLE_SET_COUNT_VERIFY", "1") == "1"
 SET_COUNT_VERIFY_MIN_MARGIN = float(_env("SET_COUNT_VERIFY_MIN_MARGIN", "2.0"))
 
+# Phase 4-B 큐텐 SEO 콘텐츠 자동 생성 (title_jp/tags/option_name/marketing_points)
+ENABLE_QOO10_CONTENT = _env("ENABLE_QOO10_CONTENT", "1") == "1"
+
 # 자동 필터 카테고리 화이트리스트 (콤마구분). 비어있으면 UserData 우선 → 그것도 없으면 모두 통과.
 AUTO_FILTER_CATEGORIES_ENV = _env("AUTO_FILTER_CATEGORIES", "")
 
@@ -737,6 +740,51 @@ async def step_match_images(
         return {"error": str(e), "candidates": candidates_n}
 
 
+async def step_generate_qoo10_content(
+    client: httpx.AsyncClient, target_date: date, candidates: list[dict]
+) -> dict:
+    """STEP 6.0 — 큐텐 SEO 콘텐츠 자동 생성 (Phase 4-B).
+
+    accepted 매칭 큐텐 상품 대상으로 title_jp/tags/option_name/marketing_points
+    한 번에 생성 (qwen3:14b). 검수 페이지 enrich 에 사용됨.
+    best-effort.
+    """
+    log.info("=== STEP 6.0: 큐텐 SEO 콘텐츠 생성 (Phase 4-B) ===")
+    if not ENABLE_QOO10_CONTENT:
+        log.info("ENABLE_QOO10_CONTENT=0 — 스킵")
+        return {"skipped": True}
+
+    keywords_jp = [c["keyword_jp"] for c in candidates if c.get("keyword_jp")]
+    if not keywords_jp:
+        log.info("대상 키워드 0개 — 스킵")
+        return {"candidates": 0}
+
+    body = {
+        "date": str(target_date),
+        "keywords_jp": keywords_jp,
+        "only_accepted": True,
+    }
+    try:
+        result = await _post(client, "/api/products/qoo10/generate-content", body)
+    except Exception as e:
+        log.warning(f"큐텐 콘텐츠 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates_n = result.get("candidates", 0)
+    if not task_id:
+        log.info("큐텐 콘텐츠 대상 0개")
+        return {"candidates": 0}
+
+    log.info(f"큐텐 콘텐츠 task_id={task_id} (대상 {candidates_n}개 큐텐 상품)")
+    try:
+        await wait_task(client, task_id, label="큐텐 콘텐츠 생성")
+        return {"task_id": task_id, "candidates": candidates_n}
+    except Exception as e:
+        log.warning(f"큐텐 콘텐츠 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates_n}
+
+
 async def step_verify_set_counts(
     client: httpx.AsyncClient, target_date: date, candidates: list[dict],
 ) -> dict:
@@ -824,6 +872,7 @@ def _format_summary(
     brand_expand_result: dict | None = None,
     expanded_search_result: dict | None = None,
     match_result: dict | None = None,
+    content_result: dict | None = None,
 ) -> str:
     elapsed = ended - started
     elapsed_str = str(elapsed).split(".", 1)[0]
@@ -877,6 +926,8 @@ def _format_summary(
     else:
         mt_line = _line(match_result, "ENABLE_MATCH_IMAGES=0", "쌍")
 
+    qc_line = _line(content_result, "ENABLE_QOO10_CONTENT=0", "개 큐텐 콘텐츠")
+
     return (
         f"야간 자동화 완료\n"
         f"시작: {started.strftime('%Y-%m-%d %H:%M')}\n"
@@ -890,6 +941,7 @@ def _format_summary(
         f"확장 검색: {es_line}\n"
         f"이미지 처리: {img_line}\n"
         f"이미지+텍스트 매칭: {mt_line}\n"
+        f"큐텐 SEO 콘텐츠: {qc_line}\n"
         f"set_count 비전 검증: {vf_line}\n"
         f"마진 통과 후보: {build_result.get('count', 0)}개 "
         f"(전체 {build_result.get('total_candidates', 0)})\n"
@@ -957,6 +1009,9 @@ async def main_async() -> int:
             image_result = await step_process_domestic_images(client, target_date, candidates)
             match_result = await step_match_images(client, target_date, candidates)
 
+            # Phase 4-B 큐텐 SEO 콘텐츠 — auto_build 전에 생성 (검수 페이지 enrich 용)
+            content_result = await step_generate_qoo10_content(client, target_date, candidates)
+
             build_result = await step_auto_build(client, candidates, target_date)
             verify_result = await step_verify_set_counts(client, target_date, candidates)
 
@@ -967,6 +1022,7 @@ async def main_async() -> int:
                     len(candidates), domestic_kw_count, image_result,
                     set_count_result, build_result, verify_result,
                     brand_expand_result, expanded_search_result, match_result,
+                    content_result,
                 ),
                 level="ok",
             )
