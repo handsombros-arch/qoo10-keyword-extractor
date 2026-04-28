@@ -4,14 +4,18 @@
     1) 비용 한도 체크 (assert_budget_or_raise — vision.py 와 공유)
     2) 두 이미지 각각 PIL 리사이즈 → 임시 JPEG
     3) get_client_for("image_match").chat_with_image(images=[A, B])
-    4) IMAGE_MATCH_ENSEMBLE 환경변수에 두 번째 모델 spec 이 있으면 두 모델 병렬
-       호출 후 점수 결합 (mode: avg / max / min)
+    4) 두 가지 mix 옵션:
+       (a) IMAGE_MATCH_ENSEMBLE  — 매번 두 모델 병렬 호출 + 결합 (avg/max/min)
+       (b) IMAGE_MATCH_CASCADE   — 1차 점수 ≤ threshold 일 때만 2차 모델 재시도
+                                   (false reject 보완, 정상 케이스는 1차만 — 비용 효율)
     5) JSON {score, note} 파싱
 
 env:
-    IMAGE_MATCH_MODEL=<provider:model>          (기본 모델, 예: ollama:qwen2.5vl:7b)
-    IMAGE_MATCH_ENSEMBLE=<provider:model>       (선택, 두 번째 모델 spec)
+    IMAGE_MATCH_MODEL=<provider:model>          (1차 모델, 예: ollama:minicpm-v:8b)
+    IMAGE_MATCH_ENSEMBLE=<provider:model>       (선택, 매번 병렬)
     IMAGE_MATCH_ENSEMBLE_MODE=avg|max|min       (기본 avg)
+    IMAGE_MATCH_CASCADE=<provider:model>        (선택, 1차 0점 케이스만 호출)
+    IMAGE_MATCH_CASCADE_THRESHOLD=0.05          (1차 점수 이 값 이하면 2차 시도)
 prompt: app/services/llm/prompts/image_matching.txt
 
 사용:
@@ -98,6 +102,7 @@ async def compare_two_images_async(image_a: str, image_b: str) -> dict:
     빈 경로/누락 파일은 즉시 _empty() 반환.
     BudgetExceededError 발생 시 score=0, note="BUDGET_EXCEEDED".
     IMAGE_MATCH_ENSEMBLE 설정 시 두 모델 병렬 호출 + 결합.
+    IMAGE_MATCH_CASCADE 설정 시 1차 점수 낮으면 2차 모델로 second-opinion.
     """
     if not image_a or not image_b:
         return _empty()
@@ -117,22 +122,32 @@ async def compare_two_images_async(image_a: str, image_b: str) -> dict:
         logger.error(f"[image_match] 클라이언트 생성 실패 ({e})")
         return _empty()
 
-    # 2차 — ensemble (선택)
-    secondary = None
+    # 2차 — ensemble 우선, 없으면 cascade
     ensemble_spec = (os.getenv("IMAGE_MATCH_ENSEMBLE") or "").strip()
+    cascade_spec = (os.getenv("IMAGE_MATCH_CASCADE") or "").strip()
+    secondary = None
+    second_mode = None  # "ensemble" | "cascade" | None
+
     if ensemble_spec:
         try:
             secondary = _build_client(ensemble_spec)
+            second_mode = "ensemble"
         except Exception as e:
-            logger.warning(f"[image_match] ensemble {ensemble_spec} 빌드 실패 (단일 모델로 진행): {e}")
+            logger.warning(f"[image_match] ensemble {ensemble_spec} 빌드 실패: {e}")
+    elif cascade_spec:
+        try:
+            secondary = _build_client(cascade_spec)
+            second_mode = "cascade"
+        except Exception as e:
+            logger.warning(f"[image_match] cascade {cascade_spec} 빌드 실패: {e}")
 
     template = load_prompt("image_matching")
     upload_a = resize_for_upload(image_a)
     upload_b = resize_for_upload(image_b)
 
     try:
-        if secondary is not None:
-            # 두 모델 병렬
+        if second_mode == "ensemble":
+            # 두 모델 매번 병렬
             res_a, res_b = await asyncio.gather(
                 _call_one_model(primary, template, upload_a, upload_b),
                 _call_one_model(secondary, template, upload_a, upload_b),
@@ -140,8 +155,24 @@ async def compare_two_images_async(image_a: str, image_b: str) -> dict:
             )
             results = [r for r in (res_a, res_b) if r]
         else:
-            res = await _call_one_model(primary, template, upload_a, upload_b)
-            results = [res] if res else []
+            # 1차만 우선 호출
+            res1 = await _call_one_model(primary, template, upload_a, upload_b)
+            results = [res1] if res1 else []
+            # cascade — 1차 점수 ≤ threshold 면 2차 시도 (false reject 보완)
+            if second_mode == "cascade" and secondary is not None:
+                try:
+                    cascade_threshold = float(os.getenv("IMAGE_MATCH_CASCADE_THRESHOLD") or "0.05")
+                except ValueError:
+                    cascade_threshold = 0.05
+                first_score = _clamp((res1 or {}).get("score") or 0)
+                if first_score <= cascade_threshold:
+                    res2 = await _call_one_model(secondary, template, upload_a, upload_b)
+                    if res2:
+                        results.append(res2)
+                        logger.info(
+                            f"[image_match] cascade 발동 (1차={first_score:.2f} ≤ {cascade_threshold:.2f}) "
+                            f"→ 2차={_clamp(res2.get('score')):.2f}"
+                        )
     finally:
         cleanup_temp(upload_a, image_a)
         cleanup_temp(upload_b, image_b)
@@ -151,10 +182,16 @@ async def compare_two_images_async(image_a: str, image_b: str) -> dict:
 
     scores = [_clamp(r.get("score")) for r in results]
     notes = [str(r.get("note") or "").strip() for r in results if r.get("note")]
-    mode = (os.getenv("IMAGE_MATCH_ENSEMBLE_MODE") or "avg").lower()
-    score = _combine_scores(scores, mode)
 
-    # note 결합 — 두 모델 결과 중 첫 번째 + 추가 모델 다른 사유면 [m2: ...] 추가
+    if second_mode == "cascade" and len(scores) > 1:
+        # cascade — 2차 점수 채택 (1차가 false reject 의심이라 호출했음)
+        score = scores[1]
+    elif second_mode == "ensemble":
+        mode = (os.getenv("IMAGE_MATCH_ENSEMBLE_MODE") or "avg").lower()
+        score = _combine_scores(scores, mode)
+    else:
+        score = scores[0]
+
     note = notes[0][:60] if notes else ""
     if len(notes) > 1 and notes[1] != notes[0]:
         note += f" | m2:{notes[1][:40]}"
@@ -164,6 +201,7 @@ async def compare_two_images_async(image_a: str, image_b: str) -> dict:
         "note": note[:120],
         "ok": True,
         "ensemble": len(results) > 1,
+        "second_mode": second_mode or "none",
         "individual_scores": scores,
     }
 
