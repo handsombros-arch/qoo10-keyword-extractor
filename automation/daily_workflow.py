@@ -79,7 +79,8 @@ BRAND_EXPAND_TOP_N = int(_env("BRAND_EXPAND_TOP_N", "10"))
 ENABLE_EXPANDED_SEARCH = _env("ENABLE_EXPANDED_SEARCH", "1") == "1"
 EXPANDED_SEARCH_MAX_RESULTS = int(_env("EXPANDED_SEARCH_MAX_RESULTS", "30"))
 ENABLE_MATCH_IMAGES = _env("ENABLE_MATCH_IMAGES", "1") == "1"
-MATCH_IMAGES_TOP_N = int(_env("MATCH_IMAGES_TOP_N", "3"))
+# 4/28 야간 4시간 타임아웃 → top_n 3 → 2 (쌍 33% 감소, 시간 ~67%)
+MATCH_IMAGES_TOP_N = int(_env("MATCH_IMAGES_TOP_N", "2"))
 
 # set_count 비전 검증 토글 + 마진 임계값 (5단계)
 ENABLE_SET_COUNT_VERIFY = _env("ENABLE_SET_COUNT_VERIFY", "1") == "1"
