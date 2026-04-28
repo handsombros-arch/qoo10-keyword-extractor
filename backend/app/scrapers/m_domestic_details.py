@@ -29,10 +29,16 @@ _NUMERIC_RE = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")
 
 _FREE_KW = (
     "무료배송", "무료 배송", "무료셔틀", "Free shipping",
-    "배송비 무료", "택배 무료", "FREE",
+    "배송비 무료", "택배 무료", "FREE", "당일배송 무료",
+    "오늘출발 무료", "익일도착 무료", "배송 무료",
+    "전 상품 무료", "전상품 무료",
 )
 _CONDITIONAL_RE = re.compile(
     r"(\d+(?:[,\.]\d{3})*)\s*원?\s*이상.*?(?:무료|free)",
+    re.IGNORECASE,
+)
+_CONDITIONAL_MAN_RE = re.compile(  # "5만원 이상 무료" 패턴
+    r"(\d+)\s*만\s*원?\s*이상.*?(?:무료|free)",
     re.IGNORECASE,
 )
 
@@ -54,6 +60,7 @@ def parse_shipping(text: str) -> dict:
     if not text:
         return {"kind": "unknown", "amount": None, "threshold": None}
     t = text.strip()
+    # 조건부 1: "20,000원 이상 무료"
     m = _CONDITIONAL_RE.search(t)
     if m:
         thr_str = m.group(1).replace(",", "").replace(".", "")
@@ -64,12 +71,27 @@ def parse_shipping(text: str) -> dict:
             return {"kind": "conditional", "amount": 0, "threshold": threshold}
         except ValueError:
             pass
+    # 조건부 2: "5만원 이상 무료"
+    m2 = _CONDITIONAL_MAN_RE.search(t)
+    if m2:
+        try:
+            threshold = int(m2.group(1)) * 10000
+            return {"kind": "conditional", "amount": 0, "threshold": threshold}
+        except ValueError:
+            pass
+    # 무료 (단순 키워드 매치)
+    t_lower = t.lower()
     for kw in _FREE_KW:
-        if kw.lower() in t.lower():
+        if kw.lower() in t_lower:
             return {"kind": "free", "amount": 0, "threshold": None}
+    # 가격 명시 — 광고문구 노이즈 제거 후 가장 작은 정상 가격을 배송비로 채택
     nums = [int(s.replace(",", "")) for s in re.findall(r"\d{1,3}(?:,\d{3})+", t)]
+    nums = [n for n in nums if 500 <= n <= 50000]  # 배송비 합리적 범위
     if nums:
         return {"kind": "paid", "amount": min(nums), "threshold": None}
+    # "배송비 0원" 같은 단일 자리 0
+    if re.search(r"배송비\s*[:0]?\s*0\s*원", t):
+        return {"kind": "free", "amount": 0, "threshold": None}
     return {"kind": "unknown", "amount": None, "threshold": None}
 
 
@@ -770,22 +792,44 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
         except Exception:
             pass
 
-        # 배송비
+        # 배송비 — selector 풍부화 + dt/dd 패턴 + body fallback
         ship_text = ""
         for sel in [
             "[class*='delivery']", "[class*='Delivery']",
             "[class*='shipping']", "[class*='Shipping']",
+            "[class*='ShippingFee']", "[class*='shipping_area']",
+            "[class*='DeliveryInfo']", "[class*='delivery_info']",
+            "[data-shp-area-code='delivery']",
+            "dt:has-text('배송비') + dd",
+            "th:has-text('배송비') + td",
+            "[aria-label*='배송']",
         ]:
             try:
                 els = page.locator(sel)
                 cnt = await els.count()
-                for i in range(min(cnt, 3)):
+                for i in range(min(cnt, 5)):
                     t = (await els.nth(i).inner_text(timeout=1500)).strip()
-                    if t and len(ship_text) < 200:
+                    if t and len(ship_text) < 400:
                         ship_text += " " + t
             except Exception:
                 continue
-        out["shipping_text"] = ship_text.strip()
+        # body fallback — selector 다 실패 시 본문에서 "배송" 부근만 추출
+        if not ship_text or "무료" not in ship_text and "원" not in ship_text:
+            try:
+                body_html = await page.content()
+                # "배송" 단어 ±150 chars 윈도우에서 키워드 검색
+                for m in re.finditer(r"배송", body_html):
+                    start = max(0, m.start() - 50)
+                    end = min(len(body_html), m.end() + 150)
+                    snippet = re.sub(r"<[^>]+>", " ", body_html[start:end])
+                    snippet = re.sub(r"\s+", " ", snippet).strip()
+                    if any(kw in snippet for kw in ["무료", "원", "이상"]):
+                        ship_text += " " + snippet[:200]
+                        if len(ship_text) > 600:
+                            break
+            except Exception:
+                pass
+        out["shipping_text"] = ship_text.strip()[:600]
 
         # 추가 이미지
         try:
