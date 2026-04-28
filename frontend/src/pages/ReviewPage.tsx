@@ -70,6 +70,7 @@ type LocalEdit = {
   weight_g: number;
   sell_price_jpy: number;
   status: 'pending' | 'sent' | 'rejected';
+  selected: boolean;
 };
 
 const EXCHANGE_RATE = 9.5;
@@ -134,6 +135,7 @@ export default function ReviewPage() {
           weight_g: 0,
           sell_price_jpy: Math.round(c.qoo10_avg_jpy || 0),
           status: 'pending',
+          selected: false,
         };
       }
       setEdits(init);
@@ -198,6 +200,85 @@ export default function ReviewPage() {
     setTimeout(() => setToast(''), 3000);
   }
 
+  function toggleSelectAll(on: boolean) {
+    setEdits(prev => {
+      const next = { ...prev };
+      for (const c of filtered) {
+        if (next[c.keyword_jp] && next[c.keyword_jp].status === 'pending') {
+          next[c.keyword_jp] = { ...next[c.keyword_jp], selected: on };
+        }
+      }
+      return next;
+    });
+  }
+
+  async function sendSelectedToSheet() {
+    const targets = filtered.filter(c => edits[c.keyword_jp]?.selected && edits[c.keyword_jp]?.status === 'pending');
+    if (targets.length === 0) {
+      setToast('선택된 항목 없음');
+      setTimeout(() => setToast(''), 3000);
+      return;
+    }
+    const missingWeight = targets.filter(c => !edits[c.keyword_jp].weight_g).length;
+    if (missingWeight > 0) {
+      if (!confirm(`${targets.length}건 중 ${missingWeight}건 무게 비어있음. 그래도 진행?`)) return;
+    } else {
+      if (!confirm(`${targets.length}건을 시트로 보냅니다.`)) return;
+    }
+    setBusy('__bulk__');
+    let added = 0; let failed = 0;
+    for (const c of targets) {
+      const edit = edits[c.keyword_jp];
+      try {
+        const item = {
+          keyword_jp: c.keyword_jp,
+          product_name: c.cheapest_domestic?.product_name || '',
+          product_name_ko: c.qoo10?.product_name_ko || '',
+          product_url: c.cheapest_domestic?.product_url || '',
+          cover_image_url: c.cheapest_domestic?.cover_image_url || '',
+          weight_g: edit.weight_g,
+          item_price_krw: c.cheapest_domestic?.price_krw || 0,
+          domestic_shipping_krw: 0,
+          shipping_packaging_krw: 3000,
+          sell_price_jpy: edit.sell_price_jpy,
+          exchange_rate: EXCHANGE_RATE,
+          shipping_mode: 'auto',
+        };
+        const res = await api.post(`/recommend/send-to-sheet/${data?.date}`, { items: [item] });
+        if (res.data.error) failed++;
+        else { added += res.data.added || 1; patchEdit(c.keyword_jp, { status: 'sent', selected: false }); }
+      } catch {
+        failed++;
+      }
+    }
+    setBusy(null);
+    setToast(`✓ 일괄 ${added}건 추가 / 실패 ${failed}`);
+    setTimeout(() => setToast(''), 5000);
+  }
+
+  async function exportQoo10Excel() {
+    if (!data?.date) return;
+    setBusy('__export__');
+    try {
+      // 시트에 있는 항목 일괄 export
+      const res = await api.post(`/products/qoo10/export-excel`, {}, { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qoo10_export_${data.date}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setToast('✓ 큐텐 엑셀 다운로드 완료');
+    } catch (e: any) {
+      setToast(`✗ export 실패: ${e?.response?.data?.error || e.message}`);
+    } finally {
+      setBusy(null);
+      setTimeout(() => setToast(''), 4000);
+    }
+  }
+
+  const selectedCount = filtered.filter(c => edits[c.keyword_jp]?.selected).length;
+
   return (
     <div className="p-4 max-w-7xl mx-auto">
       <div className="flex items-center gap-3 mb-3">
@@ -224,6 +305,28 @@ export default function ReviewPage() {
         {toast && <span className="ml-auto text-sm bg-amber-100 text-amber-900 px-3 py-1 rounded">{toast}</span>}
       </div>
 
+      <div className="sticky top-0 bg-white border-b z-10 py-2 mb-3 flex items-center gap-2 text-sm">
+        <button
+          onClick={() => toggleSelectAll(true)}
+          className="px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs"
+        >전체 선택</button>
+        <button
+          onClick={() => toggleSelectAll(false)}
+          className="px-3 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs"
+        >해제</button>
+        <span className="text-xs text-gray-600">{selectedCount}개 선택</span>
+        <button
+          onClick={sendSelectedToSheet}
+          disabled={busy === '__bulk__' || selectedCount === 0}
+          className="ml-auto px-4 py-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded text-xs font-semibold"
+        >{busy === '__bulk__' ? '전송 중...' : `선택 ${selectedCount}건 시트로 보내기`}</button>
+        <button
+          onClick={exportQoo10Excel}
+          disabled={busy === '__export__'}
+          className="px-4 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-400 text-white rounded text-xs font-semibold"
+        >{busy === '__export__' ? '생성 중...' : '큐텐 엑셀 다운'}</button>
+      </div>
+
       {loading && <div className="text-gray-500">로딩...</div>}
       {error && <div className="text-red-600">에러: {error}</div>}
       {data && data.count === 0 && <div className="text-gray-500">데이터 없음 (야간 자동화 실행 필요)</div>}
@@ -245,11 +348,20 @@ export default function ReviewPage() {
           return (
             <div key={c.keyword_jp} className={`border rounded-lg p-3 bg-white shadow-sm ${cardOpacity}`}>
               <div className="flex items-start justify-between mb-2">
-                <div>
-                  <div className="font-bold text-base">{c.keyword_jp}</div>
-                  <div className="text-xs text-gray-500">
-                    {c.keyword_kr} · 검색 {c.search_volume.toLocaleString()} ·
-                    KR {(c.kr_ratio * 100).toFixed(0)}%
+                <div className="flex items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={!!edit.selected}
+                    disabled={edit.status !== 'pending'}
+                    onChange={e => patchEdit(c.keyword_jp, { selected: e.target.checked })}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="font-bold text-base">{c.keyword_jp}</div>
+                    <div className="text-xs text-gray-500">
+                      {c.keyword_kr} · 검색 {c.search_volume.toLocaleString()} ·
+                      KR {(c.kr_ratio * 100).toFixed(0)}%
+                    </div>
                   </div>
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded ${decColor}`}>{dec}</span>

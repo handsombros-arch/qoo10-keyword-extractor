@@ -59,7 +59,10 @@ FILTER_COMPETITION_MAX = float(_env("AUTO_FILTER_COMPETITION_MAX", "0.5"))
 FILTER_KR_RATIO_MIN = float(_env("AUTO_FILTER_KR_RATIO_MIN", "0.3"))
 FILTER_VOLUME_MIN = int(_env("AUTO_FILTER_VOLUME_MIN", "100"))
 PRODUCTS_PER_KEYWORD = int(_env("PRODUCTS_PER_KEYWORD", "5"))
-MIN_MARGIN_RATE = float(_env("MIN_MARGIN_RATE", "0.10"))
+# 검수 페이지 (/review) 가 마진 음수 케이스도 보여주려면 음수.
+# 기본 -1.0 — 100% 손실까지 통과 (사장님이 검수 페이지에서 판매가 조정해 시도).
+# 시트 빌드 단계에서 한 번 더 마진 임계값 검증 (RecommendProductsPage).
+MIN_MARGIN_RATE = float(_env("MIN_MARGIN_RATE", "-1.0"))
 
 # LLM 카테고리 분류 토글 (1=ON, 0=OFF). best-effort — 실패해도 다음 단계 진행.
 ENABLE_LLM_CATEGORY = _env("ENABLE_LLM_CATEGORY", "1") == "1"
