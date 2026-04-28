@@ -28,9 +28,11 @@ def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool
 
 
 def run_server():
+    # host 0.0.0.0 — Tailscale 통해 노트북에서도 접근 가능. 사장님 PC 방화벽이
+    # 8000 inbound 허용해야 동작 (Tailscale 인터페이스만 노출되도록 룰 권장).
     subprocess.run(
         [python_exe, "-m", "uvicorn", "app.main:app",
-         "--host", "127.0.0.1", "--port", "8000"],
+         "--host", "0.0.0.0", "--port", "8000"],
         cwd=BACKEND_DIR,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
