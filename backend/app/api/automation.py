@@ -817,6 +817,139 @@ th, td {{ vertical-align: middle; }}
 </body></html>"""
 
 
+# ─── 검수 페이지 JSON (NN-1) ──────────────────────
+
+
+@router.get("/api/review/{target_date}")
+async def get_review_payload(target_date: str):
+    """검수용 풀 데이터 — auto-build snapshot + 큐텐 콘텐츠/매칭 사유/옵션 enrich.
+
+    React /review/:date 페이지가 fetch.
+    accepted 와 cheapest fallback 모두 반환 (프론트가 토글로 분리).
+    """
+    from app.db.models import (
+        Qoo10Product, DomesticMatchCandidate, DomesticProductOption,
+    )
+    storage_key = f"last_auto_collected:{target_date}"
+    async with async_session() as session:
+        row = (await session.execute(
+            select(UserData).where(UserData.key == storage_key)
+        )).scalar_one_or_none()
+    if not row:
+        return {"date": target_date, "candidates": [], "error": "no_snapshot"}
+
+    try:
+        payload = jsonlib.loads(row.data)
+    except Exception:
+        return {"date": target_date, "candidates": [], "error": "snapshot_parse_failed"}
+
+    candidates = payload.get("candidates") or []
+
+    # enrich — 큐텐 콘텐츠 + 매칭 사유 + 옵션
+    async with async_session() as s:
+        for c in candidates:
+            kw_jp = c.get("keyword_jp")
+            ch = c.get("cheapest_domestic") or {}
+            d_id = ch.get("id")
+
+            # 1) 큐텐 콘텐츠 — search_keyword 의 첫 (콘텐츠 채워진) 큐텐 product
+            if kw_jp:
+                qres = (await s.execute(
+                    select(
+                        Qoo10Product.cover_image_url,
+                        Qoo10Product.qoo10_title_jp,
+                        Qoo10Product.qoo10_tags,
+                        Qoo10Product.qoo10_marketing,
+                        Qoo10Product.qoo10_option_name,
+                        Qoo10Product.product_name,
+                        Qoo10Product.product_name_ko,
+                    )
+                    .where(Qoo10Product.search_keyword == kw_jp)
+                    .where(Qoo10Product.qoo10_title_jp.is_not(None))
+                    .limit(1)
+                )).first()
+                # 콘텐츠 미생성 케이스 — 일반 큐텐 product 1개라도
+                if not qres:
+                    qres = (await s.execute(
+                        select(
+                            Qoo10Product.cover_image_url,
+                            Qoo10Product.qoo10_title_jp,
+                            Qoo10Product.qoo10_tags,
+                            Qoo10Product.qoo10_marketing,
+                            Qoo10Product.qoo10_option_name,
+                            Qoo10Product.product_name,
+                            Qoo10Product.product_name_ko,
+                        )
+                        .where(Qoo10Product.search_keyword == kw_jp)
+                        .limit(1)
+                    )).first()
+                if qres:
+                    cov, title, tags, marketing, opt, jp_name, ko_name = qres
+                    try:
+                        tags_list = jsonlib.loads(tags) if tags else []
+                    except Exception:
+                        tags_list = []
+                    try:
+                        marketing_list = jsonlib.loads(marketing) if marketing else []
+                    except Exception:
+                        marketing_list = []
+                    c["qoo10"] = {
+                        "cover_image_url": cov or "",
+                        "product_name_jp": jp_name or "",
+                        "product_name_ko": ko_name or "",
+                        "title_jp": title or "",
+                        "tags": tags_list,
+                        "marketing_points": marketing_list,
+                        "option_name": opt or "",
+                    }
+
+            # 2) 매칭 사유 — DomesticMatchCandidate
+            if d_id:
+                mres = (await s.execute(
+                    select(
+                        DomesticMatchCandidate.image_score,
+                        DomesticMatchCandidate.name_score,
+                        DomesticMatchCandidate.image_match_note,
+                        DomesticMatchCandidate.decision,
+                    )
+                    .where(DomesticMatchCandidate.domestic_product_id == d_id)
+                    .order_by(DomesticMatchCandidate.image_score.desc().nullslast())
+                    .limit(1)
+                )).first()
+                if mres:
+                    img_s, name_s, note, dec = mres
+                    c["match"] = {
+                        "image_score": float(img_s) if img_s is not None else None,
+                        "name_score": float(name_s) if name_s is not None else None,
+                        "note": (note or "")[:200],
+                        "decision": dec or "pending",
+                    }
+
+            # 3) 옵션 풀세트 — DomesticProductOption
+            if d_id:
+                opts = (await s.execute(
+                    select(
+                        DomesticProductOption.option_name,
+                        DomesticProductOption.option_price_krw,
+                        DomesticProductOption.in_stock,
+                    )
+                    .where(DomesticProductOption.domestic_product_id == d_id)
+                    .order_by(DomesticProductOption.option_price_krw.asc().nullslast())
+                )).all()
+                if opts:
+                    c["options_full"] = [
+                        {"name": n, "price_krw": p, "in_stock": bool(s_)} for n, p, s_ in opts
+                    ]
+
+    return {
+        "date": target_date,
+        "generated_at": payload.get("generated_at"),
+        "min_margin_rate": payload.get("min_margin_rate"),
+        "count": len(candidates),
+        "candidates": candidates,
+    }
+
+
 # ─── 시트로 보내기 ─────────────────────────────────
 
 class SheetItemInput(BaseModel):

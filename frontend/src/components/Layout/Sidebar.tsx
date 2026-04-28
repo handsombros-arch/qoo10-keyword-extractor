@@ -5,6 +5,7 @@ const mainItems = [
   { path: '/', label: '대시보드', icon: '📊' },
   { path: '/keywords', label: '키워드 추출', icon: '🔍' },
   { path: '/recommend', label: '역직구 추천', icon: '⭐' },
+  { path: '/review', label: '검수', icon: '✅' },
   { path: '/recommend-products', label: '상품 시트', icon: '📋' },
   { path: '/shop-benchmark', label: '샵 벤치마크', icon: '🎯' },
   { path: '/margin', label: '마진 계산기', icon: '💹' },

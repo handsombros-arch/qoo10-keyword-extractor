@@ -15,6 +15,7 @@ import TrackingPage from './pages/TrackingPage';
 import BestsellerPage from './pages/BestsellerPage';
 import MarginPage from './pages/MarginPage';
 import RecommendProductsPage from './pages/RecommendProductsPage';
+import ReviewPage from './pages/ReviewPage';
 import ShopBenchmarkPage from './pages/ShopBenchmarkPage';
 import SettingsPage from './pages/SettingsPage';
 
@@ -40,6 +41,8 @@ function App() {
             <Route path="/bestsellers" element={<BestsellerPage />} />
             <Route path="/margin" element={<MarginPage />} />
             <Route path="/recommend-products" element={<RecommendProductsPage />} />
+            <Route path="/review" element={<ReviewPage />} />
+            <Route path="/review/:date" element={<ReviewPage />} />
             <Route path="/shop-benchmark" element={<ShopBenchmarkPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
