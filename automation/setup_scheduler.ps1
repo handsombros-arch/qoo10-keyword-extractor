@@ -131,9 +131,14 @@ if ($IncludeChromeDebug) {
                 -Execute "cmd.exe" `
                 -Argument "/c `"$ChromeBat`"" `
                 -WorkingDirectory $ProjectRoot
-            # 부팅 후 1분 지연 — 사용자 GUI 세션 안정화 대기
+            # PS5.1 호환 — CIM 클래스로 trigger + Delay 설정
             $ChromeTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
-            $ChromeTrigger.Delay = "PT1M"
+            try {
+                $ChromeTrigger.Delay = "PT1M"
+            } catch {
+                # PS5.1 일부 빌드에서 Delay property set 안 됨 — 무시 (즉시 시작)
+                Write-Host "[INFO] AtLogOn Delay 미지원 — 사용자 로그인 즉시 Chrome 시작" -ForegroundColor Yellow
+            }
             $ChromeSettings = New-ScheduledTaskSettingsSet `
                 -StartWhenAvailable `
                 -DontStopIfGoingOnBatteries `
@@ -145,9 +150,9 @@ if ($IncludeChromeDebug) {
                 -Trigger $ChromeTrigger `
                 -Settings $ChromeSettings `
                 -Principal $Principal `
-                -Description "Qoo10 자동화용 디버그 Chrome (포트 9222, 사용자 로그인 시 1분 지연 후 자동 시작)" `
+                -Description "Qoo10 자동화용 디버그 Chrome (포트 9222, 사용자 로그인 시 자동 시작)" `
                 | Out-Null
-            Write-Host "[OK] '$ChromeTaskName' 등록 완료 — 사용자 로그인 1분 후 디버그 Chrome 자동 시작" -ForegroundColor Green
+            Write-Host "[OK] '$ChromeTaskName' 등록 완료 — 사용자 로그인 시 디버그 Chrome 자동 시작" -ForegroundColor Green
         }
     }
 }
