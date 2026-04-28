@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 from collections import Counter
@@ -711,6 +712,9 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
         except Exception:
             pass
 
+        # captcha 감지 + 자동 풀이 시도 (RR-2)
+        await _try_solve_naver_captcha(page, using_cdp)
+
         # 차단/에러 페이지
         title = (await page.title()) or ""
         if "에러" in title or "Error" in title:
@@ -914,6 +918,145 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
                 pass
 
     return out
+
+
+# ─── captcha 감지 + 자동 풀이 (RR-2) ────
+
+
+_CAPTCHA_KEYWORDS = (
+    "보안문자", "captcha", "CAPTCHA",
+    "비정상적인 접근", "비정상 접근", "보안인증",
+    "이용에 불편을", "확인이 필요",
+)
+
+
+async def _try_solve_naver_captcha(page: Page, using_cdp: bool) -> bool:
+    """NAVER captcha 감지 시 2Captcha API 로 자동 풀이 시도.
+
+    Returns:
+        True — 풀이 성공 (페이지 정상화). False — captcha 없음 / 풀이 실패.
+
+    흐름:
+        1) body 텍스트 + URL 에서 captcha 신호 감지
+        2) CAPTCHA_API_KEY 있으면 이미지 captcha screenshot → 2Captcha 호출
+        3) 풀이 결과 input 에 fill + submit
+        4) 페이지 reload 대기, captcha 사라졌는지 검증
+        5) using_cdp=True 인 경우 사장님이 GUI 직접 풀 수도 있으니 추가 대기
+
+    실패 시 caller (NAVER fetcher) 가 정상 흐름 진행 — 보통 에러 페이지로 빠짐.
+    """
+    # 1) captcha 감지
+    captcha_detected = False
+    try:
+        url_lower = page.url.lower() if page.url else ""
+        if "captcha" in url_lower or "challenge" in url_lower:
+            captcha_detected = True
+        else:
+            # body 텍스트 일부만 (성능)
+            body_text = ""
+            try:
+                body_text = await page.locator("body").inner_text(timeout=2000)
+            except Exception:
+                pass
+            body_text_l = body_text[:1000].lower()
+            for kw in _CAPTCHA_KEYWORDS:
+                if kw.lower() in body_text_l:
+                    captcha_detected = True
+                    break
+    except Exception:
+        return False
+    if not captcha_detected:
+        return False
+
+    logger.warning(f"[captcha] NAVER captcha 감지 (cdp={using_cdp}, url={page.url[:80]})")
+
+    # 알림 (Slack + 텔레그램) — 사장님 즉시 인지
+    try:
+        import sys
+        from pathlib import Path
+        automation_dir = Path(__file__).resolve().parents[3] / "automation"
+        if str(automation_dir) not in sys.path:
+            sys.path.insert(0, str(automation_dir))
+        import notify  # type: ignore
+        await notify.send(
+            f"NAVER captcha 감지 — {page.url[:80]}",
+            level="auth",
+        )
+    except Exception:
+        pass
+
+    # 2) 자동 풀이 시도 — CAPTCHA_API_KEY 있으면
+    try:
+        from app.services.captcha_solver import solve_image_captcha
+    except Exception as e:
+        logger.warning(f"[captcha] solver import 실패: {e}")
+        solve_image_captcha = None
+
+    api_key = (os.getenv("CAPTCHA_API_KEY") or "").strip()
+    if api_key and solve_image_captcha:
+        # captcha 이미지 selector — NAVER 패턴 다양
+        img_bytes = None
+        for img_sel in [
+            "img[src*='captcha']", "img[id*='captcha']", "img[class*='captcha']",
+            "img[alt*='보안']", "[class*='captcha'] img", "#captchaImg",
+        ]:
+            try:
+                el = page.locator(img_sel).first
+                if await el.count():
+                    img_bytes = await el.screenshot(type="png")
+                    if img_bytes and len(img_bytes) > 200:
+                        logger.info(f"[captcha] 이미지 캡처 ({img_sel}, {len(img_bytes)} bytes)")
+                        break
+            except Exception:
+                continue
+
+        if img_bytes:
+            text = await solve_image_captcha(img_bytes, hint="한글/영문/숫자 입력")
+            if text:
+                # 입력 필드 fill + 제출
+                filled = False
+                for input_sel in [
+                    "input[name*='captcha']", "input[id*='captcha']",
+                    "input[type='text'][placeholder*='보안']",
+                    "input[type='text']:visible",
+                ]:
+                    try:
+                        el = page.locator(input_sel).first
+                        if await el.count():
+                            await el.fill(text)
+                            filled = True
+                            logger.info(f"[captcha] 입력 OK ({input_sel}): {text[:20]}")
+                            break
+                    except Exception:
+                        continue
+
+                if filled:
+                    # 제출 버튼
+                    for btn_sel in [
+                        "button[type='submit']", "input[type='submit']",
+                        "button:has-text('확인')", "button:has-text('완료')",
+                        "[class*='submit']:visible", "[class*='Submit']:visible",
+                    ]:
+                        try:
+                            el = page.locator(btn_sel).first
+                            if await el.count():
+                                await el.click(timeout=3000, force=True)
+                                logger.info(f"[captcha] 제출 OK ({btn_sel})")
+                                await page.wait_for_timeout(3000)
+                                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                                return True
+                        except Exception:
+                            continue
+
+    # 3) 자동 풀이 미설정/실패 — CDP attach 면 사장님 GUI 풀이 대기
+    if using_cdp:
+        logger.info("[captcha] CDP attach — 사장님 GUI 풀이 대기 (60초)")
+        try:
+            await page.wait_for_timeout(60000)  # 1분 대기
+        except Exception:
+            pass
+
+    return False
 
 
 # ─── 11st (CDP attach 우선, fallback browser_manager) ────
