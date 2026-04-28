@@ -524,10 +524,10 @@ async def _run_extract_set_counts(task_id: str, target_date, limit: int | None) 
     regex_n = llm_n = default_n = failed = 0
 
     try:
-        # 1) 대상 product_name → ids 매핑
+        # 1) 대상 product_name → ids + cover URL 매핑 (cover OCR 폴백용)
         async with async_session() as session:
             stmt = (
-                _sel(_Q.id, _Q.product_name)
+                _sel(_Q.id, _Q.product_name, _Q.cover_image_url)
                 .where(_Q.lookup_date == target_date)
                 .where(_Q.set_count_source.is_(None))
                 .where(_Q.product_name.is_not(None))
@@ -535,17 +535,22 @@ async def _run_extract_set_counts(task_id: str, target_date, limit: int | None) 
             rows = (await session.execute(stmt)).all()
 
         name_to_ids: dict[str, list[int]] = {}
-        for pid, name in rows:
+        name_to_cover: dict[str, str] = {}
+        for pid, name, cover in rows:
             n = (name or "").strip()
             if not n:
                 continue
             name_to_ids.setdefault(n, []).append(pid)
+            if cover and n not in name_to_cover:
+                name_to_cover[n] = cover
 
         unique_names = list(name_to_ids.keys())
         if limit:
             unique_names = unique_names[:limit]
 
-        # 2) 순차 처리: 정규식 → LLM 폴백
+        ocr_n = 0  # M-3 cover OCR 폴백 hit 카운트
+
+        # 2) 순차 처리: 정규식 → cover OCR 정규식 → LLM 폴백
         for idx, name in enumerate(unique_names, 1):
             count = 1
             source = "default"
@@ -555,9 +560,10 @@ async def _run_extract_set_counts(task_id: str, target_date, limit: int | None) 
                     count = rx
                     source = "regex"
                 else:
-                    # LLM 폴백 (extract_set_count_async 자체에 1~99 검증 + 1 폴백 포함)
-                    count = await extract_set_count_async(name)
-                    source = "llm" if count > 1 else "default"
+                    # OCR + LLM 폴백 (시그니처: (count, source) 튜플)
+                    count, source = await extract_set_count_async(
+                        name, cover_image_url=name_to_cover.get(name)
+                    )
             except Exception:
                 failed += 1
                 source = "default"
@@ -565,6 +571,10 @@ async def _run_extract_set_counts(task_id: str, target_date, limit: int | None) 
 
             if source == "regex":
                 regex_n += 1
+            elif source in ("regex_ocr", "llm_with_ocr"):
+                ocr_n += 1
+                if source == "llm_with_ocr":
+                    llm_n += 1  # LLM 도 호출했으니 카운트
             elif source == "llm":
                 llm_n += 1
             else:
@@ -591,7 +601,7 @@ async def _run_extract_set_counts(task_id: str, target_date, limit: int | None) 
         task_manager.complete_task(
             task_id,
             message=(
-                f"완료 — 정규식 {regex_n}, LLM {llm_n}, 단일 {default_n}, "
+                f"완료 — 정규식 {regex_n}, OCR {ocr_n}, LLM {llm_n}, 단일 {default_n}, "
                 f"실패 {failed} (unique {len(unique_names)})"
             ),
         )

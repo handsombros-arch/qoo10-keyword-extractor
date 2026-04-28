@@ -2,14 +2,16 @@
 
 흐름:
     1) 정규식 1차 — 명백한 패턴 ("3개입", "5本", "× 5", "10매입", "1+1") 즉시 처리
-    2) LLM 폴백 (prompts/set_count_extraction.txt). 응답에서 첫 정수 추출
-    3) 1~99 범위 검증. 그 외 → 1 폴백
+    2) cover OCR 폴백 (M-3) — image_url 있으면 다운+OCR → 정규식 재시도
+    3) LLM 폴백 (prompts/set_count_extraction.txt). OCR 텍스트가 있으면 prompt 에 동봉
+    4) 1~99 범위 검증. 그 외 → 1 폴백
 
 env: SET_COUNT_MODEL=<provider:model>
 
 사용:
-    n = await extract_set_count_async("아누아 토너 3개세트")  # → 3
-    n = extract_set_count("AirPods")  # → 1 (sync 래퍼)
+    count, src = await extract_set_count_async("아누아 토너 3개세트")  # (3, "regex")
+    count, src = await extract_set_count_async(name, cover_image_url=url)  # OCR 폴백 가능
+    n = extract_set_count("AirPods")  # → 1 (sync 래퍼, count 만)
 """
 from __future__ import annotations
 
@@ -85,46 +87,98 @@ def _parse_int(text: str) -> int | None:
     return n if _MIN <= n <= _MAX else None
 
 
-async def extract_set_count_async(product_name: str) -> int:
+async def _download_image_bytes(url: str, timeout: float = 5.0) -> bytes | None:
+    """이미지 URL → bytes. 실패 시 None."""
+    if not url or not url.startswith("http"):
+        return None
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            return r.content
+    except Exception as e:
+        logger.debug(f"[set_count/ocr] 이미지 다운 실패 {url[:60]}: {e}")
+        return None
+
+
+async def _ocr_extract_from_image(image_url: str) -> tuple[int | None, str]:
+    """cover URL → 다운 → OCR → 정규식. (count, ocr_text) 반환.
+
+    OCR 텍스트는 LLM 폴백 시 product_name 과 함께 prompt 에 추가하여 신호 강화.
+    """
+    data = await _download_image_bytes(image_url)
+    if not data:
+        return None, ""
+    try:
+        from app.services.ocr import ocr_image_async
+        text = await ocr_image_async(data)
+        if not text:
+            return None, ""
+        n = _regex_extract(text)
+        return n, text[:300]  # OCR 텍스트는 LLM prompt 재사용 위해 짧게
+    except Exception as e:
+        logger.debug(f"[set_count/ocr] OCR 실패: {e}")
+        return None, ""
+
+
+async def extract_set_count_async(
+    product_name: str, cover_image_url: str | None = None
+) -> tuple[int, str]:
+    """묶음 개수 추출. (count, source) 반환.
+
+    source: "regex" | "regex_ocr" | "llm" | "llm_with_ocr" | "default"
+    """
     name = (product_name or "").strip()
     if not name:
-        return _FALLBACK
+        return _FALLBACK, "default"
 
     # 1) 정규식
     n = _regex_extract(name)
     if n is not None:
-        return n
+        return n, "regex"
 
-    # 2) LLM 폴백
+    # 2) cover OCR 정규식 폴백 (M-3 — 식품/화장품 cover 에 묶음 텍스트 있는 경우)
+    ocr_text = ""
+    if cover_image_url:
+        ocr_n, ocr_text = await _ocr_extract_from_image(cover_image_url)
+        if ocr_n is not None:
+            return ocr_n, "regex_ocr"
+
+    # 3) LLM 폴백 — OCR 텍스트가 있으면 prompt 에 함께 전달 (신호 강화)
     try:
         client = get_client_for("set_count")
     except Exception as e:
         logger.error(f"[set_count] 클라이언트 생성 실패 ({e}) → 1 폴백")
-        return _FALLBACK
+        return _FALLBACK, "default"
 
     template = load_prompt("set_count_extraction")
-    prompt = template.replace("{product_name}", name)
+    prompt_name = name
+    if ocr_text:
+        prompt_name = f"{name}\n[cover OCR]: {ocr_text}"
+    prompt = template.replace("{product_name}", prompt_name)
 
     try:
         result = await client.chat(
             [{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=256,  # Gemini 2.5 thinking 토큰 + 숫자 출력 여유
+            max_tokens=256,
         )
     except Exception as e:
         logger.error(f"[set_count] LLM 호출 실패 ({e}) → 1 폴백")
-        return _FALLBACK
+        return _FALLBACK, "default"
 
     parsed = _parse_int(result.text)
     if parsed is None:
         logger.info(f"[set_count] LLM 응답 정수 추출 실패 → 1 폴백: {result.text[:60]!r}")
-        return _FALLBACK
-    return parsed
+        return _FALLBACK, "default"
+    return parsed, ("llm_with_ocr" if ocr_text else "llm")
 
 
-def extract_set_count(product_name: str) -> int:
-    """동기 래퍼 — CLI / 검증용."""
-    return run_sync(extract_set_count_async(product_name))
+def extract_set_count(product_name: str, cover_image_url: str | None = None) -> int:
+    """동기 래퍼 — count 만 반환 (source 무시)."""
+    count, _src = run_sync(extract_set_count_async(product_name, cover_image_url))
+    return count
 
 
 __all__ = ["extract_set_count", "extract_set_count_async"]
