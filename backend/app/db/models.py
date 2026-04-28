@@ -280,6 +280,7 @@ class Brand(Base):
     kr = Column(String, nullable=False, unique=True, index=True)
     jp = Column(String, default="")
     en = Column(String, default="")
+    aliases = Column(Text, default="[]")  # JSON 배열 — 추가 표기 (다루바, 달바, dAlba 등)
     source = Column(String, default="auto")
     confidence = Column(Float, default=1.0)
     created_at = Column(DateTime, default=datetime.utcnow)

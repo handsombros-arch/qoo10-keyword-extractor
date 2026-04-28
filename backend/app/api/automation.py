@@ -528,8 +528,9 @@ async def get_auto_collected_html(target_date: str):
             f"검색 {c.get('search_volume', 0):,} · "
             f"KR {kr_ratio_pct:.0f}% · 경쟁 {c.get('competition_intensity', 0):.2f}"
         )
+        match_source = (ch.get("match_source") or "cheapest")
         body_rows.append(f"""
-        <tr data-kw="{kw_jp_attr}"{row_class}>
+        <tr data-kw="{kw_jp_attr}" data-match="{match_source}"{row_class}>
             <td><input type="checkbox" class="row-check"></td>
             <td>{i}</td>
             <td>
@@ -618,6 +619,11 @@ th, td {{ vertical-align: middle; }}
 <div class="toolbar">
   <button type="button" class="btn" id="send-btn">선택 항목 시트로 보내기</button>
   <span class="muted" id="select-count">0개 선택</span>
+  <label style="margin-left:1rem; font-weight:600; cursor:pointer">
+    <input type="checkbox" id="accepted-only">
+    accepted (매칭 통과)만 보기
+    <span class="muted" id="accepted-count"></span>
+  </label>
   <span id="result-msg"></span>
 </div>
 
@@ -714,18 +720,43 @@ th, td {{ vertical-align: middle; }}
     calcRow(tr);  // 초기 계산
   }});
 
-  // 체크박스
+  // 체크박스 — visible 행만 대상 (accepted 필터와 호환)
   const checkAll = document.getElementById('check-all');
   const rowChecks = () => document.querySelectorAll('input.row-check');
+  const visibleRowChecks = () => Array.from(rowChecks()).filter(c => c.closest('tr').style.display !== 'none');
   const countEl = document.getElementById('select-count');
   function updateCount() {{
-    countEl.textContent = Array.from(rowChecks()).filter(c => c.checked).length + '개 선택';
+    countEl.textContent = visibleRowChecks().filter(c => c.checked).length + '개 선택';
   }}
   checkAll.addEventListener('change', e => {{
-    rowChecks().forEach(c => c.checked = e.target.checked);
+    visibleRowChecks().forEach(c => c.checked = e.target.checked);
     updateCount();
   }});
   rowChecks().forEach(c => c.addEventListener('change', updateCount));
+
+  // accepted-only 토글 — match_source !== 'matched' 행 숨김
+  const acceptedToggle = document.getElementById('accepted-only');
+  const acceptedCountEl = document.getElementById('accepted-count');
+  const allRows = () => document.querySelectorAll('tbody tr[data-match]');
+  const acceptedCount = Array.from(allRows()).filter(tr => tr.dataset.match === 'matched').length;
+  const totalCount = allRows().length;
+  acceptedCountEl.textContent = '(' + acceptedCount + '/' + totalCount + ')';
+  function applyAcceptedFilter() {{
+    const onlyAccepted = acceptedToggle.checked;
+    allRows().forEach(tr => {{
+      const isAccepted = tr.dataset.match === 'matched';
+      const hide = onlyAccepted && !isAccepted;
+      tr.style.display = hide ? 'none' : '';
+      // 숨길 때 체크 해제 (시트로 보내기 대상에서도 제외)
+      if (hide) {{
+        const cb = tr.querySelector('input.row-check');
+        if (cb) cb.checked = false;
+      }}
+    }});
+    checkAll.checked = false;
+    updateCount();
+  }}
+  acceptedToggle.addEventListener('change', applyAcceptedFilter);
 
   // 시트로 보내기
   const sendBtn = document.getElementById('send-btn');

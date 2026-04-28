@@ -88,6 +88,20 @@ def _tokens(text: str) -> list[str]:
     return [t for t in _TOKEN_SPLIT.split(text or "") if t]
 
 
+def _all_aliases(b) -> list[str]:
+    """Brand 의 모든 표기 (kr/jp/en + aliases JSON 배열)."""
+    out = [b.kr or "", b.jp or "", b.en or ""]
+    raw = getattr(b, "aliases", None)
+    if raw and raw.strip() and raw.strip() != "[]":
+        try:
+            extra = json.loads(raw)
+            if isinstance(extra, list):
+                out.extend(str(x) for x in extra if x)
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return [a for a in out if a]
+
+
 def _empty_result() -> dict:
     return {
         "is_brand": False,
@@ -115,9 +129,9 @@ def _match_in_whitelist(keyword: str, brands: list[Brand]) -> Brand | None:
     norm_kw = _norm(keyword)
     tokens_norm = {_norm(t) for t in _tokens(keyword) if t}
 
-    # 1) 토큰 정확 매칭
+    # 1) 토큰 정확 매칭 (kr/jp/en + aliases)
     for b in brands:
-        for alias in (b.kr, b.jp, b.en):
+        for alias in _all_aliases(b):
             a = _norm(alias)
             if a and a in tokens_norm:
                 return b
@@ -125,7 +139,7 @@ def _match_in_whitelist(keyword: str, brands: list[Brand]) -> Brand | None:
     # 2) 부분 포함 (별칭 길이 ≥ 2, 가장 긴 매칭 우선)
     candidates: list[tuple[int, Brand]] = []
     for b in brands:
-        for alias in (b.kr, b.jp, b.en):
+        for alias in _all_aliases(b):
             a = _norm(alias)
             if a and len(a) >= 2 and a in norm_kw:
                 candidates.append((len(a), b))
@@ -137,11 +151,10 @@ def _match_in_whitelist(keyword: str, brands: list[Brand]) -> Brand | None:
 
 
 def _product_part_from_match(keyword: str, brand: Brand) -> str:
-    """매칭된 브랜드 별칭을 keyword 에서 제거한 나머지."""
+    """매칭된 브랜드 별칭(kr/jp/en + aliases)을 keyword 에서 제거한 나머지."""
     out = keyword
-    for alias in (brand.kr, brand.jp, brand.en):
-        if alias:
-            out = re.sub(re.escape(alias), " ", out, flags=re.IGNORECASE)
+    for alias in _all_aliases(brand):
+        out = re.sub(re.escape(alias), " ", out, flags=re.IGNORECASE)
     return _TOKEN_SPLIT.sub(" ", out).strip()
 
 

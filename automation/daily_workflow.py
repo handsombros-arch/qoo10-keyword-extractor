@@ -69,6 +69,14 @@ ENABLE_SET_COUNT_EXTRACTION = _env("ENABLE_SET_COUNT_EXTRACTION", "1") == "1"
 # 한국 상품 이미지 다운로드+비전 토글 (1=ON, 0=OFF)
 ENABLE_DOMESTIC_IMAGES = _env("ENABLE_DOMESTIC_IMAGES", "1") == "1"
 
+# Phase 1-D 브랜드 확장 + 매칭 토글 (1=ON, 0=OFF). R-3 통합.
+ENABLE_BRAND_EXPAND = _env("ENABLE_BRAND_EXPAND", "1") == "1"
+BRAND_EXPAND_TOP_N = int(_env("BRAND_EXPAND_TOP_N", "10"))
+ENABLE_EXPANDED_SEARCH = _env("ENABLE_EXPANDED_SEARCH", "1") == "1"
+EXPANDED_SEARCH_MAX_RESULTS = int(_env("EXPANDED_SEARCH_MAX_RESULTS", "30"))
+ENABLE_MATCH_IMAGES = _env("ENABLE_MATCH_IMAGES", "1") == "1"
+MATCH_IMAGES_TOP_N = int(_env("MATCH_IMAGES_TOP_N", "3"))
+
 # set_count 비전 검증 토글 + 마진 임계값 (5단계)
 ENABLE_SET_COUNT_VERIFY = _env("ENABLE_SET_COUNT_VERIFY", "1") == "1"
 SET_COUNT_VERIFY_MIN_MARGIN = float(_env("SET_COUNT_VERIFY_MIN_MARGIN", "2.0"))
@@ -446,7 +454,7 @@ async def step_process_domestic_images(
 
     best-effort: 실패해도 다음 단계 진행.
     """
-    log.info("=== STEP 5.7: 한국 상품 이미지 처리 ===")
+    log.info("=== STEP 5.9: 한국 상품 이미지 처리 ===")
     if not ENABLE_DOMESTIC_IMAGES:
         log.info("ENABLE_DOMESTIC_IMAGES=0 — 스킵")
         return {"skipped": True}
@@ -513,6 +521,131 @@ async def step_extract_set_counts(
     except Exception as e:
         log.warning(f"set_count 추출 실패 (best-effort): {e}")
         return {"error": str(e), "candidates": candidates}
+
+
+async def step_brand_expand(
+    client: httpx.AsyncClient, target_date: date, candidates: list[dict]
+) -> dict:
+    """STEP 5.7 — 브랜드 키워드 확장 (Phase 1-D Q+R-2).
+
+    is_brand=1 키워드의 큐텐 상위 N개 product_name 으로부터 specific keyword 3-5개 추출.
+    best-effort. brand 키워드 0개면 즉시 통과.
+    """
+    log.info("=== STEP 5.7: 브랜드 키워드 확장 (Phase 1-D) ===")
+    if not ENABLE_BRAND_EXPAND:
+        log.info("ENABLE_BRAND_EXPAND=0 — 스킵")
+        return {"skipped": True}
+
+    brand_kws = [c for c in candidates if c.get("is_brand")]
+    if not brand_kws:
+        log.info("brand 키워드 0개 — 스킵")
+        return {"candidates": 0}
+
+    body = {
+        "date": str(target_date),
+        "qoo10_date": str(target_date),
+        "top_n": BRAND_EXPAND_TOP_N,
+    }
+    try:
+        result = await _post(client, "/api/keywords/expand-brand", body)
+    except Exception as e:
+        log.warning(f"brand expand 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates_n = result.get("candidates", 0)
+    if not task_id:
+        log.info("brand expand 대상 0개 (이미 모두 처리됨)")
+        return {"candidates": 0}
+
+    log.info(f"brand expand task_id={task_id} (대상 {candidates_n}개 brand 키워드)")
+    try:
+        await wait_task(client, task_id, label="brand expand")
+        return {"task_id": task_id, "candidates": candidates_n}
+    except Exception as e:
+        log.warning(f"brand expand 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates_n}
+
+
+async def step_expanded_search(client: httpx.AsyncClient) -> dict:
+    """STEP 5.8 — 확장 키워드 → 한국 검색 (Phase 1-D S-1).
+
+    expanded_keywords 테이블의 keyword_kr 들로 m08 검색해서 한국 상품 풀 보강.
+    best-effort.
+    """
+    log.info("=== STEP 5.8: 확장 키워드 한국 검색 (Phase 1-D) ===")
+    if not ENABLE_EXPANDED_SEARCH:
+        log.info("ENABLE_EXPANDED_SEARCH=0 — 스킵")
+        return {"skipped": True}
+
+    body = {"max_results": EXPANDED_SEARCH_MAX_RESULTS}
+    try:
+        result = await _post(client, "/api/keywords/expanded/run-search", body)
+    except Exception as e:
+        log.warning(f"expanded 검색 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates_n = result.get("candidates", 0)
+    if not task_id:
+        log.info("expanded 검색 대상 0개")
+        return {"candidates": 0}
+
+    log.info(f"expanded 검색 task_id={task_id} (대상 {candidates_n}개 확장 키워드)")
+    try:
+        await wait_task(client, task_id, label="expanded 검색")
+        return {"task_id": task_id, "candidates": candidates_n}
+    except Exception as e:
+        log.warning(f"expanded 검색 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates_n}
+
+
+async def step_match_images(
+    client: httpx.AsyncClient, target_date: date, candidates: list[dict],
+) -> dict:
+    """STEP 5.95 — 큐텐 ↔ 한국 cover 1:N 매칭 (R-2 통합).
+
+    expanded keyword 가 만든 확장 풀까지 포함해서 매칭. accepted/rejected 결정.
+    best-effort.
+    """
+    log.info("=== STEP 5.95: 이미지+텍스트 매칭 (R-2) ===")
+    if not ENABLE_MATCH_IMAGES:
+        log.info("ENABLE_MATCH_IMAGES=0 — 스킵")
+        return {"skipped": True}
+
+    keywords_jp = [c["keyword_jp"] for c in candidates if c.get("keyword_jp")]
+    if not keywords_jp:
+        log.info("대상 키워드 0개 — 스킵")
+        return {"candidates": 0}
+
+    body = {
+        "date": str(target_date),
+        "per_qoo10_top_n": MATCH_IMAGES_TOP_N,
+        "keywords_jp": keywords_jp,
+    }
+    try:
+        result = await _post(client, "/api/recommendations/match-images", body)
+    except Exception as e:
+        log.warning(f"match-images 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates_n = result.get("candidates", 0)
+    scanned = result.get("scanned_qoo10", 0)
+    if not task_id:
+        log.info(f"match-images 대상 0개 (스캔 {scanned})")
+        return {"candidates": 0, "scanned": scanned}
+
+    log.info(
+        f"match-images task_id={task_id} "
+        f"(스캔 {scanned}장 → 비교 쌍 {candidates_n}건, threshold={result.get('threshold')})"
+    )
+    try:
+        await wait_task(client, task_id, label="match-images")
+        return {"task_id": task_id, "candidates": candidates_n, "scanned": scanned}
+    except Exception as e:
+        log.warning(f"match-images 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates_n}
 
 
 async def step_verify_set_counts(
@@ -599,6 +732,9 @@ def _format_summary(
     set_count_result: dict,
     build_result: dict,
     verify_result: dict,
+    brand_expand_result: dict | None = None,
+    expanded_search_result: dict | None = None,
+    match_result: dict | None = None,
 ) -> str:
     elapsed = ended - started
     elapsed_str = str(elapsed).split(".", 1)[0]
@@ -635,6 +771,23 @@ def _format_summary(
         n = verify_result.get("candidates", 0)
         vf_line = f"{n}장 비전 검증" if n else "마진 임계값 도달 0개"
 
+    def _line(r: dict | None, off_label: str, unit: str) -> str:
+        if not r: return "(미실행)"
+        if r.get("skipped"): return f"스킵 ({off_label})"
+        if r.get("error"): return f"실패: {r['error'][:60]}"
+        n = r.get("candidates", 0)
+        return f"{n}{unit}" if n else "대상 0"
+
+    be_line = _line(brand_expand_result, "ENABLE_BRAND_EXPAND=0", "개 brand")
+    es_line = _line(expanded_search_result, "ENABLE_EXPANDED_SEARCH=0", "개 확장 키워드")
+    if match_result and not match_result.get("skipped") and not match_result.get("error"):
+        mt_line = (
+            f"{match_result.get('candidates', 0)}쌍 비교 "
+            f"(스캔 {match_result.get('scanned', 0)}장)"
+        )
+    else:
+        mt_line = _line(match_result, "ENABLE_MATCH_IMAGES=0", "쌍")
+
     return (
         f"야간 자동화 완료\n"
         f"시작: {started.strftime('%Y-%m-%d %H:%M')}\n"
@@ -643,8 +796,11 @@ def _format_summary(
         f"카테고리 분류: {classify_line}\n"
         f"필터 통과 키워드: {filtered_count}개\n"
         f"한국상품 수집 키워드: {domestic_count}개\n"
-        f"이미지 처리: {img_line}\n"
         f"set_count 추출: {sc_line}\n"
+        f"브랜드 확장: {be_line}\n"
+        f"확장 검색: {es_line}\n"
+        f"이미지 처리: {img_line}\n"
+        f"이미지+텍스트 매칭: {mt_line}\n"
         f"set_count 비전 검증: {vf_line}\n"
         f"마진 통과 후보: {build_result.get('count', 0)}개 "
         f"(전체 {build_result.get('total_candidates', 0)})\n"
@@ -700,8 +856,18 @@ async def main_async() -> int:
                 return 0
 
             domestic_kw_count = await step_collect_domestic(client, candidates)
-            image_result = await step_process_domestic_images(client, target_date, candidates)
             set_count_result = await step_extract_set_counts(client, target_date)
+
+            # Phase 1-D: brand expand → expanded search → image dl+vision → match
+            #   - brand expand 가 큐텐 product_name → specific keyword 생성
+            #   - expanded search 가 한국 상품 풀 보강 (1:N 매칭 후보 확장)
+            #   - process_domestic_images 가 새로 들어온 한국 cover 까지 다운+vision
+            #   - match-images 가 1:N 매칭으로 accepted/rejected 결정
+            brand_expand_result = await step_brand_expand(client, target_date, candidates)
+            expanded_search_result = await step_expanded_search(client)
+            image_result = await step_process_domestic_images(client, target_date, candidates)
+            match_result = await step_match_images(client, target_date, candidates)
+
             build_result = await step_auto_build(client, candidates, target_date)
             verify_result = await step_verify_set_counts(client, target_date, candidates)
 
@@ -711,6 +877,7 @@ async def main_async() -> int:
                     started, ended, trend_status, classify_result,
                     len(candidates), domestic_kw_count, image_result,
                     set_count_result, build_result, verify_result,
+                    brand_expand_result, expanded_search_result, match_result,
                 ),
                 level="ok",
             )

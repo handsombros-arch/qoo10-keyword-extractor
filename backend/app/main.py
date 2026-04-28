@@ -82,6 +82,7 @@ async def _migrate_add_columns(conn) -> None:
         ("domestic_products", "detail_image_paths", "TEXT"),
         ("domestic_products", "weight_g", "REAL"),
         ("domestic_products", "weight_source", "TEXT"),
+        ("brands", "aliases", "TEXT DEFAULT '[]'"),
     ]
     for table, col, col_type in new_columns:
         try:
