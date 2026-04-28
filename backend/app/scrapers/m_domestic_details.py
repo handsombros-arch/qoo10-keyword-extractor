@@ -916,6 +916,247 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
     return out
 
 
+# ─── 11st (CDP attach 우선, fallback browser_manager) ────
+
+
+async def _fetch_11st_via_browser_manager(url: str) -> dict:
+    """11st 셀러 페이지 진입 — CDP attach 우선, fallback browser_manager.
+
+    11st 도메인 (www.11st.co.kr) 의 연결 흐름:
+      - Gateway.tmall?method=Xsite 로 시작하는 외부 redirect URL → 일반 상품 페이지
+      - 또는 직접 /products/{id} 진입
+    """
+    out: dict[str, Any] = {
+        "options": [], "shipping_text": "", "extra_image_urls": [],
+    }
+
+    pw_user, browser_user, ctx = await _get_user_chrome_context()
+    using_cdp = ctx is not None
+    bm_page = None
+
+    if ctx is None:
+        try:
+            from app.browser.manager import browser_manager
+            bm_page = await browser_manager.get_page()
+            ctx = bm_page.context
+        except Exception as e:
+            logger.warning(f"[detail/11st] browser_manager 획득 실패: {e}")
+            return out
+
+    page: Page | None = None
+    try:
+        page = await ctx.new_page()
+        if not using_cdp:
+            try:
+                from tf_playwright_stealth import stealth_async
+                await stealth_async(page)
+            except Exception:
+                pass
+
+        try:
+            await page.goto(
+                url,
+                referer="https://www.google.com/",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+        except Exception as e:
+            logger.warning(f"[detail/11st] goto 실패 {url[:60]}: {e}")
+            return out
+
+        wait_ms = random.randint(2500, 4000) if using_cdp else random.randint(2000, 3000)
+        await page.wait_for_timeout(wait_ms)
+        try:
+            await page.mouse.wheel(0, 800)
+            await page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:
+            pass
+
+        # 차단/에러 페이지
+        title = (await page.title()) or ""
+        if "Access Denied" in title or "차단" in title:
+            logger.warning(f"[detail/11st] 차단 (title={title!r})")
+            return out
+
+        # 가격 — 11st 의 다양한 selector
+        price_main = None
+        for sel in [
+            ".s-price strong.value", ".s-price strong",
+            "[class*='Price'] strong", ".price strong",
+            "[data-pcid] [class*='price']",
+            "strong[class*='price']",
+        ]:
+            try:
+                el = page.locator(sel).first
+                if await el.count():
+                    txt = (await el.inner_text(timeout=2000)).strip()
+                    v = _parse_int_krw(txt)
+                    if v:
+                        price_main = v
+                        break
+            except Exception:
+                continue
+        if price_main is None:
+            try:
+                html = await page.content()
+                nums = [int(s.replace(",", "")) for s in re.findall(r"\d{1,3}(?:,\d{3})+", html)]
+                nums = [n for n in nums if 1000 <= n <= 10_000_000]
+                if nums:
+                    price_main = Counter(nums).most_common(1)[0][0]
+            except Exception:
+                pass
+        # OCR 폴백
+        if price_main is None:
+            try:
+                screenshot = await page.screenshot(full_page=False, type="png")
+                from app.services.ocr import ocr_image_async, extract_price_main
+                ocr_text = await ocr_image_async(screenshot)
+                if ocr_text:
+                    price_main = extract_price_main(ocr_text)
+                    if price_main:
+                        logger.info(f"[detail/11st] OCR 폴백 가격: {price_main}")
+            except Exception:
+                pass
+        if price_main:
+            out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
+
+        # 옵션 — 11st 는 select option 또는 li 패턴
+        try:
+            for trigger_sel in [
+                "[class*='OptionList']", "button[class*='option']",
+            ]:
+                try:
+                    triggers = page.locator(trigger_sel)
+                    tcnt = await triggers.count()
+                    for ti in range(min(tcnt, 3)):
+                        try:
+                            await triggers.nth(ti).click(timeout=1500, force=True)
+                            await page.wait_for_timeout(400)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        seen_opt_names: set[str] = set()
+        try:
+            for sel in [
+                "select[name*='option'] option",
+                "select[id*='option'] option",
+                "[class*='OptionList'] li",
+                "ul[class*='option'] li", "[class*='Option'] li",
+                "[role='listbox'] [role='option']",
+            ]:
+                els = page.locator(sel)
+                cnt = await els.count()
+                if not cnt or cnt > 50:
+                    continue
+                cnt_added = 0
+                for i in range(cnt):
+                    try:
+                        t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                        t = re.sub(r"\s+", " ", t)
+                        if not t or len(t) > 80:
+                            continue
+                        price = _parse_int_krw(t)
+                        name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t)
+                        name = re.sub(r"수량\s*(증가|감소)|판매가|배송비|품절|sold\s*out|선택해주세요", "", name, flags=re.I).strip()[:60]
+                        if not name or len(name) < 2:
+                            continue
+                        if name.lower() in {"옵션", "선택", "필수", "default", "옵션 선택", "옵션선택"}:
+                            continue
+                        norm = name.lower()
+                        if norm in seen_opt_names:
+                            continue
+                        seen_opt_names.add(norm)
+                        opt_price = price if (price and price >= 1000) else price_main
+                        if opt_price:
+                            out["options"].append({
+                                "name": name, "price_krw": opt_price, "in_stock": True,
+                            })
+                            cnt_added += 1
+                    except Exception:
+                        pass
+                if cnt_added:
+                    break
+        except Exception:
+            pass
+
+        # 배송비
+        ship_text = ""
+        for sel in [
+            "[class*='Delivery']", "[class*='delivery']",
+            "[class*='Shipping']", "[class*='shipping']",
+            ".info-text", "[class*='info_text']",
+        ]:
+            try:
+                els = page.locator(sel)
+                cnt = await els.count()
+                for i in range(min(cnt, 3)):
+                    t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                    if t and len(ship_text) < 400:
+                        ship_text += " " + t
+            except Exception:
+                continue
+        # body fallback
+        if not ship_text:
+            try:
+                body_html = await page.content()
+                for m in re.finditer(r"배송", body_html):
+                    snippet = re.sub(r"<[^>]+>", " ", body_html[max(0, m.start()-50):m.end()+150])
+                    snippet = re.sub(r"\s+", " ", snippet).strip()
+                    if any(kw in snippet for kw in ["무료", "원", "이상"]):
+                        ship_text += " " + snippet[:200]
+                        if len(ship_text) > 600:
+                            break
+            except Exception:
+                pass
+        out["shipping_text"] = ship_text.strip()[:600]
+
+        # 추가 이미지 — 11st CDN 패턴
+        try:
+            img_locs = page.locator(
+                "img[src*='cdn.011st.com'], "
+                "img[src*='11stshop'], "
+                "[class*='thumb'] img, [class*='Thumb'] img"
+            )
+            cnt = await img_locs.count()
+            seen: set[str] = set()
+            for i in range(min(cnt, 10)):
+                try:
+                    src = await img_locs.nth(i).get_attribute("src")
+                    if src and src.startswith("http") and src not in seen:
+                        seen.add(src)
+                        out["extra_image_urls"].append(src)
+                    if len(out["extra_image_urls"]) >= 6:
+                        break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+        if using_cdp:
+            try:
+                if browser_user:
+                    await browser_user.close()
+            except Exception:
+                pass
+            try:
+                if pw_user:
+                    await pw_user.stop()
+            except Exception:
+                pass
+
+    return out
+
+
 # ─── 공개 API ─────────────────────────────────────────────
 
 
@@ -944,13 +1185,17 @@ async def scrape_domestic_detail(
     src = (source or "").lower()
     url_lower = product_url.lower()
     is_coupang = "coupang.com" in url_lower
+    is_11st = "11st.co.kr" in url_lower
 
     try:
         if is_coupang:
             # 쿠팡: kc 패턴 — Playwright 헤드풀 + 검색→클릭 + 2~4초 대기
             parsed = await _fetch_coupang_via_browser_manager(product_url, product_name_kr)
+        elif is_11st:
+            # 11st: 자체 fetcher (NAVER/COUPANG 와 다른 selector 패턴)
+            parsed = await _fetch_11st_via_browser_manager(product_url)
         else:
-            # 네이버 / 외부 셀러: browser_manager 새 탭 + OCR 폴백
+            # 네이버 / 기타 셀러: browser_manager 새 탭 + OCR 폴백
             parsed = await _fetch_naver_via_browser_manager(product_url)
     except Exception as e:
         logger.warning(f"[detail] {src} 스크래핑 실패 {product_url[:60]}: {e}")
