@@ -1167,6 +1167,7 @@ async def extract_domestic_weights(body: dict | None = None):
                     _DP.id, _DP.product_name,
                     _Q.product_name.label("q_name"),
                     _Q.product_name_ko.label("q_name_ko"),
+                    _DP.cover_image_url.label("cover_url"),
                 )
                 .join(_DMC, _DMC.domestic_product_id == _DP.id)
                 .join(_Q, _Q.id == _DMC.qoo10_product_id)
@@ -1181,6 +1182,7 @@ async def extract_domestic_weights(body: dict | None = None):
                     _DP.id, _DP.product_name,
                     _DP.product_name.label("q_name"),  # 매칭 없으면 한국 이름만
                     _DP.product_name.label("q_name_ko"),
+                    _DP.cover_image_url.label("cover_url"),
                 )
                 .where(_DP.lookup_date == target_date)
                 .where(_DP.product_name.is_not(None))
@@ -1208,31 +1210,38 @@ async def extract_domestic_weights(body: dict | None = None):
 
 
 async def _run_extract_weights(task_id: str, rows: list, packaging_g: float) -> None:
-    """백그라운드 — 상품명 정규식 무게 추출 + 200g 룰 + DB UPDATE.
+    """백그라운드 — 상품명 정규식 + cover OCR + LLM 폴백 → +200g 룰 → DB UPDATE.
 
-    추출 우선순위 (한국 상품명에 무게 정보 거의 없음):
-      ① 매칭 큐텐 product_name (jp) — 「3g×40개」 같은 패턴 풍부
-      ② 매칭 큐텐 product_name_ko — 폴백
-      ③ 한국 product_name — 거의 안 잡힘
+    추출 우선순위:
+      ① 매칭 큐텐 jp/ko 또는 한국 product_name 정규식 (regex)
+      ② cover image OCR + 정규식 재시도 (regex_ocr)
+      ③ LLM 추론 (qwen2.5:7b set_count 모델 재사용) — 카테고리 기반 평균값
     """
     from sqlalchemy import update as _upd
     from app.db.models import DomesticProduct as _DP
-    from app.services.weight_extractor import extract_weight_grams, apply_packaging_rule
+    from app.services.weight_extractor import apply_packaging_rule, extract_weight_async
 
     task_manager.start_task(task_id)
-    matched = unmatched = 0
+    by_source = {"regex": 0, "regex_ocr": 0, "llm": 0, "default": 0}
 
     try:
         for idx, row in enumerate(rows, 1):
-            did, name, q_name, q_name_ko = row
-            # 우선순위: 큐텐 jp → 큐텐 ko → 한국 name
-            raw_g = (
-                extract_weight_grams(q_name or "")
-                or extract_weight_grams(q_name_ko or "")
-                or extract_weight_grams(name or "")
-            )
+            # row 는 named tuple — cover_url 추가됨
+            did, name, q_name, q_name_ko, cover_url = row
+            try:
+                raw_g, source = await extract_weight_async(
+                    product_name=name or "",
+                    qoo10_jp=q_name or "",
+                    qoo10_ko=q_name_ko or "",
+                    cover_image_url=cover_url or "",
+                    category="기타",
+                )
+            except Exception as e:
+                logger.debug(f"[weight] extract 실패 d={did}: {e}")
+                raw_g, source = None, "default"
+
             final_g = apply_packaging_rule(raw_g, packaging_g) if raw_g is not None else None
-            source = "name" if final_g is not None else "default"
+            by_source[source] = by_source.get(source, 0) + 1
 
             try:
                 async with async_session() as db:
@@ -1244,20 +1253,20 @@ async def _run_extract_weights(task_id: str, rows: list, packaging_g: float) -> 
                 logger.warning(f"[weight] DB UPDATE 실패 d={did}: {e}")
 
             if final_g is not None:
-                matched += 1
-                tag = f"OK raw={raw_g:.0f} +200={final_g:.0f}"
+                tag = f"{source[:5].upper()} raw={raw_g:.0f} +200={final_g:.0f}"
             else:
-                unmatched += 1
                 tag = "MISS"
             task_manager.update_progress(
                 task_id, increment=1,
-                message=f"[{idx}/{len(rows)}] {tag} d={did} {(name or '')[:35]}",
+                message=f"[{idx}/{len(rows)}] {tag} d={did} {(name or '')[:30]}",
             )
 
+        matched = sum(v for k, v in by_source.items() if k != "default")
         task_manager.complete_task(
             task_id,
             message=(
-                f"완료 — 매칭 {matched}, 미매칭 {unmatched} "
+                f"완료 — regex {by_source['regex']}, OCR {by_source['regex_ocr']}, "
+                f"LLM {by_source['llm']}, 미매칭 {by_source['default']} "
                 f"({100*matched//max(len(rows),1)}% / 대상 {len(rows)})"
             ),
         )

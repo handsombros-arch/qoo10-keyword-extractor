@@ -108,4 +108,124 @@ def extract_and_apply(text: str, packaging_g: float = 200.0) -> tuple[Optional[f
     return raw, apply_packaging_rule(raw, packaging_g)
 
 
-__all__ = ["extract_weight_grams", "apply_packaging_rule", "extract_and_apply"]
+# ─── LLM + OCR 폴백 (Phase 4-A 보강) ─────────────────
+
+import json
+import logging
+logger = logging.getLogger(__name__)
+
+
+async def _ocr_extract_from_image(image_url: str) -> tuple[Optional[float], str]:
+    """cover URL → 다운 → OCR → 정규식 재시도."""
+    if not image_url:
+        return None, ""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(image_url, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            data = r.content
+    except Exception as e:
+        logger.debug(f"[weight/ocr] download fail: {e}")
+        return None, ""
+    try:
+        from app.services.ocr import ocr_image_async
+        text = await ocr_image_async(data)
+        if not text:
+            return None, ""
+        return extract_weight_grams(text), text[:200]
+    except Exception as e:
+        logger.debug(f"[weight/ocr] OCR fail: {e}")
+        return None, ""
+
+
+async def _llm_extract(product_name: str, category: str = "기타") -> Optional[float]:
+    """LLM 으로 무게(g) 추론. 실패/0 → None."""
+    name = (product_name or "").strip()
+    if not name:
+        return None
+    try:
+        from app.services.llm.router import get_client_for, load_prompt
+        try:
+            client = get_client_for("set_count")  # 가벼운 모델 재사용
+        except Exception:
+            return None
+        template = load_prompt("weight_extraction")
+        prompt = (
+            template
+            .replace("{product_name}", name)
+            .replace("{category}", category or "기타")
+        )
+        result = await client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            json_mode=True,
+            max_tokens=512,
+        )
+    except Exception as e:
+        logger.debug(f"[weight/llm] call fail: {e}")
+        return None
+
+    text = (result.text or "").strip()
+    if not text:
+        return None
+    try:
+        # 코드블록 제거
+        import re as _re
+        s = _re.sub(r"^```(?:json)?\s*", "", text)
+        s = _re.sub(r"\s*```\s*$", "", s)
+        # 첫 { 부터 마지막 } 까지
+        start, end = s.find("{"), s.rfind("}")
+        if start == -1 or end == -1:
+            return None
+        parsed = json.loads(s[start:end + 1])
+    except (json.JSONDecodeError, Exception):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    try:
+        w = float(parsed.get("weight_g") or 0)
+    except (TypeError, ValueError):
+        return None
+    if w <= 0 or w > 100_000:
+        return None
+    return w
+
+
+async def extract_weight_async(
+    *, product_name: str = "",
+    qoo10_jp: str = "", qoo10_ko: str = "",
+    cover_image_url: Optional[str] = None,
+    category: str = "기타",
+) -> tuple[Optional[float], str]:
+    """무게 추출 — regex → cover OCR → LLM 폴백.
+
+    반환: (raw_grams, source) 튜플.
+      source: "regex" | "regex_ocr" | "llm" | "default"
+    """
+    # 1) regex (큐텐 jp → ko → 한국 name)
+    for txt in (qoo10_jp, qoo10_ko, product_name):
+        w = extract_weight_grams(txt or "")
+        if w is not None:
+            return w, "regex"
+
+    # 2) cover OCR
+    if cover_image_url:
+        ocr_w, _ = await _ocr_extract_from_image(cover_image_url)
+        if ocr_w is not None:
+            return ocr_w, "regex_ocr"
+
+    # 3) LLM 폴백 (한국 product_name 우선)
+    text_for_llm = product_name or qoo10_ko or qoo10_jp
+    if text_for_llm:
+        w = await _llm_extract(text_for_llm, category)
+        if w is not None:
+            return w, "llm"
+
+    return None, "default"
+
+
+__all__ = [
+    "extract_weight_grams", "apply_packaging_rule", "extract_and_apply",
+    "extract_weight_async",
+]
