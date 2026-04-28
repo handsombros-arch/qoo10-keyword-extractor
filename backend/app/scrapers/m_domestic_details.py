@@ -428,35 +428,67 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
         if price_main:
             out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
 
-        # 옵션 — 옵션 셀렉트 li/option 텍스트
+        # 옵션 — 1) 드롭다운 트리거 클릭 2) selector 확장 + 가격 없는 옵션도 폴백
+        try:
+            for trigger_sel in [
+                "[class*='OptionSelect']", "[class*='option-select']",
+                "button[class*='select']", "[role='combobox']",
+            ]:
+                try:
+                    triggers = page.locator(trigger_sel)
+                    tcnt = await triggers.count()
+                    for ti in range(min(tcnt, 3)):
+                        try:
+                            await triggers.nth(ti).click(timeout=1500, force=True)
+                            await page.wait_for_timeout(400)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        seen_opt_names: set[str] = set()
         try:
             for sel in [
                 "ul[class*='prod-option'] li", "[class*='Option'] li",
                 "select[class*='option'] option",
+                "[role='listbox'] [role='option']",
+                "[class*='SelectBox'] li", "[class*='OptionList'] li",
+                "[class*='dropdown'] li",
             ]:
                 els = page.locator(sel)
                 cnt = await els.count()
-                if cnt and cnt < 30:
-                    cnt_added = 0
-                    for i in range(cnt):
-                        try:
-                            t = (await els.nth(i).inner_text(timeout=1500)).strip()
-                            t = re.sub(r"\s+", " ", t)
-                            if not t or len(t) > 80:
-                                continue
-                            price = _parse_int_krw(t)
-                            if price and price != price_main and price >= 1000:
-                                # 옵션명 정제 — 가격 텍스트 제거
-                                name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t).strip()[:60]
-                                if name:
-                                    out["options"].append({
-                                        "name": name, "price_krw": price, "in_stock": True,
-                                    })
-                                    cnt_added += 1
-                        except Exception:
-                            pass
-                    if cnt_added:
-                        break
+                if not cnt or cnt > 50:
+                    continue
+                cnt_added = 0
+                for i in range(cnt):
+                    try:
+                        t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                        t = re.sub(r"\s+", " ", t)
+                        if not t or len(t) > 80:
+                            continue
+                        price = _parse_int_krw(t)
+                        name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t)
+                        name = re.sub(r"수량\s*(증가|감소)|판매가|배송비|품절|sold\s*out", "", name, flags=re.I).strip()[:60]
+                        if not name or len(name) < 2:
+                            continue
+                        if name.lower() in {"옵션", "선택", "필수", "default", "옵션 선택", "옵션선택"}:
+                            continue
+                        norm = name.lower()
+                        if norm in seen_opt_names:
+                            continue
+                        seen_opt_names.add(norm)
+                        opt_price = price if (price and price >= 1000) else price_main
+                        if opt_price:
+                            out["options"].append({
+                                "name": name, "price_krw": opt_price, "in_stock": True,
+                            })
+                            cnt_added += 1
+                    except Exception:
+                        pass
+                if cnt_added:
+                    break
         except Exception:
             pass
 
@@ -662,36 +694,79 @@ async def _fetch_naver_via_browser_manager(url: str) -> dict:
         if price_main:
             out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
 
-        # 옵션 — textnode 노이즈 제거 (수량감소/판매가/공백)
+        # 옵션 — 1) 드롭다운 트리거 클릭으로 list 펼치기 (NAVER smartstore React)
+        #         2) selector 확장 + 가격 없는 옵션도 option_name 으로 추가
+        try:
+            for trigger_sel in [
+                "[class*='option_select_btn']", "[class*='OptionSelectBtn']",
+                "[class*='dropdown']:not([class*='content']):not([class*='list'])",
+                "button[class*='select']", "[role='combobox']",
+            ]:
+                try:
+                    triggers = page.locator(trigger_sel)
+                    tcnt = await triggers.count()
+                    for ti in range(min(tcnt, 3)):
+                        try:
+                            await triggers.nth(ti).click(timeout=1500, force=True)
+                            await page.wait_for_timeout(400)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 옵션 추출 — selector 후보 확장
+        seen_opt_names: set[str] = set()
         try:
             for sel in [
                 "ul[class*='option'] li", "[class*='Option'] li",
                 "select option",
+                "[role='listbox'] [role='option']",
+                "[class*='SelectBox'] li", "[class*='Selectbox'] li",
+                "[class*='option_list'] li", "[class*='OptionList'] li",
+                "[class*='dropdown'] li",
             ]:
                 els = page.locator(sel)
                 cnt = await els.count()
-                if cnt and cnt < 30:
-                    cnt_added = 0
-                    for i in range(cnt):
-                        try:
-                            t = (await els.nth(i).inner_text(timeout=1500)).strip()
-                            t = re.sub(r"\s+", " ", t)
-                            if not t or len(t) > 80:
-                                continue
-                            price = _parse_int_krw(t)
-                            if price and price != price_main and price >= 1000:
-                                # 옵션명 정제 — 가격/수량 컨트롤 텍스트 제거
-                                name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t)
-                                name = re.sub(r"수량\s*(증가|감소)|판매가|배송비", "", name).strip()[:60]
-                                if name:
-                                    out["options"].append({
-                                        "name": name, "price_krw": price, "in_stock": True,
-                                    })
-                                    cnt_added += 1
-                        except Exception:
-                            pass
-                    if cnt_added:
-                        break
+                if not cnt or cnt > 50:
+                    continue
+                cnt_added = 0
+                for i in range(cnt):
+                    try:
+                        t = (await els.nth(i).inner_text(timeout=1500)).strip()
+                        t = re.sub(r"\s+", " ", t)
+                        if not t or len(t) > 80:
+                            continue
+                        price = _parse_int_krw(t)
+                        # 옵션명 정제 — 가격/수량 컨트롤 텍스트 제거
+                        name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t)
+                        name = re.sub(r"수량\s*(증가|감소)|판매가|배송비|품절|sold\s*out", "", name, flags=re.I).strip()[:60]
+                        if not name or len(name) < 2:
+                            continue
+                        if name.lower() in {"옵션", "선택", "필수", "default", "옵션 선택", "옵션선택"}:
+                            continue
+                        norm = name.lower()
+                        if norm in seen_opt_names:
+                            continue
+                        seen_opt_names.add(norm)
+                        # 가격이 행에 명시 → 사용 / 없으면 base price 폴백 (옵션명만으로도 SKU 분리 가치)
+                        opt_price = price if (price and price >= 1000) else price_main
+                        if opt_price and opt_price != price_main:
+                            out["options"].append({
+                                "name": name, "price_krw": opt_price, "in_stock": True,
+                            })
+                            cnt_added += 1
+                        elif opt_price:
+                            # 가격 동일/미상 — option_name 만 다양화 (검수 시 사용자가 가격 채움)
+                            out["options"].append({
+                                "name": name, "price_krw": opt_price, "in_stock": True,
+                            })
+                            cnt_added += 1
+                    except Exception:
+                        pass
+                if cnt_added:
+                    break
         except Exception:
             pass
 
