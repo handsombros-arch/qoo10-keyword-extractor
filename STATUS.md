@@ -141,19 +141,39 @@ python automation/trigger_domestic_details.py --date 2026-04-28 --scrape  # 디�
 - **ollama 비전 매칭**: 모델 이름에 `vl/vision/llava/minicpm-v/moondream/gemma3` 키워드 필수 — 새 비전 모델 추가 시 `ollama_client.py` 키워드 list 확장
 - **minicpm-v 한국 화장품 인식 약점**: 메디큐브/투에이엔 등 점수 0 빈도 — 향후 qwen2.5-vl 시도 또는 prompt 보완
 
-## 최근 작업 (2026-04-28)
+## 최근 작업 (2026-04-28, 13 commit)
 
+핵심 흐름 강화:
 - R-3 daily_workflow STEP 5.7~5.95 통합 (brand_expand → expanded_search → match_images)
-- Brand.aliases JSON 컬럼 + 시드 6개 (달바/메디큐브/라카/아누아/코스노리/하파크리스틴)
 - 검수 UI: accepted (matched)만 보기 토글
-- 옵션 selector 보강 — dropdown 트리거 클릭 + role=listbox + dedup
-- 배송비 selector dt/dd + body fallback + parser 키워드 7/7 통과
-- M-3: set_count cover OCR 폴백 (regex miss 시 image OCR → 정규식 재시도 → LLM)
+
+번역/매칭 정확도:
+- Brand.aliases JSON 컬럼 + 시드 6개 (달바=다루바=dAlba=ダルバ 등)
+- 카나 잔존 차단 — brand_expand/translate `_has_residual_kana` + 폴백 강제
+- text_match STOPWORDS 30+ — 공구/포상/선물/체험/미안기/취급/스킨 등 SEO 광고 노이즈
+- brand_expansion prompt — 출력 keyword 에 브랜드 토큰 강제 (사장님 우려 케이스 fix)
+- jp_ko_translation prompt — 인명 음역 룰 (장원영→ジャンウォニョン, NOT ヤジン)
+- qoo10_content prompt — K-pop 인명 음역 + 포토카드→フォトカード 정확 표기
+
+스크래퍼:
+- 옵션 selector 보강 — dropdown 트리거 + role=listbox + dedup (BB-1)
+- 배송비 selector dt/dd + body fallback + parser 7/7 (CC-1)
+- m08_naver: 카탈로그 후순위 + m_domestic_details NAVER fetcher 가 catalog→seller redirect (HH-1)
+- M-3 set_count cover OCR 폴백 (regex miss → image OCR → 정규식 재시도)
+
+## 검증된 효과 (4/28)
+
+- 매칭 accepted: 35/100 (4/27) → **63/100** (4/28 1차) → 47/100 (정리 후, 더 정밀)
+- expanded keyword 카나 잔존: 2건 → **0건**
+- expanded keyword 브랜드 누락: 9건 → **0건** (정리 + prompt 강화)
+- 옵션 다양화: dropdown 트리거 효과로 **9개 잡힌 케이스** 등장
+- 배송비: unknown → conditional/paid 정상 파싱
+- 인명: ヤジン/ポトカード 의역 → ジャンウォニョン/フォトカード 정확
 
 ## 우선순위 (다음)
 
-1. 백엔드 재시작 후 4/28 옵션/배송비 효과 검증 (`trigger_domestic_details.py --date 2026-04-28 --scrape --reset`)
-2. 내일 03:00 야간 자동화 실가동 — 텔레그램 알림으로 R-3 흐름 검증
-3. 사장님 검수 별도 페이지 (현재는 토글 — 명세 확정 시)
-4. minicpm-v → qwen2.5-vl 교체 시도 (한국 화장품 vision 약점)
-5. 폴더 다중 저장 (cover.jpg overwrite 방지 — 같은 product_name 여러 행)
+1. 내일 03:00 야간 자동화 실가동 — 텔레그램 알림으로 R-3 흐름 검증
+2. 사장님 검수 별도 페이지 (현재는 토글 — 명세 확정 시)
+3. minicpm-v → qwen2.5-vl 교체 시도 (한국 화장품 vision 약점)
+4. 폴더 다중 저장 (cover.jpg overwrite 방지 — 같은 product_name 여러 행)
+5. 야간 자동화 시간 03:00 → 06:00 이전 검토 (사장님 captcha 즉시 풀이 가능 시간)

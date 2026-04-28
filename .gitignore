@@ -11,7 +11,9 @@ dist/
 
 # Env / secrets
 .env
+.env.bak
 backend/.env
+backend/.env.bak
 automation/.env
 backend/data/session/credentials.json
 backend/data/session/cookies.json
@@ -20,14 +22,20 @@ backend/data/session/cookies.json
 logs/
 
 # 디버그/진단/세션 데이터
-backend/data/*.log
-backend/data/m09_debug/
+backend/data/
 automation/diagnostics/
 automation/data/
 backend/scripts/bid_test.json
 
 # DB (로컬 SQLite — Supabase 이전 후 불필요)
 backend/data/qoo10.db
+
+# 자동화 산출물 — 한국/큐텐 cover 이미지 다운로드 (사이즈 큼, PC 별 캐시)
+image/
+
+# 임시 출력
+/tmp/
+*.log.bak
 
 # OS
 .DS_Store
