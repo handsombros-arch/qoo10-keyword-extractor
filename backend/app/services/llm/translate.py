@@ -55,6 +55,14 @@ def _load_kana_dict() -> list[tuple[str, str]]:
         return []
 
 
+_KANA_RE = re.compile(r"[぀-ゟ゠-ヿ]")
+
+
+def has_residual_kana(ko: str) -> bool:
+    """후처리 후에도 카타카나/히라가나가 남아있는가."""
+    return bool(_KANA_RE.search(ko or ""))
+
+
 def postprocess_ko(ko: str) -> str:
     """LLM 번역 결과에 카나 후처리 적용. 잔존 카타카나/히라가나 단어 substitution.
 
@@ -192,10 +200,12 @@ async def translate_jp_to_ko_async(product_name: str) -> str | None:
         ko, used_model = await _try_translate_with(primary, prompt)
         if ko:
             ko = postprocess_ko(ko)
-            await _cache_put(name, "ja", "ko", ko, used_model)
-            return ko
+            if not has_residual_kana(ko):
+                await _cache_put(name, "ja", "ko", ko, used_model)
+                return ko
+            logger.warning(f"[translate] 1차 결과 카나 잔존 → 폴백: {ko!r}")
 
-    # 2차+ — 폴백 체인
+    # 2차+ — 폴백 체인 (카나 잔존 시도 간 누락된 토큰 다른 모델로 잡힘)
     for spec in _fallback_specs():
         try:
             fb_client = _build_client(spec)
@@ -204,12 +214,14 @@ async def translate_jp_to_ko_async(product_name: str) -> str | None:
             continue
         ko, used_model = await _try_translate_with(fb_client, prompt)
         if ko:
-            logger.info(f"[translate] 폴백 hit ({spec}) for {name[:30]!r}")
             ko = postprocess_ko(ko)
-            await _cache_put(name, "ja", "ko", ko, used_model)
-            return ko
+            if not has_residual_kana(ko):
+                logger.info(f"[translate] 폴백 hit ({spec}) for {name[:30]!r}")
+                await _cache_put(name, "ja", "ko", ko, used_model)
+                return ko
+            logger.warning(f"[translate] 폴백 {spec} 카나 잔존 → 다음: {ko!r}")
 
-    logger.warning(f"[translate] 모든 모델 실패: {name[:50]!r}")
+    logger.warning(f"[translate] 모든 모델 실패 (카나 잔존 포함): {name[:50]!r}")
     return None
 
 
@@ -218,4 +230,4 @@ def translate_jp_to_ko(product_name: str) -> str | None:
     return run_sync(translate_jp_to_ko_async(product_name))
 
 
-__all__ = ["translate_jp_to_ko", "translate_jp_to_ko_async", "postprocess_ko"]
+__all__ = ["translate_jp_to_ko", "translate_jp_to_ko_async", "postprocess_ko", "has_residual_kana"]
