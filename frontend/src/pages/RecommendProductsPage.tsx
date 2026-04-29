@@ -22,6 +22,7 @@ import {
 } from '../store/productSheet';
 import CompositionsPanel, { summarizeBestComposition } from '../components/common/CompositionsPanel';
 import SheetRowDetailPanel from '../components/SheetRowDetailPanel';
+import SheetSourceToolbar from '../components/SheetSourceToolbar';
 import { fetchCloud, makeDebouncedPusher } from '../store/cloudSync';
 import {
   calculateMargin, marginVerdict,
@@ -199,6 +200,24 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const [detailRow, setDetailRow] = useState<SheetRow | null>(null);
   const onOpenDetailPanel = (row: SheetRow) => setDetailRow(row);
   const onCloseDetailPanel = () => setDetailRow(null);
+
+  // TT-2 source toolbar — 외부 source row 머지 (중복 dedup, 신규만 setRows)
+  const onMergeSourceRows = (newRows: SheetRow[], dedupKey: 'keyword_jp' | 'product_name' = 'keyword_jp'): number => {
+    const existing = new Set(rows.map(r => (r as any)[dedupKey] || '').filter(Boolean));
+    const fresh = newRows.filter(nr => {
+      const k = (nr as any)[dedupKey];
+      if (!k) return true;  // dedup key 빈 값이면 통과
+      if (existing.has(k)) return false;
+      existing.add(k);
+      return true;
+    });
+    if (fresh.length) {
+      const next = [...fresh, ...rows];  // 새 row 가 위로
+      saveSheet(next);
+      setRows(next);
+    }
+    return fresh.length;
+  };
 
   const updateCompositions = (rowId: string, compositions: CompositionOption[]) => {
     setRows(rows.map(r => (r.id === rowId ? { ...r, compositions } : r)));
@@ -785,7 +804,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             노란색 셀만 편집 가능. 편집하면 오른쪽 지표가 즉시 재계산됩니다.
           </div>
         </div>
-        <div className="flex gap-2 relative">
+        <div className="flex gap-2 relative items-center">
+          <SheetSourceToolbar onMergeRows={onMergeSourceRows} />
           <button onClick={sortByScore} className="px-3 py-1.5 bg-amber-500 text-white text-xs rounded hover:bg-amber-600">
             🔄 점수순 정렬
           </button>
