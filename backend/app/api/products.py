@@ -1310,6 +1310,8 @@ async def generate_qoo10_listing_content(body: dict | None = None):
     raw_limit = body.get("limit")
     limit = int(raw_limit) if raw_limit else None
     do_reset = bool(body.get("reset"))
+    # keywords_jp body 인자 — 있으면 lookup_date 무시하고 keyword 매칭 (시트에서 호출 케이스)
+    keywords_jp = body.get("keywords_jp") or []
 
     # 대상 큐텐 상품 + 매칭 한국 상품명 + 카테고리
     async with async_session() as session:
@@ -1324,7 +1326,6 @@ async def generate_qoo10_listing_content(body: dict | None = None):
                 .join(_DMC, _DMC.qoo10_product_id == _Q.id)
                 .join(_DP, _DP.id == _DMC.domestic_product_id)
                 .outerjoin(_K, _K.keyword_jp == _Q.search_keyword)
-                .where(_Q.lookup_date == target_date)
                 .where(_DMC.decision == "accepted")
                 .distinct()
             )
@@ -1333,8 +1334,12 @@ async def generate_qoo10_listing_content(body: dict | None = None):
                 _sel(*cols)
                 .outerjoin(_DP, _DP.search_keyword == _Q.product_name_ko)
                 .outerjoin(_K, _K.keyword_jp == _Q.search_keyword)
-                .where(_Q.lookup_date == target_date)
             )
+        # date 필터 — keywords_jp 있으면 무시 (사장님이 시트에서 특정 키워드 지정 → 모든 날짜)
+        if keywords_jp:
+            stmt = stmt.where(_Q.search_keyword.in_(keywords_jp))
+        else:
+            stmt = stmt.where(_Q.lookup_date == target_date)
         if not do_reset:
             stmt = stmt.where(_Q.qoo10_content_generated_at.is_(None))
         rows = (await session.execute(stmt)).all()

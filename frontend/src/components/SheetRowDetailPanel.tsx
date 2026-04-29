@@ -47,6 +47,7 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
     qoo10_option_name: row.qoo10_option_name || '',
     product_url: row.product_url || '',
     item_price_krw: row.item_price_krw || 0,
+    domestic_shipping_krw: row.domestic_shipping_krw || 0,
     weight_g: row.weight_g || 0,
   });
   const [newTag, setNewTag] = useState('');
@@ -158,12 +159,20 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
               onChange={e => patch({ product_url: e.target.value })}
               className="w-full border rounded px-1 py-0.5 text-[11px]" />
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <div>
-              <label className="block text-gray-500 mb-0.5">원가 (원)</label>
+              <label className="block text-gray-500 mb-0.5">구매가 (원)</label>
               <input type="number" value={edit.item_price_krw || ''}
                 onChange={e => patch({ item_price_krw: Number(e.target.value) || 0 })}
-                className="w-full border rounded px-1 py-0.5 text-right" />
+                className="w-full border rounded px-1 py-0.5 text-right"
+                title="한국 셀러 상품 단가 (item_price_krw)" />
+            </div>
+            <div>
+              <label className="block text-gray-500 mb-0.5">국내배송 (원)</label>
+              <input type="number" value={edit.domestic_shipping_krw || ''}
+                onChange={e => patch({ domestic_shipping_krw: Number(e.target.value) || 0 })}
+                className="w-full border rounded px-1 py-0.5 text-right"
+                title="구매처 → 사장님 사무실 배송비 (domestic_shipping_krw)" />
             </div>
             <div>
               <label className="block text-gray-500 mb-0.5">무게 (g)</label>
@@ -171,6 +180,9 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
                 onChange={e => patch({ weight_g: Number(e.target.value) || 0 })}
                 className="w-full border rounded px-1 py-0.5 text-right" />
             </div>
+          </div>
+          <div className="text-[10px] text-gray-500 mt-1">
+            합계 (구매가 + 국내배송): {((edit.item_price_krw || 0) + (edit.domestic_shipping_krw || 0)).toLocaleString()}원
           </div>
         </div>
 
