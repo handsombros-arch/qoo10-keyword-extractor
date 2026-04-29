@@ -191,6 +191,18 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const gridRef = useRef<AgGridReact>(null);
   const [zoomImg, setZoomImg] = useState<string | null>(null);
   const [colDropdownOpen, setColDropdownOpen] = useState(false);
+  const colDropdownRef = useRef<HTMLDivElement>(null);
+  // outside click 닫기
+  useEffect(() => {
+    if (!colDropdownOpen) return;
+    const onClick = (ev: MouseEvent) => {
+      if (colDropdownRef.current && !colDropdownRef.current.contains(ev.target as Node)) {
+        setColDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [colDropdownOpen]);
   const [colListVersion, setColListVersion] = useState(0);
   const [qoo10ExportOpen, setQoo10ExportOpen] = useState(false);
   const [qoo10ExportRows, setQoo10ExportRows] = useState<SheetRow[]>([]);
@@ -374,6 +386,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     {
       field: 'product_name', headerName: '상품명', width: 300, pinned: 'left', autoHeight: false,
       cellRenderer: (p: any) => {
+        if (p.data?.__expansion) return null;
         const img = p.data.cover_image_url;
         const name = p.value || '';
         const thumb = img ? (
@@ -381,15 +394,22 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             src={img}
             alt=""
             className="w-14 h-14 object-cover rounded border border-gray-200 flex-shrink-0 cursor-zoom-in hover:ring-2 hover:ring-blue-400 transition"
-            onClick={() => setZoomImg(img)}
+            onClick={(e) => { e.stopPropagation(); setZoomImg(img); }}
             title="클릭 확대"
           />
         ) : (
           <div className="w-14 h-14 rounded bg-gray-100 flex-shrink-0" />
         );
-        const text = p.data.product_url
-          ? <a href={p.data.product_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline line-clamp-2 leading-tight">{name}</a>
-          : <span className="line-clamp-2 leading-tight">{name}</span>;
+        // 상품명 클릭 → 우측 슬라이드 패널 (SEO/매칭/옵션/URL/원가/무게 통합 편집)
+        const text = (
+          <span
+            onClick={(e) => { e.stopPropagation(); onOpenDetailPanel?.(p.data); }}
+            className="text-blue-700 hover:underline line-clamp-2 leading-tight cursor-pointer"
+            title="클릭 → 우측 패널에서 SEO/매칭/옵션/URL/원가 편집"
+          >
+            {name}
+          </span>
+        );
         return <div className="flex items-center gap-2 overflow-hidden h-full">{thumb}<div className="flex-1 overflow-hidden">{text}</div></div>;
       },
     },
@@ -806,12 +826,13 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   };
 
   const regenerateQoo10Content = async () => {
-    const api = gridRef.current?.api as any;
-    if (!api) return;
-    const sel: SheetRow[] = api.getSelectedRows?.() || [];
+    // ag-grid api 와 axios api 변수 충돌 회피 (ag-grid 변수는 gridApi)
+    const gridApi = gridRef.current?.api as any;
+    if (!gridApi) return;
+    const sel: SheetRow[] = gridApi.getSelectedRows?.() || [];
     const keywords_jp = sel.map(s => s.keyword_jp).filter(Boolean);
     if (keywords_jp.length === 0) {
-      alert('keyword_jp 가 있는 row 만 가능 (자동화/트렌드 source).');
+      alert('keyword_jp 가 있는 row 만 가능 (자동화 source).\n수동/트렌드 source 는 keyword_jp 가 비어있을 수 있습니다.');
       return;
     }
     if (!confirm(`${keywords_jp.length}개 키워드의 큐텐 SEO 콘텐츠 재생성?\n(qwen3:14b, ~10초/건)`)) return;
@@ -859,7 +880,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           <button onClick={sortByScore} className="px-3 py-1.5 bg-amber-500 text-white text-xs rounded hover:bg-amber-600">
             🔄 점수순 정렬
           </button>
-          <div className="relative">
+          <div className="relative" ref={colDropdownRef}>
             <button
               onClick={() => setColDropdownOpen(v => !v)}
               className="px-3 py-1.5 bg-gray-600 text-white text-xs rounded hover:bg-gray-700"
@@ -867,10 +888,11 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
               👁 컬럼 표시
             </button>
             {colDropdownOpen && (
-              <div className="absolute right-0 top-full mt-1 bg-white border shadow-lg rounded z-10 w-64 max-h-80 overflow-y-auto">
-                <div className="p-2 border-b flex justify-between items-center">
-                  <span className="text-xs font-semibold">컬럼 선택</span>
-                  <button onClick={resetColState} className="text-[10px] text-blue-600 hover:underline">
+              <div className="absolute right-0 top-full mt-1 bg-white border shadow-lg rounded z-20 w-64 max-h-80 overflow-y-auto">
+                <div className="p-2 border-b flex justify-between items-center sticky top-0 bg-white">
+                  <span className="text-xs font-semibold">컬럼 선택 ({columnList.length})</span>
+                  <button onClick={resetColState} className="text-[10px] text-blue-600 hover:underline"
+                    title="신규 컬럼이 안 보이면 초기화 — 모든 컬럼 default 상태로 (저장된 column state 삭제)">
                     초기화
                   </button>
                 </div>
@@ -894,8 +916,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             🗑 선택 삭제
           </button>
           <button onClick={rejectSelected} className="px-3 py-1.5 bg-orange-500 text-white text-xs rounded hover:bg-orange-600"
-            title="선택 행 decision='rejected' 표시">
-            🚫 선택 거부
+            title="검수 거부 표시 — 매칭 컬럼 'rejected' 배지 (시트에서 안 사라짐, 필터로 제외 가능)">
+            🚫 검수 거부
           </button>
           <button onClick={regenerateQoo10Content} className="px-3 py-1.5 bg-indigo-500 text-white text-xs rounded hover:bg-indigo-600"
             title="선택 keyword_jp 의 큐텐 SEO 콘텐츠 재생성">
