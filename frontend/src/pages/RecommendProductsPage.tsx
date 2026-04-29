@@ -23,6 +23,7 @@ import {
 import CompositionsPanel, { summarizeBestComposition } from '../components/common/CompositionsPanel';
 import SheetRowDetailPanel from '../components/SheetRowDetailPanel';
 import SheetSourceToolbar from '../components/SheetSourceToolbar';
+import TaskProgressPanel from '../components/common/TaskProgressPanel';
 import { fetchCloud, makeDebouncedPusher } from '../store/cloudSync';
 import {
   calculateMargin, marginVerdict,
@@ -842,7 +843,11 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         date: today,
         keywords_jp,
       });
-      alert(`✓ task 시작 — ${res.data.candidates}건 처리 중. 완료 후 우측 패널에서 확인 (자동화 배치 끝나면 시트에 반영됨).`);
+      alert(
+        `✓ task 시작 — ${res.data.candidates}건 처리 중\n` +
+        `진행률은 시트 상단 청색 패널에서 실시간 확인.\n` +
+        `완료 후 우측 패널 reopen 시 새 콘텐츠 반영.`
+      );
     } catch (e: any) {
       alert(`✗ ${e?.response?.data?.error || e.message}`);
     }
@@ -924,6 +929,11 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             ✨ 콘텐츠 재생성
           </button>
         </div>
+      </div>
+
+      {/* 진행 중인 batch task 진행률 (콘텐츠 재생성 / 자동화 머지 진행 시 표시) */}
+      <div className="px-4 pt-2">
+        <TaskProgressPanel pollIntervalMs={1500} />
       </div>
 
       {/* 일자 필터 + CSV 내보내기 */}
