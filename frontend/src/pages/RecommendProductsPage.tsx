@@ -21,6 +21,7 @@ import {
   type CompositionOption,
 } from '../store/productSheet';
 import CompositionsPanel, { summarizeBestComposition } from '../components/common/CompositionsPanel';
+import SheetRowDetailPanel from '../components/SheetRowDetailPanel';
 import { fetchCloud, makeDebouncedPusher } from '../store/cloudSync';
 import {
   calculateMargin, marginVerdict,
@@ -194,6 +195,10 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const [qoo10ExportRows, setQoo10ExportRows] = useState<SheetRow[]>([]);
   // 구성 편집 패널: 선택된 상품 id (null이면 패널 숨김)
   const [compositionRowId, setCompositionRowId] = useState<string | null>(null);
+  // TT-1B 우측 슬라이드 패널 — 키워드 클릭 시 SEO 콘텐츠/옵션/매칭 사유 한 번에
+  const [detailRow, setDetailRow] = useState<SheetRow | null>(null);
+  const onOpenDetailPanel = (row: SheetRow) => setDetailRow(row);
+  const onCloseDetailPanel = () => setDetailRow(null);
 
   const updateCompositions = (rowId: string, compositions: CompositionOption[]) => {
     setRows(rows.map(r => (r.id === rowId ? { ...r, compositions } : r)));
@@ -524,7 +529,65 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
     },
     { field: 'notes', headerName: '메모', width: 130, editable: true },
-  ] as ColDef[]), [compositionRowId]);
+
+    // ─ 매칭 메타 (TT-1A 신규, hide 기본 — 사장님이 토글 show) ─
+    { field: 'match_decision', headerName: '매칭', width: 80, hide: true,
+      cellRenderer: (p: any) => {
+        const v = p.value || 'pending';
+        const cls = v === 'accepted' ? 'bg-emerald-100 text-emerald-800'
+          : v === 'rejected' ? 'bg-red-100 text-red-700'
+          : v === 'cheapest' ? 'bg-blue-100 text-blue-700'
+          : v === 'manual' ? 'bg-gray-100 text-gray-700'
+          : 'bg-yellow-50 text-yellow-700';
+        return <span className={`text-[10px] px-1.5 py-0.5 rounded ${cls}`}>{v}</span>;
+      },
+    },
+    { field: 'match_image_score', headerName: 'img점수', width: 75, hide: true, type: 'numericColumn',
+      valueFormatter: (p: any) => p.value != null ? p.value.toFixed(2) : '-',
+      cellStyle: (p: any) => ({
+        color: p.value >= 0.7 ? '#15803d' : p.value >= 0.5 ? '#b45309' : '#b91c1c',
+      } as any) },
+    { field: 'match_name_score', headerName: 'txt점수', width: 75, hide: true, type: 'numericColumn',
+      valueFormatter: (p: any) => p.value != null ? p.value.toFixed(2) : '-' },
+    { field: 'match_note', headerName: '매칭사유', width: 200, hide: true,
+      tooltipField: 'match_note',
+      cellStyle: { fontSize: '11px', color: '#6b7280' } as any },
+
+    // ─ 큐텐 SEO 콘텐츠 (Phase 4-B 자동 생성, 인플레이스 편집) ─
+    { field: 'qoo10_title_jp', headerName: '큐텐 title', width: 220, hide: true, editable: true,
+      cellStyle: { backgroundColor: '#fefce8', fontSize: '12px' } as any },
+    { field: 'qoo10_tags', headerName: '큐텐 tags', width: 200, hide: true,
+      cellRenderer: (p: any) => {
+        const tags: string[] = Array.isArray(p.value) ? p.value : [];
+        if (!tags.length) return <span className="text-gray-400 text-xs">-</span>;
+        return (
+          <div className="flex flex-wrap gap-1 py-1">
+            {tags.slice(0, 5).map((t, i) => (
+              <span key={i} className="bg-blue-50 text-blue-700 px-1 py-0.5 rounded text-[10px]">{t}</span>
+            ))}
+            {tags.length > 5 && <span className="text-[10px] text-gray-500">+{tags.length - 5}</span>}
+          </div>
+        );
+      },
+    },
+    { field: 'qoo10_marketing', headerName: '마케팅포인트', width: 130, hide: true,
+      cellRenderer: (p: any) => {
+        const items: string[] = Array.isArray(p.value) ? p.value : [];
+        if (!items.length) return <span className="text-gray-400 text-xs">-</span>;
+        return (
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenDetailPanel?.(p.data); }}
+            className="text-blue-600 hover:underline text-xs cursor-pointer"
+            title={items.join('\n')}
+          >
+            {items.length}개 포인트 ▸
+          </button>
+        );
+      },
+    },
+    { field: 'qoo10_option_name', headerName: '큐텐 옵션', width: 130, hide: true, editable: true,
+      cellStyle: { backgroundColor: '#fefce8', fontSize: '12px' } as any },
+  ] as ColDef[]), [compositionRowId, onOpenDetailPanel]);
 
   const defaultColDef: ColDef = useMemo(() => ({
     resizable: true, sortable: true, filter: false, suppressHeaderMenuButton: false,
@@ -872,6 +935,23 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       {zoomImg && <ImageZoomModal src={zoomImg} onClose={() => setZoomImg(null)} />}
       {qoo10ExportOpen && (
         <Qoo10ExportModal rows={qoo10ExportRows} onClose={() => setQoo10ExportOpen(false)} />
+      )}
+      {detailRow && (
+        <SheetRowDetailPanel
+          row={detailRow}
+          onClose={onCloseDetailPanel}
+          onSave={(patch) => {
+            // setRows 호출 → 상위 컴포넌트가 cloudSync 자동 push (useEffect)
+            const next = rows.map(r => r.id === detailRow.id ? { ...r, ...patch } : r);
+            saveSheet(next);
+            setRows(next);
+          }}
+          onReject={() => {
+            const next = rows.map(r => r.id === detailRow.id ? { ...r, match_decision: 'rejected' as const } : r);
+            saveSheet(next);
+            setRows(next);
+          }}
+        />
       )}
     </div>
   );

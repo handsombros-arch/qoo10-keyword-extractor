@@ -51,6 +51,20 @@ export interface SheetRow {
   // 구성 옵션 (단품/세트 등 — 없으면 메인 행 값으로 단품 취급)
   compositions?: CompositionOption[];
 
+  // 검수 / 매칭 메타 (TT-1A — auto/shop source 에서 자동 채워짐, 사장님 override 가능)
+  keyword_jp?: string;             // 큐텐 검색 keyword (자동화 source 추적용)
+  keyword_kr?: string;
+  match_image_score?: number;       // 0~1
+  match_name_score?: number;        // 0~1
+  match_decision?: 'accepted' | 'rejected' | 'cheapest' | 'manual' | 'pending';
+  match_note?: string;              // 비전 사유 (예: "동일 패키지, 다른 향")
+
+  // 큐텐 SEO 콘텐츠 (Phase 4-B 자동 생성, 사장님 인플레이스 편집 가능)
+  qoo10_title_jp?: string;          // 큐텐 등록용 일본어 상품명 (40자)
+  qoo10_tags?: string[];            // 검색 태그 5~10개
+  qoo10_marketing?: string[];       // 마케팅 포인트 3~4개
+  qoo10_option_name?: string;       // 옵션명 (단품/3個セット 등)
+
   // 하위 호환
   purchase_price_krw?: number;
 }
@@ -81,6 +95,12 @@ function migrateRow(raw: any): SheetRow {
   else if (m === 'paid_tracx') row.shipping_mode = 'paid';
   // 구성 옵션 배열 정규화
   if (!Array.isArray(row.compositions)) row.compositions = [];
+  // SEO 콘텐츠 / 매칭 메타 default
+  if (!Array.isArray(row.qoo10_tags)) row.qoo10_tags = [];
+  if (!Array.isArray(row.qoo10_marketing)) row.qoo10_marketing = [];
+  if (row.qoo10_title_jp == null) row.qoo10_title_jp = '';
+  if (row.qoo10_option_name == null) row.qoo10_option_name = '';
+  if (row.match_decision == null) row.match_decision = 'pending';
   return row;
 }
 
@@ -137,6 +157,11 @@ export function newSheetRow(partial: Partial<SheetRow>): SheetRow {
     mega_sales_count: 0,
     exchange_rate: 9.5,
     shipping_mode: 'auto',
+    qoo10_tags: [],
+    qoo10_marketing: [],
+    qoo10_title_jp: '',
+    qoo10_option_name: '',
+    match_decision: 'pending',
     ...partial,
   };
   // 경쟁가와 판매가 동기화 (상품 추가 시점에는 동일하게 시작)
