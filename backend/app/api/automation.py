@@ -675,6 +675,83 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
     return out
 
 
+# ─── 사장님 수정 기록 (FFF-2) ─────────────────────────
+
+
+class CorrectionRequest(BaseModel):
+    keyword_jp: str = ""
+    keyword_kr: str = ""
+    decision_kind: str  # 'swap' | 'reject' | 'accept_as_is'
+    ai_choice_id: Optional[int] = None
+    ai_choice_name: str = ""
+    ai_choice_url: str = ""
+    ai_choice_cover_url: str = ""
+    ai_image_score: Optional[float] = None
+    ai_name_score: Optional[float] = None
+    user_choice_id: Optional[int] = None
+    user_choice_name: str = ""
+    user_choice_url: str = ""
+    user_choice_cover_url: str = ""
+    user_note: str = ""
+
+
+@router.post("/api/sheet/correction")
+async def record_correction(req: CorrectionRequest):
+    """사장님 수정 기록 (시트 swap/reject 시 frontend 가 호출).
+
+    누적 데이터로 image_match prompt 개선/임계값 조정/fine-tune source.
+    """
+    from app.db.models import UserCorrection
+    if req.decision_kind not in ("swap", "reject", "accept_as_is"):
+        return {"error": "decision_kind: swap | reject | accept_as_is"}
+    try:
+        async with async_session() as session:
+            session.add(UserCorrection(
+                keyword_jp=req.keyword_jp or None,
+                keyword_kr=req.keyword_kr or None,
+                decision_kind=req.decision_kind,
+                ai_choice_id=req.ai_choice_id,
+                ai_choice_name=req.ai_choice_name or None,
+                ai_choice_url=req.ai_choice_url or None,
+                ai_choice_cover_url=req.ai_choice_cover_url or None,
+                ai_image_score=req.ai_image_score,
+                ai_name_score=req.ai_name_score,
+                user_choice_id=req.user_choice_id,
+                user_choice_name=req.user_choice_name or None,
+                user_choice_url=req.user_choice_url or None,
+                user_choice_cover_url=req.user_choice_cover_url or None,
+                user_note=req.user_note or None,
+            ))
+            await session.commit()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+@router.get("/api/sheet/corrections")
+async def list_corrections(limit: int = 100):
+    """사장님 수정 사례 list — RD 진단/분석용."""
+    from app.db.models import UserCorrection
+    async with async_session() as session:
+        rows = (await session.execute(
+            select(UserCorrection).order_by(desc(UserCorrection.corrected_at)).limit(limit)
+        )).scalars().all()
+    return {
+        "count": len(rows),
+        "corrections": [
+            {
+                "id": r.id, "keyword_jp": r.keyword_jp, "keyword_kr": r.keyword_kr,
+                "decision_kind": r.decision_kind,
+                "ai_choice_id": r.ai_choice_id, "ai_choice_name": r.ai_choice_name,
+                "ai_image_score": r.ai_image_score,
+                "user_choice_id": r.user_choice_id, "user_choice_name": r.user_choice_name,
+                "corrected_at": r.corrected_at.isoformat() if r.corrected_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
 # ─── 시트로 보내기 ─────────────────────────────────
 
 class SheetItemInput(BaseModel):

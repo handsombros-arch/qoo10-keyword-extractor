@@ -112,6 +112,22 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
       item_price_krw: alt.price_krw,
       match_decision: 'manual',  // 사장님 직접 선택
     });
+    // FFF-2 — 사장님 수정 자동 기록 (학습 데이터)
+    api.post('/sheet/correction', {
+      keyword_jp: row.keyword_jp || '',
+      keyword_kr: row.keyword_kr || '',
+      decision_kind: 'swap',
+      ai_choice_id: meta?.alt_skus?.find(a => a.is_current_cheapest)?.id || null,
+      ai_choice_name: row.product_name || '',
+      ai_choice_url: row.product_url || '',
+      ai_choice_cover_url: row.cover_image_url || '',
+      ai_image_score: meta?.match?.image_score,
+      ai_name_score: meta?.match?.name_score,
+      user_choice_id: alt.id,
+      user_choice_name: alt.product_name,
+      user_choice_url: alt.product_url,
+      user_choice_cover_url: alt.cover_image_url,
+    }).catch(() => { /* 실패해도 UI 영향 X */ });
     onClose();
   }
 
@@ -327,7 +343,22 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
           저장
         </button>
         {onReject && (
-          <button onClick={() => { onReject(); onClose(); }}
+          <button onClick={() => {
+            onReject();
+            // FFF-2 — 거부 기록
+            api.post('/sheet/correction', {
+              keyword_jp: row.keyword_jp || '',
+              keyword_kr: row.keyword_kr || '',
+              decision_kind: 'reject',
+              ai_choice_id: row.id ? Number(row.id) : null,
+              ai_choice_name: row.product_name || '',
+              ai_choice_url: row.product_url || '',
+              ai_choice_cover_url: row.cover_image_url || '',
+              ai_image_score: meta?.match?.image_score,
+              ai_name_score: meta?.match?.name_score,
+            }).catch(() => {});
+            onClose();
+          }}
             className="px-3 bg-gray-200 hover:bg-gray-300 py-1.5 rounded text-xs">
             거부
           </button>

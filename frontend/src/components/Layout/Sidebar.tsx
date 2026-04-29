@@ -29,6 +29,7 @@ const moreItems = [
 const rdExternals = [
   { href: '/api/tasks', label: '진행 task (RD)', icon: '⚙️', title: '모든 backend task list (running/completed/failed)' },
   { href: '/api/review/' + new Date().toISOString().slice(0, 10), label: '오늘 자동화 결과 (JSON)', icon: '🌙', title: '자동화 snapshot raw + 매칭/콘텐츠 enrich' },
+  { href: '/api/sheet/corrections', label: '사장님 수정 사례 (RD)', icon: '✏️', title: '사장님이 swap/reject 한 사례 누적 — AI 매칭 정합도 학습 데이터' },
 ];
 
 const MORE_STATE_KEY = 'sidebar.moreOpen.v1';

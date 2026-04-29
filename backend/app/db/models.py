@@ -263,6 +263,44 @@ class DomesticMatchCandidate(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class UserCorrection(Base):
+    """사장님 수정 사례 (FFF-2) — AI 매칭 vs 사람 결정 차이 누적.
+
+    용도:
+      - AI image_match / 매칭 결과를 사장님이 시트에서 swap/reject 시 자동 기록
+      - 누적 데이터로 분석 → image_match prompt 에 negative example 추가
+      - 또는 임계값 조정 / 모델 fine-tune source
+
+    decision_kind:
+      - 'swap': cheapest 한국 SKU 잘못 → 사장님이 다른 한국 SKU 로 변경
+      - 'reject': 매칭 자체 거부 (해당 keyword 의 한국 후보 모두 부적절)
+      - 'accept_as_is': 사장님이 cheapest 그대로 OK 표시 (positive sample)
+    """
+    __tablename__ = "user_corrections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    keyword_jp = Column(String, index=True)
+    keyword_kr = Column(String)
+    decision_kind = Column(String, nullable=False)  # 'swap' | 'reject' | 'accept_as_is'
+
+    # AI 가 골랐던 (cheapest) 한국 SKU
+    ai_choice_id = Column(Integer)
+    ai_choice_name = Column(String)
+    ai_choice_url = Column(String)
+    ai_choice_cover_url = Column(String)
+    ai_image_score = Column(Float)
+    ai_name_score = Column(Float)
+
+    # 사장님 결정 (swap 시만)
+    user_choice_id = Column(Integer)
+    user_choice_name = Column(String)
+    user_choice_url = Column(String)
+    user_choice_cover_url = Column(String)
+
+    user_note = Column(Text)
+    corrected_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class Brand(Base):
     """K-뷰티/식품 브랜드 화이트리스트.
 
