@@ -236,22 +236,37 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const [fromDate, setFromDate] = useState<string>('');
   const [toDate, setToDate] = useState<string>('');
 
+  // TT-3 source/decision 필터
+  const [sourceFilter, setSourceFilter] = useState<string>('all');  // 'all' | 'auto' | 'shop' | 'trend' | 'manual'
+  const [decisionFilter, setDecisionFilter] = useState<string>('all'); // 'all' | 'accepted' | 'cheapest' | 'manual' | 'rejected' | 'pending'
+
   const today = new Date().toISOString().slice(0, 10);
 
   const filteredRows = useMemo(() => {
-    if (dateMode === 'all') return rows;
     return rows.filter(r => {
-      const d = r.created_at || '';
-      if (dateMode === 'today') return d === today;
-      if (dateMode === 'single') return singleDate ? d === singleDate : true;
-      if (dateMode === 'range') {
-        if (fromDate && d < fromDate) return false;
-        if (toDate && d > toDate) return false;
-        return true;
+      // 날짜 필터
+      if (dateMode !== 'all') {
+        const d = r.created_at || '';
+        if (dateMode === 'today' && d !== today) return false;
+        if (dateMode === 'single' && singleDate && d !== singleDate) return false;
+        if (dateMode === 'range') {
+          if (fromDate && d < fromDate) return false;
+          if (toDate && d > toDate) return false;
+        }
+      }
+      // source prefix 필터
+      if (sourceFilter !== 'all') {
+        const src = r.source || '';
+        if (!src.startsWith(sourceFilter)) return false;
+      }
+      // decision 필터
+      if (decisionFilter !== 'all') {
+        const dec = r.match_decision || 'pending';
+        if (dec !== decisionFilter) return false;
       }
       return true;
     });
-  }, [rows, dateMode, singleDate, fromDate, toDate, today]);
+  }, [rows, dateMode, singleDate, fromDate, toDate, today, sourceFilter, decisionFilter]);
 
   // 선택된 행 바로 아래에 구성 편집 확장 행을 주입
   const rowsWithExpansion = useMemo(() => {
@@ -777,6 +792,41 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     saveSheet(next);
   };
 
+  // TT-3 일괄 액션 — 선택 row 거부 / 콘텐츠 재생성
+  const rejectSelected = () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const sel: SheetRow[] = api.getSelectedRows?.() || [];
+    if (sel.length === 0) return;
+    if (!confirm(`${sel.length}개 행 decision='rejected' 표시?`)) return;
+    const selIds = new Set(sel.map(s => s.id));
+    const next = rows.map(r => selIds.has(r.id) ? { ...r, match_decision: 'rejected' as const } : r);
+    setRows(next);
+    saveSheet(next);
+  };
+
+  const regenerateQoo10Content = async () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const sel: SheetRow[] = api.getSelectedRows?.() || [];
+    const keywords_jp = sel.map(s => s.keyword_jp).filter(Boolean);
+    if (keywords_jp.length === 0) {
+      alert('keyword_jp 가 있는 row 만 가능 (자동화/트렌드 source).');
+      return;
+    }
+    if (!confirm(`${keywords_jp.length}개 키워드의 큐텐 SEO 콘텐츠 재생성?\n(qwen3:14b, ~10초/건)`)) return;
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const res = await api.post('/products/qoo10/generate-content', {
+        date: today,
+        keywords_jp,
+      });
+      alert(`✓ task 시작 — ${res.data.candidates}건 처리 중. 완료 후 우측 패널에서 확인 (자동화 배치 끝나면 시트에 반영됨).`);
+    } catch (e: any) {
+      alert(`✗ ${e?.response?.data?.error || e.message}`);
+    }
+  };
+
   const addEmptyRow = () => {
     const next = [...rows, newSheetRow({ source: '수동', product_name: '새 상품' })];
     setRows(next);
@@ -841,7 +891,15 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             ➕ 빈 행 추가
           </button>
           <button onClick={deleteSelected} className="px-3 py-1.5 bg-red-500 text-white text-xs rounded hover:bg-red-600">
-            🗑 선택 행 삭제
+            🗑 선택 삭제
+          </button>
+          <button onClick={rejectSelected} className="px-3 py-1.5 bg-orange-500 text-white text-xs rounded hover:bg-orange-600"
+            title="선택 행 decision='rejected' 표시">
+            🚫 선택 거부
+          </button>
+          <button onClick={regenerateQoo10Content} className="px-3 py-1.5 bg-indigo-500 text-white text-xs rounded hover:bg-indigo-600"
+            title="선택 keyword_jp 의 큐텐 SEO 콘텐츠 재생성">
+            ✨ 콘텐츠 재생성
           </button>
         </div>
       </div>
@@ -879,6 +937,27 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
                 className="border rounded px-2 py-0.5" />
             </>
           )}
+          {/* TT-3 source / decision 필터 */}
+          <span className="text-gray-300 mx-1">|</span>
+          <span className="text-gray-600 font-semibold">출처:</span>
+          <select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)}
+            className="border rounded px-2 py-0.5">
+            <option value="all">전체</option>
+            <option value="auto">🌙 자동화</option>
+            <option value="shop">🏪 큐텐 샵</option>
+            <option value="trend">📈 트렌드</option>
+            <option value="manual">✏ 수동</option>
+          </select>
+          <span className="text-gray-600 font-semibold ml-1">매칭:</span>
+          <select value={decisionFilter} onChange={e => setDecisionFilter(e.target.value)}
+            className="border rounded px-2 py-0.5">
+            <option value="all">전체</option>
+            <option value="accepted">accepted</option>
+            <option value="cheapest">cheapest</option>
+            <option value="manual">manual</option>
+            <option value="pending">pending</option>
+            <option value="rejected">rejected</option>
+          </select>
         </div>
         <div className="ml-auto flex gap-2">
           <button
