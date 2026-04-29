@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import { themeQuartz } from 'ag-grid-community';
 import { addInterestKeywords, getInterestKeywords, removeInterestKeyword, clearInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
+import { mergeKeywordsToSheet } from '../store/keywordToSheet';
 
 const myTheme = themeQuartz.withParams({
   fontSize: 12,
@@ -429,6 +430,43 @@ export default function RecommendPage() {
     alert(`${items.length}개 추가 완료. 총 ${merged.length}개가 관심 키워드에 있습니다.`);
   };
 
+  // VV-3 추천 테이블 → 시트로 직접
+  const sendSelectedToSheet = async () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const selected: any[] = api.getSelectedRows?.() || [];
+    if (selected.length === 0) { alert('키워드를 체크해주세요.'); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    const added = await mergeKeywordsToSheet(
+      selected.map(r => ({
+        keyword_jp: r.keyword_jp,
+        keyword_kr: r.keyword_kr,
+        category: r.category,
+        search_volume_weekly: r.search_volume_weekly,
+      })),
+      `keyword:${today}`,
+    );
+    alert(`✓ ${added}건 시트에 추가 (${selected.length} 중 중복 제외).\n/recommend-products 에서 한국 셀러 URL/원가 입력하세요.`);
+  };
+
+  // VV-3 관심 풀 → 시트로 직접 (전체 또는 선택)
+  const sendInterestToSheet = async () => {
+    const items = interestList;
+    if (!items || !items.length) { alert('관심 키워드 풀이 비어있습니다.'); return; }
+    if (!confirm(`관심 풀 전체 ${items.length}건을 시트에 추가합니다.`)) return;
+    const today = new Date().toISOString().slice(0, 10);
+    const added = await mergeKeywordsToSheet(
+      items.map(k => ({
+        keyword_jp: k.keyword_jp,
+        keyword_kr: k.keyword_kr,
+        category: k.category,
+        search_volume_weekly: k.search_volume_weekly,
+      })),
+      `interest:${today}`,
+    );
+    alert(`✓ ${added}건 시트에 추가 (관심 풀 ${items.length} 중 중복 제외).`);
+  };
+
   const sourceSelectedKeywords = () => {
     const api = gridRef.current?.api as any;
     if (!api) return;
@@ -750,19 +788,27 @@ export default function RecommendPage() {
           </div>
           <div className="flex gap-1">
             <button
+              onClick={sendInterestToSheet}
+              disabled={interestList.length === 0}
+              className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-40"
+              title="관심 풀 전체를 상품 시트에 추가 (URL/원가 직접 입력)"
+            >
+              📋 전체 시트로
+            </button>
+            <button
               onClick={sourceInterestList}
               disabled={interestList.length === 0}
               className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-40"
               title="관심 키워드 전체를 interest 모드 자동 소싱 페이지로 이동"
             >
-              ⚡ 이 목록으로 자동 소싱
+              ⚡ 자동 소싱
             </button>
             <button
               onClick={clearAllInterest}
               disabled={interestList.length === 0}
               className="text-xs px-3 py-1 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-40"
             >
-              전체 비우기
+              비우기
             </button>
           </div>
         </div>
@@ -845,23 +891,31 @@ export default function RecommendPage() {
           <div className="text-sm text-gray-500">추천 키워드 {enriched.length}개 (추천점수 내림차순)</div>
           <div className="flex items-center gap-2">
             <button
+              onClick={sendSelectedToSheet}
+              className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
+              title="선택 키워드를 상품 시트에 직접 추가 (사장님이 한국 셀러 검색 → URL/원가 입력)"
+            >
+              📋 선택을 시트로
+            </button>
+            <button
               onClick={addSelectedToInterest}
               className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded hover:bg-emerald-700"
+              title="관심 풀에 북마크 — 즉시 시트 추가 안 하고 검토 후 결정"
             >
-              ⭐ 선택한 키워드를 관심 키워드에 추가
+              ⭐ 관심 풀에 (북마크)
             </button>
             <button
               onClick={sourceSelectedKeywords}
               className="text-xs px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700"
               title="체크한 키워드를 관심에 추가하고 자동 소싱 페이지로 이동 (interest 모드 자동 세팅)"
             >
-              ⚡ 선택 키워드로 자동 소싱 시작
+              ⚡ 자동 소싱 시작
             </button>
             <Link
               to="/recommend-products"
-              className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700"
             >
-              📊 관심 키워드 리포트 보기 ({interestCount})
+              📋 시트 ({interestCount})
             </Link>
           </div>
         </div>

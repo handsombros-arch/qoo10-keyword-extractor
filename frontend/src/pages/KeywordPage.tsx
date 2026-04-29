@@ -20,6 +20,7 @@ import type { Keyword } from '../types';
 import CheckboxSetFilter from '../components/Grid/CheckboxSetFilter';
 import TaskProgressPanel from '../components/common/TaskProgressPanel';
 import { addInterestKeywords, getInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
+import { mergeKeywordsToSheet } from '../store/keywordToSheet';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -283,6 +284,28 @@ export default function KeywordPage() {
     const merged = addInterestKeywords(items);
     setInterestCount(merged.length);
     alert(`${items.length}개 담았습니다. 관심 키워드 풀 총 ${merged.length}개.`);
+  };
+
+  // VV-2 — 선택 키워드를 시트로 직접 보내기 (관심 풀 거치지 않음)
+  const sendSelectedToSheet = async () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const selected: any[] = api.getSelectedRows?.() || [];
+    if (selected.length === 0) {
+      alert('키워드 행을 체크해주세요.');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const added = await mergeKeywordsToSheet(
+      selected.map(r => ({
+        keyword_jp: r.keyword_jp,
+        keyword_kr: r.keyword_kr,
+        category: r.category,
+        search_volume_weekly: r.search_volume_weekly,
+      })),
+      `keyword:${today}`,
+    );
+    alert(`✓ ${added}건 시트에 추가 (${selected.length} 중 중복 제외).\n/recommend-products 에서 확인 — URL/원가 직접 입력하세요.`);
   };
 
   const columnDefs: ColDef[] = useMemo(() => [
@@ -578,17 +601,30 @@ export default function KeywordPage() {
             ⭐ 역직구 추천 정렬
           </button>
           <button
+            onClick={sendSelectedToSheet}
+            className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+            title="선택 키워드를 상품 시트에 직접 추가 (사장님이 한국 셀러 검색 → URL/원가 직접 입력)"
+          >
+            📋 선택 키워드를 시트로
+          </button>
+          <button
             onClick={addSelectedToInterest}
             className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700"
             title="선택한(체크된) 행을 관심 키워드로 북마크 — /recommend 페이지에서 확인"
           >
-            🔖 선택 키워드를 관심 키워드로 담기
+            🔖 관심 키워드로 (북마크)
           </button>
           <Link
             to="/recommend"
-            className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
+            className="px-3 py-1 bg-amber-500 text-white text-xs rounded hover:bg-amber-600"
           >
-            📊 역직구 추천 페이지 ({interestCount})
+            ⭐ 역직구 추천 ({interestCount})
+          </Link>
+          <Link
+            to="/recommend-products"
+            className="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700"
+          >
+            📋 상품 시트
           </Link>
           <span className="text-xs text-gray-400 ml-auto">
             행 왼쪽 체크박스로 선택 · 컬럼 헤더 우측 ≡ 메뉴로 필터

@@ -18,7 +18,7 @@ type Props = {
 };
 
 export default function SheetSourceToolbar({ onMergeRows }: Props) {
-  const [openModal, setOpenModal] = useState<null | 'auto' | 'shop'>(null);
+  const [openModal, setOpenModal] = useState<null | 'auto' | 'shop' | 'trend'>(null);
 
   return (
     <div className="flex items-center gap-1.5 mr-2">
@@ -32,16 +32,18 @@ export default function SheetSourceToolbar({ onMergeRows }: Props) {
         className="px-2 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 text-[11px] rounded font-medium"
       >🏪 큐텐 샵</button>
       <button
-        disabled
-        className="px-2 py-1 bg-gray-100 text-gray-400 text-[11px] rounded cursor-not-allowed"
-        title="트렌드 키워드 통합 — 키워드 추출/역직구 추천 페이지 통합 작업 후 제공"
-      >📈 트렌드 (준비중)</button>
+        onClick={() => setOpenModal('trend')}
+        className="px-2 py-1 bg-amber-100 hover:bg-amber-200 text-amber-800 text-[11px] rounded font-medium"
+      >📈 트렌드</button>
 
       {openModal === 'auto' && (
         <AutoResultModal onClose={() => setOpenModal(null)} onMerge={onMergeRows} />
       )}
       {openModal === 'shop' && (
         <ShopAnalysisModal onClose={() => setOpenModal(null)} onMerge={onMergeRows} />
+      )}
+      {openModal === 'trend' && (
+        <TrendKeywordModal onClose={() => setOpenModal(null)} onMerge={onMergeRows} />
       )}
     </div>
   );
@@ -227,8 +229,8 @@ function ShopAnalysisModal({ onClose, onMerge }: { onClose: () => void; onMerge:
   );
 }
 
-// ─── 4) 트렌드 키워드 — UU-2 통합 작업 후 부활 ───
-// @ts-expect-error 준비중 (KeywordPage/RecommendPage 통합 후 enable)
+// ─── 4) 트렌드 키워드 (VV-4 활성화) ───
+
 function TrendKeywordModal({ onClose, onMerge }: { onClose: () => void; onMerge: Props['onMergeRows'] }) {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(today);
