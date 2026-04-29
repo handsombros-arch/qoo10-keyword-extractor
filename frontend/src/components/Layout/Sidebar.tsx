@@ -25,6 +25,12 @@ const moreItems = [
   { path: '/settings', label: 'AI 설정', icon: '⚙️' },
 ];
 
+// RD 외부 링크 — backend JSON / 작업 진행 / 로그 직접 (새 탭)
+const rdExternals = [
+  { href: '/api/tasks', label: '진행 task (RD)', icon: '⚙️', title: '모든 backend task list (running/completed/failed)' },
+  { href: '/api/review/' + new Date().toISOString().slice(0, 10), label: '오늘 자동화 결과 (JSON)', icon: '🌙', title: '자동화 snapshot raw + 매칭/콘텐츠 enrich' },
+];
+
 const MORE_STATE_KEY = 'sidebar.moreOpen.v1';
 
 function NavItem({ path, label, icon }: { path: string; label: string; icon: string }) {
@@ -73,6 +79,21 @@ export default function Sidebar() {
         {moreOpen && (
           <div className="flex flex-col gap-1 pl-2 mt-1">
             {moreItems.map(item => <NavItem key={item.path} {...item} />)}
+            <div className="text-[10px] text-gray-500 px-3 mt-2 border-t border-gray-700 pt-2">진단 (외부)</div>
+            {rdExternals.map(item => (
+              <a
+                key={item.href}
+                href={item.href}
+                target="_blank"
+                rel="noreferrer"
+                title={item.title}
+                className="flex items-center gap-2 px-3 py-1.5 rounded text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+              >
+                <span>{item.icon}</span>
+                <span>{item.label}</span>
+                <span className="text-[10px] ml-auto">↗</span>
+              </a>
+            ))}
           </div>
         )}
       </nav>
