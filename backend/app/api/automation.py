@@ -617,6 +617,61 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                     {"name": n, "price_krw": p, "in_stock": bool(s_)} for n, p, s_ in opts
                 ]
 
+        # 5) FFF-1 — alt 한국 SKU (cheapest 외, 사장님이 swap 가능)
+        if keyword_jp:
+            from app.db.models import Keyword as _K
+            kw_kr_q = (await s.execute(
+                select(_K.keyword_kr).where(_K.keyword_jp == keyword_jp).limit(1)
+            )).first()
+            kw_kr = (kw_kr_q[0] if kw_kr_q else None) or ""
+            if kw_kr:
+                alt_rows = (await s.execute(
+                    select(
+                        DomesticProduct.id, DomesticProduct.product_name,
+                        DomesticProduct.price_krw, DomesticProduct.product_url,
+                        DomesticProduct.cover_image_url, DomesticProduct.source,
+                        DomesticProduct.image_score_overall,
+                    )
+                    .where(DomesticProduct.search_keyword == kw_kr)
+                    .where(DomesticProduct.cover_image_url.is_not(None))
+                    .where(DomesticProduct.price_krw > 0)
+                    .order_by(DomesticProduct.price_krw.asc())
+                    .limit(10)
+                )).all()
+                if alt_rows:
+                    out["alt_skus"] = [
+                        {
+                            "id": aid, "source": asrc, "product_name": aname,
+                            "price_krw": aprice, "product_url": aurl,
+                            "cover_image_url": acov, "image_score": ascore,
+                            "is_current_cheapest": (aid == d_id),
+                        }
+                        for aid, aname, aprice, aurl, acov, asrc, ascore in alt_rows
+                    ]
+
+        # 6) 큐텐 원본 cover N개 (가격 ASC) — 사장님이 큐텐 vs 한국 비교
+        if keyword_jp:
+            qsamples = (await s.execute(
+                select(
+                    Qoo10Product.id, Qoo10Product.product_name,
+                    Qoo10Product.product_name_ko, Qoo10Product.price_jpy,
+                    Qoo10Product.cover_image_url, Qoo10Product.product_url,
+                )
+                .where(Qoo10Product.search_keyword == keyword_jp)
+                .where(Qoo10Product.cover_image_url.is_not(None))
+                .where(Qoo10Product.price_jpy > 0)
+                .order_by(Qoo10Product.price_jpy.asc())
+                .limit(8)
+            )).all()
+            if qsamples:
+                out["qoo10_samples"] = [
+                    {
+                        "id": qid, "product_name": qname, "product_name_ko": qko,
+                        "price_jpy": qprice, "product_url": qurl, "cover_image_url": qcov,
+                    }
+                    for qid, qname, qko, qprice, qcov, qurl in qsamples
+                ]
+
     return out
 
 

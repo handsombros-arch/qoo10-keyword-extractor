@@ -28,6 +28,11 @@ type RowMeta = {
     decision: string;
   };
   options_full?: { name: string; price_krw: number | null; in_stock: boolean }[];
+  alt_skus?: { id: number; source: string; product_name: string; price_krw: number;
+    product_url: string; cover_image_url: string; image_score: number | null;
+    is_current_cheapest: boolean }[];
+  qoo10_samples?: { id: number; product_name: string; product_name_ko: string;
+    price_jpy: number; product_url: string; cover_image_url: string }[];
 };
 
 type Props = {
@@ -97,8 +102,21 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
     patch({ qoo10_marketing: arr });
   }
 
+  function selectAltSku(alt: NonNullable<RowMeta['alt_skus']>[number]) {
+    if (alt.is_current_cheapest) return;
+    if (!confirm(`이 한국 SKU 로 swap?\n${alt.product_name.slice(0, 40)} (${alt.price_krw.toLocaleString()}원)`)) return;
+    onSave({
+      product_name: alt.product_name,
+      product_url: alt.product_url,
+      cover_image_url: alt.cover_image_url,
+      item_price_krw: alt.price_krw,
+      match_decision: 'manual',  // 사장님 직접 선택
+    });
+    onClose();
+  }
+
   return (
-    <div className="fixed top-0 right-0 h-screen w-[440px] bg-white shadow-2xl border-l border-gray-200 z-30 flex flex-col">
+    <div className="fixed top-0 right-0 h-screen w-[600px] bg-white shadow-2xl border-l border-gray-200 z-30 flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between p-3 border-b bg-gray-50">
         <div>
@@ -112,27 +130,69 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
       <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
         {loading && <div className="text-gray-500">메타 로딩...</div>}
 
-        {/* 큐텐 ↔ 한국 cover 비교 */}
+        {/* 큐텐 ↔ 한국 cover 큰 비교 (h-64) */}
         <div className="grid grid-cols-2 gap-2">
           <div>
-            <div className="font-semibold text-gray-600 mb-1">큐텐</div>
+            <div className="font-semibold text-gray-600 mb-1">큐텐 (cheapest)</div>
             {meta?.qoo10?.cover_image_url ? (
-              <img src={meta.qoo10.cover_image_url} className="w-full h-32 object-contain bg-gray-50 border rounded" />
-            ) : <div className="w-full h-32 bg-gray-100 border rounded flex items-center justify-center text-gray-400">no image</div>}
+              <a href={meta.qoo10.cover_image_url} target="_blank" rel="noreferrer">
+                <img src={meta.qoo10.cover_image_url} className="w-full h-64 object-contain bg-gray-50 border rounded hover:ring-2 hover:ring-blue-400" />
+              </a>
+            ) : <div className="w-full h-64 bg-gray-100 border rounded flex items-center justify-center text-gray-400">no image</div>}
             <div className="text-[10px] text-gray-500 mt-1 truncate" title={meta?.qoo10?.product_name_jp}>
               {meta?.qoo10?.product_name_jp || '-'}
             </div>
           </div>
           <div>
-            <div className="font-semibold text-gray-600 mb-1">한국</div>
+            <div className="font-semibold text-gray-600 mb-1">한국 (cheapest)</div>
             {row.cover_image_url ? (
-              <img src={row.cover_image_url} className="w-full h-32 object-contain bg-gray-50 border rounded" />
-            ) : <div className="w-full h-32 bg-gray-100 border rounded flex items-center justify-center text-gray-400">no image</div>}
+              <a href={row.cover_image_url} target="_blank" rel="noreferrer">
+                <img src={row.cover_image_url} className="w-full h-64 object-contain bg-gray-50 border rounded hover:ring-2 hover:ring-blue-400" />
+              </a>
+            ) : <div className="w-full h-64 bg-gray-100 border rounded flex items-center justify-center text-gray-400">no image</div>}
             <div className="text-[10px] text-gray-500 mt-1 truncate" title={row.product_name}>
               {row.product_name || '-'}
             </div>
           </div>
         </div>
+
+        {/* 한국 ALT SKU — 클릭 시 swap (FFF-1) */}
+        {meta?.alt_skus && meta.alt_skus.length > 0 && (
+          <div className="border rounded p-2">
+            <div className="font-semibold text-gray-700 mb-2">한국 다른 SKU ({meta.alt_skus.length}개) — 클릭 시 swap</div>
+            <div className="grid grid-cols-3 gap-2">
+              {meta.alt_skus.map(alt => (
+                <button key={alt.id}
+                  onClick={() => selectAltSku(alt)}
+                  className={`border rounded p-1 text-left hover:ring-2 hover:ring-blue-400 transition ${
+                    alt.is_current_cheapest ? 'ring-2 ring-emerald-500 bg-emerald-50' : 'bg-white'}`}
+                  title={alt.product_name}
+                >
+                  <img src={alt.cover_image_url} className="w-full h-24 object-contain bg-gray-50 rounded" />
+                  <div className="text-[10px] mt-1 truncate font-semibold">{alt.price_krw.toLocaleString()}원</div>
+                  <div className="text-[10px] text-gray-500 truncate">{alt.product_name}</div>
+                  {alt.is_current_cheapest && <div className="text-[9px] text-emerald-700 font-bold">★ 현재 시트</div>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 큐텐 원본 샘플 — 가격 ASC, 시각 비교용 */}
+        {meta?.qoo10_samples && meta.qoo10_samples.length > 0 && (
+          <div className="border rounded p-2">
+            <div className="font-semibold text-gray-700 mb-2">큐텐 원본 ({meta.qoo10_samples.length}개, 가격 ASC)</div>
+            <div className="grid grid-cols-4 gap-1">
+              {meta.qoo10_samples.map(q => (
+                <a key={q.id} href={q.product_url} target="_blank" rel="noreferrer"
+                  className="border rounded p-1 hover:ring-2 hover:ring-blue-400" title={q.product_name}>
+                  <img src={q.cover_image_url} className="w-full h-20 object-contain bg-gray-50 rounded" />
+                  <div className="text-[10px] mt-1 truncate font-semibold">¥{q.price_jpy.toLocaleString()}</div>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* 매칭 사유 */}
         {meta?.match && (
