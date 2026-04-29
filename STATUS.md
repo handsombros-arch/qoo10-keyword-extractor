@@ -1,4 +1,4 @@
-# Qoo10 키워드 추출기 — 현재 상황 (2026-04-28)
+# Qoo10 키워드 추출기 — 현재 상황 (2026-04-29)
 
 VBA → Python(FastAPI) + React 재구축. 두 PC(메인 + Tailscale 노트북) 같은 Supabase 공유.
 실행: `start.pyw` 더블클릭 → `localhost:8000` (CMD 없음, --reload 없음).
@@ -141,10 +141,33 @@ python automation/trigger_domestic_details.py --date 2026-04-28 --scrape  # 디�
 - **ollama 비전 매칭**: 모델 이름에 `vl/vision/llava/minicpm-v/moondream/gemma3` 키워드 필수 — 새 비전 모델 추가 시 `ollama_client.py` 키워드 list 확장
 - **minicpm-v 한국 화장품 인식 약점**: 메디큐브/투에이엔 등 점수 0 빈도 — 향후 qwen2.5-vl 시도 또는 prompt 보완
 
-## 최근 작업 (2026-04-28, 13 commit)
+## 최근 작업 (2026-04-28~29, 32 commit)
 
-핵심 흐름 강화:
-- R-3 daily_workflow STEP 5.7~5.95 통합 (brand_expand → expanded_search → match_images)
+UI 통합 (Phase 1~3 + 피드백):
+- AG-Grid 시트 (`/recommend-products`) 단일 작업 hub 강화
+- SheetRow 8개 매칭/SEO 컬럼 추가 + 우측 슬라이드 패널 (상품명 클릭)
+- 시트 상단 통합 toolbar: 🌙 자동화 / 🏪 큐텐 샵 / 📈 트렌드
+- 일괄 액션: 검수 거부 / 콘텐츠 재생성 + source/decision 필터
+- 3 페이지 통합: KeywordPage/RecommendPage 모두 [📋 시트로] 직결
+- TaskProgressPanel: 시트 상단 batch 진행률 실시간
+
+야간 자동화 보강:
+- STEP 6.0 큐텐 SEO 콘텐츠 자동 생성 (qoo10_title/tags/marketing)
+- STEP 2 헬스체크 강화 (네이버 API + 9222 + 큐텐 로그인)
+- MIN_MARGIN_RATE -1.0 (마진 음수 후보까지 검수)
+- 매칭 타임아웃 fix (top_n 3→2)
+- 4/29 새벽 자동화 결과: 19 후보 storage
+
+봇/captcha 우회:
+- start.pyw + 디버그 Chrome 9222 동시 시작
+- backend 0.0.0.0 bind (Tailscale 노트북 접근)
+- captcha cascade 풀이 (EasyOCR → vision LLM → 2Captcha 옵션)
+- Slack + 텔레그램 동시 알림
+
+11st 셀러 fetcher (도메인 분기) 신규.
+
+핵심 흐름 강화 (4/28 이전):
+- R-3 daily_workflow STEP 5.7~5.95 통합
 - 검수 UI: accepted (matched)만 보기 토글
 
 번역/매칭 정확도:

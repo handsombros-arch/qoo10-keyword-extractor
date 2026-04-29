@@ -186,7 +186,8 @@ function ImageZoomModal({ src, onClose }: { src: string; onClose: () => void }) 
 }
 
 // ─── 상품 시트 (엑셀식 편집) ───────────────────────────
-const COL_STATE_KEY = 'productSheet.colState.v1';
+// v1 → v2: TT-1A 매칭/SEO 신규 컬럼 8개 추가 시 옛 state 자동 무효화 (default 적용)
+const COL_STATE_KEY = 'productSheet.colState.v2';
 
 function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetRow[]) => void }) {
   const gridRef = useRef<AgGridReact>(null);
@@ -585,8 +586,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     },
     { field: 'notes', headerName: '메모', width: 130, editable: true },
 
-    // ─ 매칭 메타 (TT-1A 신규, hide 기본 — 사장님이 토글 show) ─
-    { field: 'match_decision', headerName: '매칭', width: 80, hide: true,
+    // ─ 매칭 메타 (TT-1A 신규, decision/마케팅포인트는 default visible) ─
+    { field: 'match_decision', headerName: '매칭', width: 80, hide: false,
       cellRenderer: (p: any) => {
         const v = p.value || 'pending';
         const cls = v === 'accepted' ? 'bg-emerald-100 text-emerald-800'
@@ -625,7 +626,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         );
       },
     },
-    { field: 'qoo10_marketing', headerName: '마케팅포인트', width: 130, hide: true,
+    { field: 'qoo10_marketing', headerName: '마케팅포인트', width: 130, hide: false,
       cellRenderer: (p: any) => {
         const items: string[] = Array.isArray(p.value) ? p.value : [];
         if (!items.length) return <span className="text-gray-400 text-xs">-</span>;
