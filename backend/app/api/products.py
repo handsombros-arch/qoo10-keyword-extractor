@@ -1275,6 +1275,50 @@ async def _run_extract_weights(task_id: str, rows: list, packaging_g: float) -> 
         traceback.print_exc()
 
 
+@router.post("/candidate-images/build")
+async def build_candidate_images(body: dict | None = None):
+    """auto-build 후보 → keyword 단위 폴더 + meta.json (DDD-1).
+
+    body: {"date": "2026-04-29"}
+    storage_key 'last_auto_collected:{date}' 의 candidates 모두 처리.
+    """
+    import json as _json
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel
+    from app.db.models import UserData
+    from app.services.candidate_image_pipeline import build_candidate_folders
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    storage_key = f"last_auto_collected:{target_date}"
+    async with async_session() as session:
+        row = (await session.execute(
+            _sel(UserData).where(UserData.key == storage_key)
+        )).scalar_one_or_none()
+    if not row:
+        return {"error": f"snapshot 없음: {storage_key}"}
+
+    try:
+        payload = _json.loads(row.data)
+    except Exception:
+        return {"error": "snapshot 파싱 실패"}
+
+    candidates = payload.get("candidates") or []
+    if not candidates:
+        return {"processed": 0, "skipped": 0, "message": "candidates 0건"}
+
+    result = await build_candidate_folders(str(target_date), candidates)
+    return result
+
+
 @router.post("/qoo10/generate-content")
 async def generate_qoo10_listing_content(body: dict | None = None):
     """큐텐 등록용 콘텐츠 LLM 생성 (Phase 4-B).

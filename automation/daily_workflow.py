@@ -71,7 +71,9 @@ ENABLE_LLM_CATEGORY = _env("ENABLE_LLM_CATEGORY", "1") == "1"
 ENABLE_SET_COUNT_EXTRACTION = _env("ENABLE_SET_COUNT_EXTRACTION", "1") == "1"
 
 # 한국 상품 이미지 다운로드+비전 토글 (1=ON, 0=OFF)
-ENABLE_DOMESTIC_IMAGES = _env("ENABLE_DOMESTIC_IMAGES", "1") == "1"
+# DDD-1: 모든 SKU cover 다운 폐기. auto-build 후보만 STEP 6.7 에서 keyword 폴더로.
+ENABLE_DOMESTIC_IMAGES = _env("ENABLE_DOMESTIC_IMAGES", "0") == "1"
+ENABLE_CANDIDATE_IMAGES = _env("ENABLE_CANDIDATE_IMAGES", "1") == "1"
 
 # Phase 1-D 브랜드 확장 + 매칭 토글 (1=ON, 0=OFF). R-3 통합.
 ENABLE_BRAND_EXPAND = _env("ENABLE_BRAND_EXPAND", "1") == "1"
@@ -786,6 +788,31 @@ async def step_generate_qoo10_content(
         return {"error": str(e), "candidates": candidates_n}
 
 
+async def step_candidate_images(
+    client: httpx.AsyncClient, target_date: date
+) -> dict:
+    """STEP 6.7 (DDD-1) — auto-build 후보별 keyword 폴더 + meta.json.
+
+    auto-build 가 storage 만든 후 호출. cheapest cover + alt cover 2~3개.
+    """
+    log.info("=== STEP 6.7: 후보 이미지 폴더 (DDD-1) ===")
+    if not ENABLE_CANDIDATE_IMAGES:
+        log.info("ENABLE_CANDIDATE_IMAGES=0 — 스킵")
+        return {"skipped": True}
+
+    try:
+        result = await _post(client, "/api/products/candidate-images/build", {
+            "date": str(target_date),
+        })
+    except Exception as e:
+        log.warning(f"후보 이미지 시작 실패 (best-effort): {e}")
+        return {"error": str(e)}
+
+    processed = result.get("processed", 0)
+    log.info(f"후보 이미지 폴더: {processed}건")
+    return {"candidates": processed}
+
+
 async def step_verify_set_counts(
     client: httpx.AsyncClient, target_date: date, candidates: list[dict],
 ) -> dict:
@@ -1014,6 +1041,8 @@ async def main_async() -> int:
             content_result = await step_generate_qoo10_content(client, target_date, candidates)
 
             build_result = await step_auto_build(client, candidates, target_date)
+            # DDD-1 — auto-build storage 후 candidates 만 keyword 폴더로
+            await step_candidate_images(client, target_date)
             verify_result = await step_verify_set_counts(client, target_date, candidates)
 
             ended = datetime.now()
