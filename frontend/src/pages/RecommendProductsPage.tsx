@@ -880,6 +880,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           <div className="text-xs text-gray-500 mt-0.5">
             노란색 셀만 편집 가능. 편집하면 오른쪽 지표가 즉시 재계산됩니다.
           </div>
+          <FilterThresholdsBadge />
         </div>
         <div className="flex gap-2 relative items-center">
           <SheetSourceToolbar onMergeRows={onMergeSourceRows} />
@@ -1085,6 +1086,38 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           }}
         />
       )}
+    </div>
+  );
+}
+
+// ─── 자동화 필터 임계값 표시 (가시화) ─────────────────────────
+
+function FilterThresholdsBadge() {
+  const [t, setT] = useState<{competition_max?: number; kr_ratio_min?: number; volume_min?: number} | null>(null);
+  const [cats, setCats] = useState<string[]>([]);
+  useEffect(() => {
+    api.get('/user-data/auto_filter_thresholds').then(r => {
+      const v = r.data?.data;
+      if (v && typeof v === 'object') setT(v);
+    }).catch(() => {});
+    api.get('/user-data/auto_filter_categories').then(r => {
+      const v = r.data?.data?.value;
+      if (Array.isArray(v)) setCats(v);
+    }).catch(() => {});
+  }, []);
+  return (
+    <div className="text-[11px] text-gray-500 mt-1 flex items-center gap-2">
+      <span className="text-gray-400">자동화 필터 (현재):</span>
+      {t ? (
+        <>
+          <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">경쟁≤{t.competition_max ?? '-'}</span>
+          <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">KR≥{(((t.kr_ratio_min ?? 0)*100)|0)}%</span>
+          <span className="bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded">검색≥{t.volume_min ?? '-'}</span>
+        </>
+      ) : <span className="text-gray-400">.env 폴백</span>}
+      <span className="text-gray-400 ml-2">카테고리:</span>
+      <span className="text-gray-700">{cats.length ? cats.join(', ') : '전체'}</span>
+      <Link to="/settings" className="text-blue-600 hover:underline ml-2 text-[10px]">⚙ 변경</Link>
     </div>
   );
 }

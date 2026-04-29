@@ -21,6 +21,7 @@ ALLOWED_KEYS = {
     "shop_cache",
     "brand_auto_add_threshold",  # /settings 에서 조정. payload: {"value": 0.0~1.0}
     "auto_filter_categories",     # /settings 카테고리 화이트리스트. payload: {"value": ["03.뷰티&화장품", ...]}
+    "auto_filter_thresholds",     # /settings 슬라이더. payload: {"competition_max": 2.0, "kr_ratio_min": 0.3, "volume_min": 40}
 }
 
 
