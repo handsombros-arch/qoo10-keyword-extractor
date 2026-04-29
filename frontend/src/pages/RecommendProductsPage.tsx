@@ -1996,15 +1996,13 @@ export default function RecommendProductsPage() {
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-2xl font-bold">📊 상품 추천 시트</h2>
         <div className="flex items-center gap-3 text-xs">
-          <a
-            href={`/api/recommend/auto-collected/${new Date().toISOString().slice(0, 10)}`}
-            target="_blank"
-            rel="noreferrer"
+          <Link
+            to={`/review/${new Date().toISOString().slice(0, 10)}`}
             className="px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs font-semibold"
-            title="야간 자동화 결과 — 새 탭"
+            title="야간 자동화 결과 — 검수 페이지 (카드 grid)"
           >
             🌙 오늘 자동 결과
-          </a>
+          </Link>
           {cloudStatus === 'syncing' && <span className="text-blue-600">☁ 동기화 중...</span>}
           {cloudStatus === 'synced' && <span className="text-emerald-600">☁ 클라우드 저장됨 (다른 PC에서 접속 가능)</span>}
           {cloudStatus === 'error' && <span className="text-red-600">☁ 동기화 실패 (로컬만 저장됨)</span>}

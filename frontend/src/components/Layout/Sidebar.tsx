@@ -61,16 +61,6 @@ export default function Sidebar() {
       <nav className="flex flex-col gap-1">
         {mainItems.map(item => <NavItem key={item.path} {...item} />)}
 
-        <a
-          href="/api/recommend/auto-collected"
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-2 px-3 py-2 rounded text-sm text-gray-300 hover:bg-gray-800"
-          title="새 탭으로 열림"
-        >
-          <span>🌙</span>
-          <span>야간 결과</span>
-        </a>
 
         <button
           onClick={toggleMore}
