@@ -1330,10 +1330,12 @@ async def generate_qoo10_listing_content(body: dict | None = None):
                 .distinct()
             )
         else:
+            # outerjoin 으로 row 곱해지는 것 방지 — distinct 필수
             stmt = (
                 _sel(*cols)
                 .outerjoin(_DP, _DP.search_keyword == _Q.product_name_ko)
                 .outerjoin(_K, _K.keyword_jp == _Q.search_keyword)
+                .distinct()
             )
         # date 필터 — keywords_jp 있으면 무시 (사장님이 시트에서 특정 키워드 지정 → 모든 날짜)
         if keywords_jp:
