@@ -1346,6 +1346,17 @@ async def generate_qoo10_listing_content(body: dict | None = None):
             stmt = stmt.where(_Q.qoo10_content_generated_at.is_(None))
         rows = (await session.execute(stmt)).all()
 
+    # 큐텐 product id 단일 기준 dedup (outerjoin 으로 row 곱해진 것 정리)
+    seen_qids: set = set()
+    unique_rows = []
+    for r in rows:
+        qid = r[0]
+        if qid in seen_qids:
+            continue
+        seen_qids.add(qid)
+        unique_rows.append(r)
+    rows = unique_rows
+
     if limit:
         rows = list(rows)[:limit]
 
