@@ -519,7 +519,16 @@ export default function RecommendPage() {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold mb-6">⭐ 역직구 추천 키워드</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold">⭐ 역직구 추천 키워드</h2>
+        <Link
+          to="/keywords"
+          className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded"
+          title="키워드 추출 (RD) — raw 데이터 직접 확인. 자주 사용 X"
+        >
+          🔬 키워드 추출 (RD)
+        </Link>
+      </div>
 
       <div className="bg-white rounded-lg shadow p-5 mb-4">
         <h3 className="font-semibold mb-3">조회 기간</h3>

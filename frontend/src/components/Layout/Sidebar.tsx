@@ -3,7 +3,6 @@ import { NavLink } from 'react-router-dom';
 
 const mainItems = [
   { path: '/', label: '대시보드', icon: '📊' },
-  { path: '/keywords', label: '키워드 추출', icon: '🔍' },
   { path: '/recommend', label: '역직구 추천', icon: '⭐' },
   { path: '/review', label: '검수', icon: '✅' },
   { path: '/recommend-products', label: '상품 시트', icon: '📋' },
@@ -12,12 +11,14 @@ const mainItems = [
   { path: '/image', label: '워터마크 제거', icon: '🎨' },
 ];
 
+// RD (Raw Data) — 자주 사용 X, 데이터 직접 보고 싶을 때만
 const moreItems = [
+  { path: '/keywords', label: '키워드 추출 (RD)', icon: '🔬' },
+  { path: '/insights', label: '시계열 인사이트 (RD)', icon: '📈' },
+  { path: '/competition', label: '경쟁강도 (RD)', icon: '📈' },
+  { path: '/bid', label: '경매 결과 (RD)', icon: '💰' },
+  { path: '/related-bulk', label: '연관 키워드 (RD)', icon: '🔗' },
   { path: '/price-compare', label: '가격비교', icon: '💱' },
-  { path: '/related-bulk', label: '연관 키워드 일괄', icon: '🔗' },
-  { path: '/insights', label: '시계열 인사이트', icon: '📈' },
-  { path: '/competition', label: '경쟁강도 분석', icon: '📈' },
-  { path: '/bid', label: '경매 결과', icon: '💰' },
   { path: '/products', label: '상품 검색', icon: '🛒' },
   { path: '/tracking', label: '순위 추적', icon: '📍' },
   { path: '/bestsellers', label: '인기상품', icon: '🏆' },
