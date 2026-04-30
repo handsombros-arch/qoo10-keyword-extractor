@@ -35,6 +35,26 @@ def _strip_html(s: str) -> str:
     return _TAG_RE.sub("", s or "").strip()
 
 
+# 네이버 쇼핑 API 가 쿠팡 등 외부 셀러는 link.coupang.com/re/... 같은 추적 URL 반환.
+# 사장님이 시트에서 클릭 시 이상한 redirect URL 보임 → 실제 상품 URL 로 정규화.
+_COUPANG_TRACK_RE = re.compile(r"link\.coupang\.com/re/.*?[?&]itemId=(\d+).*?[?&]vendorItemId=(\d+)")
+
+
+def _normalize_naver_link(url: str) -> str:
+    """추적 URL → 표준 상품 URL.
+
+    쿠팡: link.coupang.com/re/...?itemId=X&vendorItemId=Y → www.coupang.com/vp/products/X?vendorItemId=Y
+    네이버 / 그 외: 그대로
+    """
+    if not url:
+        return url
+    m = _COUPANG_TRACK_RE.search(url)
+    if m:
+        item_id, vendor_id = m.group(1), m.group(2)
+        return f"https://www.coupang.com/vp/products/{item_id}?vendorItemId={vendor_id}"
+    return url
+
+
 class NaverShoppingScraper(BaseScraper):
     """M08: 네이버 쇼핑 검색 (공식 API + 의미 매칭)."""
 
@@ -155,7 +175,7 @@ class NaverShoppingScraper(BaseScraper):
                         "shipping_fee": "",
                         "origin": "",
                         "cover_image_url": it.get("image", ""),
-                        "product_url": it.get("link", ""),
+                        "product_url": _normalize_naver_link(it.get("link", "")),
                         "lookup_date": today,
                     })
                 except Exception:

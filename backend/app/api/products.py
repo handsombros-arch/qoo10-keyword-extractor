@@ -1319,15 +1319,647 @@ async def build_candidate_images(body: dict | None = None):
     return result
 
 
+@router.post("/qoo10/build-jp-detail")
+async def build_jp_detail_batch(body: dict | None = None):
+    """매칭된 큐텐 상품마다 JP 상세 카피 자동 생성 (FFFF-1).
+
+    body:
+      date: YYYY-MM-DD (기본 오늘)
+      keywords_jp: list (선택, 한정)
+      include_review: bool (기본 True — needs_review 도)
+      reset: bool (기본 False — 이미 생성된 행 skip)
+
+    소요: 후보당 ~2분 (Naver fetch + OCR 3장 + LLM)
+    """
+    import asyncio as _asyncio
+    import json as _json
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel, update as _upd
+    from app.db.models import (
+        Qoo10Product as _Q, DomesticProduct as _DP,
+        DomesticMatchCandidate as _DMC, Keyword as _K2,
+    )
+    from app.services.naver_fetch_v2 import fetch_naver_url_v2
+    from app.services.qoo10_jp_detail import generate_jp_detail, ocr_detail_images
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+    keywords_jp = body.get("keywords_jp") or []
+    include_review = bool(body.get("include_review", True))
+    do_reset = bool(body.get("reset"))
+
+    allowed = ["accepted"]
+    if include_review:
+        allowed.append("needs_review")
+
+    # 대상: matched 큐텐 + 한국 SKU URL
+    async with async_session() as s:
+        stmt = (
+            _sel(_Q.id, _Q.product_name, _DP.product_name.label("d_name"),
+                 _DP.product_url.label("d_url"), _K2.category_inferred.label("cat"))
+            .join(_DMC, _DMC.qoo10_product_id == _Q.id)
+            .join(_DP, _DP.id == _DMC.domestic_product_id)
+            .outerjoin(_K2, _K2.keyword_jp == _Q.search_keyword)
+            .where(_DMC.decision.in_(allowed))
+            .where(_DP.product_url.is_not(None))
+            .distinct()
+        )
+        if keywords_jp:
+            stmt = stmt.where(_Q.search_keyword.in_(keywords_jp))
+        else:
+            stmt = stmt.where(_Q.lookup_date == target_date)
+        if not do_reset:
+            stmt = stmt.where(_Q.qoo10_jp_detail.is_(None))
+        rows = (await s.execute(stmt)).all()
+
+    if not rows:
+        return {"task_id": None, "candidates": 0,
+                "message": f"대상 0건 (only_accepted, only_naver_url, only_unprocessed)"}
+
+    # dedup qid
+    seen, unique = set(), []
+    for r in rows:
+        if r[0] not in seen:
+            seen.add(r[0]); unique.append(r)
+    rows = unique
+
+    task_id = task_manager.create_task(
+        name=f"JP 상세 카피 ({target_date}, {len(rows)}건)", total=len(rows),
+    )
+
+    async def _run():
+        task_manager.start_task(task_id)
+        ok_n = fail_n = 0
+        for idx, (qid, q_name, d_name, d_url, cat) in enumerate(rows, 1):
+            try:
+                # naver_fetch + OCR + LLM (UI 버튼 흐름과 동일)
+                info = await fetch_naver_url_v2(d_url, headless=True) if d_url else {}
+                if "error" in info:
+                    # fallback: name 만으로 LLM
+                    fall_name = d_name or q_name or ""
+                    detail_imgs, ocr_texts = [], []
+                else:
+                    fall_name = info.get("product_name") or d_name or q_name
+                    detail_imgs = info.get("extra_image_urls") or []
+                    if info.get("description"):
+                        ocr_texts = [f"[Naver] {info['description']}"]
+                    else:
+                        ocr_texts = []
+                    # OCR 첫 3장
+                    ocr_extra = await ocr_detail_images(detail_imgs, max_images=3)
+                    ocr_texts.extend(ocr_extra)
+
+                jp = await generate_jp_detail(
+                    korean_name=fall_name,
+                    category=info.get("category_path") if info else (cat or ""),
+                    key_features=[],
+                    ocr_texts=ocr_texts,
+                )
+                if jp.get("error"):
+                    fail_n += 1
+                    task_manager.update_progress(task_id, increment=1,
+                        message=f"[{idx}/{len(rows)}] FAIL q={qid} ({jp.get('error')[:30]})")
+                    continue
+
+                async with async_session() as db:
+                    await db.execute(_upd(_Q).where(_Q.id == qid).values(
+                        qoo10_jp_detail=_json.dumps(jp, ensure_ascii=False),
+                    ))
+                    await db.commit()
+                ok_n += 1
+                task_manager.update_progress(task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] OK q={qid} {(fall_name or '')[:30]}")
+            except Exception as e:
+                fail_n += 1
+                task_manager.update_progress(task_id, increment=1,
+                    message=f"[{idx}/{len(rows)}] ERR q={qid} ({type(e).__name__})")
+        task_manager.complete_task(task_id, message=f"완료 — OK {ok_n}, 실패 {fail_n}")
+
+    _asyncio.create_task(_run())
+    return {"task_id": task_id, "candidates": len(rows), "date": str(target_date)}
+
+
+@router.post("/regenerate-content-from-url")
+async def regenerate_content_from_url(body: dict | None = None):
+    """HHHH-1: background task 변환 — 즉시 task_id 반환, 진행률 폴링.
+
+    body: {"url": "...", "include_jp_detail": true, "async": true (default)}
+
+    async=true (default): {task_id, status: "running"} → /api/tasks/{task_id} 폴링
+    async=false: 동기 (옛 방식) — 결과 직접 반환
+
+    completed task 의 message 에 결과 JSON 포함.
+    """
+    import asyncio as _asyncio
+    from app.services.naver_fetch_v2 import fetch_naver_url_v2
+    from app.services.llm.qoo10_content import generate_qoo10_content_async
+    from app.services.qoo10_jp_detail import generate_jp_detail, ocr_detail_images
+
+    body = body or {}
+    url = (body.get("url") or "").strip()
+    if not url:
+        return {"error": "url 필수"}
+    include_jp_detail = bool(body.get("include_jp_detail", True))
+    async_mode = bool(body.get("async", True))
+
+    # 비동기: 즉시 task_id 반환
+    if async_mode:
+        # 총 단계 5: fetch / SEO / OCR / JP detail / save
+        total = 5 if include_jp_detail else 2
+        task_id = task_manager.create_task(
+            name=f"URL 콘텐츠 재생성", total=total,
+        )
+
+        async def _run():
+            task_manager.start_task(task_id)
+            try:
+                result_json = await _do_regenerate(
+                    url, include_jp_detail, task_id=task_id,
+                )
+                if result_json.get("error"):
+                    task_manager.fail_task(task_id, message=result_json["error"])
+                else:
+                    # message 에 결과 JSON encode (frontend 가 message parse)
+                    import json as _json
+                    task_manager.complete_task(
+                        task_id,
+                        message=_json.dumps(result_json, ensure_ascii=False),
+                    )
+            except Exception as e:
+                task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+
+        _asyncio.create_task(_run())
+        return {"task_id": task_id, "status": "running", "total": total}
+
+    # 동기 (옛 방식)
+    return await _do_regenerate(url, include_jp_detail)
+
+
+async def _do_regenerate(
+    url: str,
+    include_jp_detail: bool,
+    *,
+    task_id: str | None = None,
+) -> dict:
+    """실제 작업 — task_id 있으면 update_progress 호출."""
+    from app.services.naver_fetch_v2 import fetch_naver_url_v2
+    from app.services.llm.qoo10_content import generate_qoo10_content_async
+    from app.services.qoo10_jp_detail import generate_jp_detail, ocr_detail_images
+
+    def _progress(msg: str):
+        if task_id:
+            task_manager.update_progress(task_id, increment=1, message=msg)
+
+    # 1/5. Naver fetch
+    _progress("Naver 페이지 fetch 중...")
+    info = await fetch_naver_url_v2(url, headless=True)
+    if "error" in info:
+        return {"error": f"fetch 실패: {info['error']}"}
+
+    name = info.get("product_name") or ""
+    if not name:
+        return {"error": "상품명 추출 실패"}
+
+    # 2/5. SEO 콘텐츠 LLM 생성
+    _progress("SEO 콘텐츠 LLM 생성 중...")
+    options_kr = [o.get("name", "") for o in info.get("options") or [] if o.get("name")]
+    option_input = " | ".join(options_kr[:10]) if options_kr else "default"
+
+    seo = await generate_qoo10_content_async(
+        product_name_kr=name,
+        category=info.get("category_path") or "기타",
+        price_krw=info.get("price_krw") or None,
+        option_name_kr=option_input,
+    )
+
+    result = {
+        "product_name": name,
+        "product_url": url,
+        "cover_image_url": info.get("cover_image_url") or "",
+        "item_price_krw": info.get("price_krw") or 0,
+        "domestic_shipping_krw": info.get("shipping_krw"),  # HHHH-1: 배송비 자동
+        "options": info.get("options") or [],
+        "category_path": info.get("category_path") or "",
+        "shipping_text": info.get("shipping_text") or "",
+        "qoo10_title_jp": seo.get("title_jp") or "",
+        "qoo10_tags": seo.get("tags") or [],
+        "qoo10_marketing": seo.get("marketing_points") or [],
+        "qoo10_option_name": seo.get("option_name") or "",
+        "match_decision": "manual",
+        "_source": {
+            "naver_url": url,
+            "naver_source": info.get("_source"),
+            "seo_ok": seo.get("ok"),
+        },
+    }
+
+    # 3/5, 4/5. (옵션) JP 상세 카피 + 한글 번역
+    if include_jp_detail:
+        _progress("상세 이미지 OCR 중...")
+        detail_urls = info.get("extra_image_urls") or []
+        ocr_texts = await ocr_detail_images(detail_urls, max_images=3)
+        if info.get("description"):
+            ocr_texts.insert(0, f"[Naver description] {info['description']}")
+        _progress("JP 상세 카피 LLM 생성 중...")
+        try:
+            jp_detail = await generate_jp_detail(
+                korean_name=name,
+                category=info.get("category_path") or "",
+                key_features=[],
+                ocr_texts=ocr_texts,
+            )
+            result["qoo10_jp_detail"] = jp_detail
+            result["_source"]["jp_detail_ocr_count"] = len(ocr_texts)
+            result["_source"]["jp_detail_error"] = jp_detail.get("error")
+        except Exception as e:
+            result["_source"]["jp_detail_error"] = str(e)
+
+    # 5/5. 완료
+    _progress("완료")
+    return result
+
+
+@router.post("/qoo10-jp-detail/generate")
+async def qoo10_jp_detail_generate(body: dict | None = None):
+    """Qoo10 JP 상세페이지 카피 자동 생성 (AAAA-1, qoo10-jp-detail-master.md 기반).
+
+    body 옵션 1 (URL 자동):
+      {"url": "https://brand.naver.com/.../products/...", "fallback_name": "..."}
+
+    body 옵션 2 (수동 입력):
+      {"product_name": "달바 화이트 트러플 아이크림 30ml",
+       "category": "03.뷰티&화장품",
+       "key_features": ["콜라겐", "레티놀"],
+       "detail_image_urls": ["https://..."],
+       "ocr_texts": ["...직접 텍스트 가능..."]}
+
+    returns: JSON (인트로/POINT/추천/면책) + _source.
+    """
+    from app.services.qoo10_jp_detail import (
+        generate_from_url, generate_jp_detail, ocr_detail_images,
+    )
+
+    body = body or {}
+
+    # 옵션 1: URL 자동
+    url = (body.get("url") or "").strip()
+    if url:
+        return await generate_from_url(
+            url,
+            fallback_name=body.get("fallback_name") or body.get("product_name") or "",
+        )
+
+    # 옵션 2: 수동 입력
+    name = (body.get("product_name") or "").strip()
+    if not name:
+        return {"error": "url 또는 product_name 필수"}
+
+    detail_urls = body.get("detail_image_urls") or []
+    ocr_texts = body.get("ocr_texts") or []
+    # detail_image_urls 있으면 자동 OCR (사장님이 ocr_texts 도 같이 제공해도 OK)
+    if detail_urls and not ocr_texts:
+        ocr_texts = await ocr_detail_images(detail_urls, max_images=8)
+
+    result = await generate_jp_detail(
+        korean_name=name,
+        category=body.get("category") or "",
+        key_features=body.get("key_features") or [],
+        ocr_texts=ocr_texts,
+    )
+    result["_source"] = {
+        "name": name,
+        "ocr_count": len(ocr_texts),
+        "detail_image_count": len(detail_urls),
+    }
+    return result
+
+
+@router.get("/naver-session-check")
+async def naver_session_check_endpoint():
+    """디스크 쿠키 검사 (네트워크 호출 X). UI 의 [Naver 세션 점검] 버튼 + 야간 cron 양쪽에서 호출.
+
+    returns: {alive, details, cookies: {NID_AUT: {...}, NID_SES: {...}}}
+    """
+    from app.services.naver_session_check import check_naver_session
+    return check_naver_session()
+
+
+@router.post("/naver-login-setup")
+async def naver_login_setup(body: dict | None = None):
+    """IIII-1: Naver 로그인 1회 설정. headless=False Chrome 띄움.
+
+    동작:
+      1. naver-browser-profile 으로 Chrome 창 열림
+      2. naver.com 로그인 페이지로 이동
+      3. 사장님이 직접 로그인 (id/pw 또는 다른 인증)
+      4. 로그인 성공 (URL 가 naver.com 메인) 감지 시 cookies 자동 저장
+      5. 또는 timeout (5분) 후 종료
+      6. 백엔드 task 로 비동기 실행 — task_id 폴링
+
+    body: {"timeout_min": 5 (default)}
+    """
+    import asyncio as _asyncio
+
+    body = body or {}
+    timeout_min = int(body.get("timeout_min", 5))
+
+    task_id = task_manager.create_task(name="Naver 로그인 setup", total=0)
+
+    async def _run():
+        task_manager.start_task(task_id)
+        from playwright.async_api import async_playwright
+        from app.services.naver_fetch_v2 import _naver_profile_dir, _chrome_exe
+        pw = None
+        ctx = None
+        try:
+            pw = await async_playwright().start()
+            ctx = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(_naver_profile_dir()),
+                headless=False,  # 사장님 화면에 Chrome 창 보임
+                executable_path=_chrome_exe(),
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--window-size=900,700",
+                ],
+                viewport={"width": 900, "height": 700},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/147.0.0.0 Safari/537.36"
+                ),
+                locale="ko-KR",
+            )
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+            await page.goto("https://nid.naver.com/nidlogin.login?url=https://www.naver.com",
+                            wait_until="domcontentloaded", timeout=20000)
+            task_manager.update_progress(task_id, increment=1,
+                message="Chrome 창 열림 — 사장님 로그인 + 'Keep me logged in' 체크 + 창 직접 닫기")
+
+            # 사장님이 창 닫을 때까지 대기 (timeout 까지)
+            # NID_AUT cookie 존재 여부로 로그인 검증 (창 안 닫고 cookies 만 확인)
+            deadline = timeout_min * 60
+            elapsed = 0
+            success = False
+            login_detected = False
+            while elapsed < deadline:
+                await _asyncio.sleep(5)
+                elapsed += 5
+                # 1. 창 닫혔으면 종료
+                try:
+                    pages = ctx.pages
+                    if not pages or all(p.is_closed() for p in pages):
+                        success = login_detected
+                        break
+                except Exception:
+                    success = login_detected
+                    break
+                # 2. NID_AUT cookie 존재 검사 (단, 임시 session 가 아닌 fresh)
+                try:
+                    cookies = await ctx.cookies("https://nid.naver.com")
+                    nid_auth = any(c.get("name") == "NID_AUT" and c.get("value") for c in cookies)
+                    if nid_auth and not login_detected:
+                        login_detected = True
+                        task_manager.update_progress(task_id, increment=0,
+                            message="✓ 로그인 감지! 창 닫으면 cookies 영구 저장 (또는 그대로 닫기)")
+                except Exception:
+                    pass
+            # 닫기 (cookies 자동 flush)
+            if success:
+                task_manager.complete_task(task_id, message="로그인 + 창 닫음 — cookies 영구 저장됨. 다시 [URL 로 SEO 재생성] 시도하세요.")
+            else:
+                task_manager.fail_task(task_id, message=f"timeout ({timeout_min}분) — 로그인 미완료 (창 닫지 않음)")
+        except Exception as e:
+            task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+        finally:
+            try:
+                if ctx:
+                    await ctx.close()
+            except Exception:
+                pass
+            try:
+                if pw:
+                    await pw.stop()
+            except Exception:
+                pass
+
+    _asyncio.create_task(_run())
+    return {"task_id": task_id, "status": "running",
+            "message": f"Chrome 창 곧 열림 — {timeout_min}분 안에 로그인 + 창 닫기"}
+
+
+@router.post("/single-url-fetch")
+async def single_url_fetch(body: dict | None = None):
+    """한국 SKU URL → 상품 정보 자동 추출 (BBBB-1, kc-cert-checker 패턴).
+
+    body: {"url": "https://smartstore.naver.com/.../products/...",
+           "headless": true (default), "save_cookies": true}
+
+    동작:
+      Playwright 가 Chrome 직접 launch (--disable-blink-features=AutomationControlled)
+      → JSON-LD Product schema 파싱
+      → DOM 에서 detail images 추가
+    """
+    from app.services.naver_fetch_v2 import fetch_naver_url_v2
+    body = body or {}
+    url = (body.get("url") or "").strip()
+    if not url:
+        return {"error": "url 필수"}
+    headless = body.get("headless", True)
+    save_cookies = body.get("save_cookies", True)
+    return await fetch_naver_url_v2(url, headless=headless, save_cookies=save_cookies)
+
+
+@router.post("/extras/evaluate")
+async def evaluate_extras(body: dict | None = None):
+    """detail_image_paths 의 상세 이미지마다 vision 평가 + score (VVV-1).
+
+    body:
+      date:           YYYY-MM-DD (기본 오늘)
+      keywords_jp:    list (선택)
+      only_accepted:  bool (기본 True — accepted/needs_review 만)
+      reset:          bool (기본 False — 이미 평가된 행 skip)
+
+    백그라운드 task. 한 이미지 ~3초 (qwen2.5vl).
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date_cls, datetime as _dt
+    from app.services.extras_evaluation import run_extras_evaluation
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target = _date_cls.today()
+    keywords_jp = body.get("keywords_jp") or []
+    only_accepted = bool(body.get("only_accepted", True))
+    skip_if_done = not bool(body.get("reset", False))
+
+    task_id = task_manager.create_task(
+        name=f"extras 평가 ({target})", total=0,
+    )
+
+    async def _run():
+        task_manager.start_task(task_id)
+        try:
+            summary = await run_extras_evaluation(
+                target,
+                keywords_jp=keywords_jp,
+                only_accepted=only_accepted,
+                skip_if_done=skip_if_done,
+                task_manager_obj=task_manager,
+                task_id=task_id,
+            )
+            task_manager.complete_task(
+                task_id,
+                message=(
+                    f"완료 — 상품 {summary.get('products', 0)}, "
+                    f"이미지 {summary.get('total_images', 0)}, "
+                    f"OK {summary.get('ok', 0)}, 실패 {summary.get('failed', 0)}"
+                ),
+            )
+        except Exception as e:
+            task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+
+    _asyncio.create_task(_run())
+    return {"task_id": task_id, "date": str(target)}
+
+
+@router.post("/cover-descriptions/build")
+async def build_cover_descriptions(body: dict | None = None):
+    """auto-build candidates 의 큐텐+한국 cover description 채움 (GGG-1).
+
+    body:
+      date:           YYYY-MM-DD (기본 오늘)
+      keywords_jp:    list (선택, 한정)
+      reset:          bool (기본 False — 이미 채워진 행 skip)
+
+    qwen2.5vl 호출 ~3초/장. 19 후보 × 2 (큐텐+한국) ≈ ~2분.
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date_cls, datetime as _dt
+    from sqlalchemy import select as _sel, update as _upd
+    from app.db.models import (
+        Qoo10Product as _Q, DomesticProduct as _DP, DomesticMatchCandidate as _DMC,
+    )
+    from app.services.llm.cover_describe import describe_cover_async
+
+    body = body or {}
+    raw_date = body.get("date")
+    if raw_date:
+        try:
+            target_date = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+    keywords_jp = body.get("keywords_jp") or []
+    do_reset = bool(body.get("reset"))
+
+    # 큐텐 + 한국 cover URL 수집
+    async with async_session() as session:
+        # 큐텐 — accepted 매칭 한국 SKU 가 있는 것만
+        q_stmt = (
+            _sel(_Q.id, _Q.cover_image_url, _Q.search_keyword)
+            .join(_DMC, _DMC.qoo10_product_id == _Q.id)
+            .where(_DMC.decision == "accepted")
+            .where(_Q.cover_image_url.is_not(None))
+            .distinct()
+        )
+        if keywords_jp:
+            q_stmt = q_stmt.where(_Q.search_keyword.in_(keywords_jp))
+        else:
+            q_stmt = q_stmt.where(_Q.lookup_date == target_date)
+        if not do_reset:
+            q_stmt = q_stmt.where(_Q.cover_description.is_(None))
+        q_rows = (await session.execute(q_stmt)).all()
+
+        # 한국 — accepted 매칭 한국 SKU
+        d_stmt = (
+            _sel(_DP.id, _DP.cover_image_url)
+            .join(_DMC, _DMC.domestic_product_id == _DP.id)
+            .where(_DMC.decision == "accepted")
+            .where(_DP.cover_image_url.is_not(None))
+            .distinct()
+        )
+        if not do_reset:
+            d_stmt = d_stmt.where(_DP.cover_description.is_(None))
+        d_rows = (await session.execute(d_stmt)).all()
+
+    total = len(q_rows) + len(d_rows)
+    if total == 0:
+        return {"task_id": None, "candidates": 0, "message": "처리 대상 0건"}
+
+    task_id = task_manager.create_task(
+        name=f"cover description ({target_date}, 큐텐 {len(q_rows)} + 한국 {len(d_rows)})",
+        total=total,
+    )
+
+    async def _run():
+        task_manager.start_task(task_id)
+        ok = 0; fail = 0
+        try:
+            for idx, (qid, qcov, qkw) in enumerate(q_rows, 1):
+                try:
+                    desc = await describe_cover_async(qcov)
+                    if desc:
+                        async with async_session() as db:
+                            await db.execute(_upd(_Q).where(_Q.id == qid).values(cover_description=desc))
+                            await db.commit()
+                        ok += 1
+                    else:
+                        fail += 1
+                except Exception:
+                    fail += 1
+                task_manager.update_progress(task_id, increment=1,
+                    message=f"[Q {idx}/{len(q_rows)}] {qkw[:30] if qkw else '-'}")
+
+            for idx, (did, dcov) in enumerate(d_rows, 1):
+                try:
+                    desc = await describe_cover_async(dcov)
+                    if desc:
+                        async with async_session() as db:
+                            await db.execute(_upd(_DP).where(_DP.id == did).values(cover_description=desc))
+                            await db.commit()
+                        ok += 1
+                    else:
+                        fail += 1
+                except Exception:
+                    fail += 1
+                task_manager.update_progress(task_id, increment=1,
+                    message=f"[D {idx}/{len(d_rows)}] d_id={did}")
+            task_manager.complete_task(task_id, message=f"완료 — OK {ok}, 실패 {fail}")
+        except Exception as e:
+            task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+
+    _asyncio.create_task(_run())
+    return {"task_id": task_id, "candidates": total,
+            "qoo10_count": len(q_rows), "domestic_count": len(d_rows),
+            "date": str(target_date)}
+
+
 @router.post("/qoo10/generate-content")
 async def generate_qoo10_listing_content(body: dict | None = None):
     """큐텐 등록용 콘텐츠 LLM 생성 (Phase 4-B).
 
     body:
-      date:           YYYY-MM-DD (기본 오늘)
-      only_accepted:  bool (기본 True — 매칭된 큐텐 상품만)
-      limit:          int
-      reset:          bool (True 면 qoo10_content_generated_at 채워진 행도 재처리)
+      date:            YYYY-MM-DD (기본 오늘)
+      only_accepted:   bool (기본 True — 매칭된 큐텐 상품만)
+      include_review:  bool (기본 True, TTT-1 — needs_review 도 SEO 생성 대상)
+      limit:           int
+      reset:           bool (True 면 qoo10_content_generated_at 채워진 행도 재처리)
 
     출력 컬럼:
       qoo10_title_jp / qoo10_tags(JSON) / qoo10_option_name / qoo10_marketing(JSON)
@@ -1351,6 +1983,8 @@ async def generate_qoo10_listing_content(body: dict | None = None):
         target_date = _date_cls.today()
 
     only_accepted = body.get("only_accepted", True)
+    # TTT-1: needs_review 도 SEO 생성 (사장님 검수 후 OK 판정 시 즉시 등록 가능)
+    include_review = bool(body.get("include_review", True))
     raw_limit = body.get("limit")
     limit = int(raw_limit) if raw_limit else None
     do_reset = bool(body.get("reset"))
@@ -1363,14 +1997,19 @@ async def generate_qoo10_listing_content(body: dict | None = None):
             _Q.id, _Q.product_name, _Q.product_name_ko, _Q.search_keyword,
             _DP.product_name.label("d_name"), _DP.price_krw.label("d_price"),
             _K.category_inferred.label("cat"),
+            _DP.id.label("d_id"),  # UUU-1: 옵션 fetch 위해
         )
         if only_accepted:
+            # TTT-1: accepted + needs_review (사장님 검수 우선) 둘 다 SEO 생성
+            allowed_decisions = ["accepted"]
+            if include_review:
+                allowed_decisions.append("needs_review")
             stmt = (
                 _sel(*cols)
                 .join(_DMC, _DMC.qoo10_product_id == _Q.id)
                 .join(_DP, _DP.id == _DMC.domestic_product_id)
                 .outerjoin(_K, _K.keyword_jp == _Q.search_keyword)
-                .where(_DMC.decision == "accepted")
+                .where(_DMC.decision.in_(allowed_decisions))
                 .distinct()
             )
         else:
@@ -1424,16 +2063,20 @@ async def _run_generate_qoo10_content(task_id: str, rows: list) -> None:
     """백그라운드 — 큐텐 등록 콘텐츠 LLM 생성 + DB UPDATE."""
     import json as _json
     from datetime import datetime as _dt
-    from sqlalchemy import update as _upd
-    from app.db.models import Qoo10Product as _Q
+    from sqlalchemy import update as _upd, select as _sel2
+    from app.db.models import (
+        Qoo10Product as _Q, Keyword as _K2,
+        DomesticProductOption as _DPO2,
+    )
     from app.services.llm.qoo10_content import generate_qoo10_content_async
+    from app.services.seo_enrichment import get_related_popular_keywords_async
 
     task_manager.start_task(task_id)
     ok_n = fail_n = 0
 
     try:
         for idx, row in enumerate(rows, 1):
-            qid, q_name, q_ko, q_kw, d_name, d_price, cat = row
+            qid, q_name, q_ko, q_kw, d_name, d_price, cat, d_id = row
             # 입력: 한국 상품명 우선 (실제 등록 대상), 없으면 큐텐 ko, 그것도 없으면 jp
             input_name = (d_name or q_ko or q_name or "").strip()
             if not input_name:
@@ -1444,12 +2087,52 @@ async def _run_generate_qoo10_content(task_id: str, rows: list) -> None:
                 )
                 continue
 
+            # QQQ-1: 관련 인기 검색어 fetch (브랜드/카테고리 매치)
+            related_kws = []
+            try:
+                # 브랜드 정보 같이 조회
+                brand_jp = None
+                async with async_session() as _s:
+                    kr = (await _s.execute(
+                        _sel2(_K2.brand_jp).where(_K2.keyword_jp == q_kw).limit(1)
+                    )).first()
+                    if kr:
+                        brand_jp = kr[0]
+                related_kws = await get_related_popular_keywords_async(
+                    keyword_jp=q_kw,
+                    category=cat,
+                    brand_jp=brand_jp,
+                    limit=8,
+                    min_search_volume=100,
+                )
+            except Exception as e:
+                logger.debug(f"[qoo10_content] related fetch fail q={qid}: {e}")
+
+            # UUU-1: 한국 SKU 옵션 fetch — 각 옵션 일본어 변환 위함
+            option_names_kr = []
+            try:
+                if d_id:
+                    async with async_session() as _s:
+                        opt_rows = (await _s.execute(
+                            _sel2(_DPO2.option_name)
+                            .where(_DPO2.domestic_product_id == d_id)
+                            .where(_DPO2.option_name.is_not(None))
+                            .order_by(_DPO2.option_price_krw.asc().nullslast())
+                        )).all()
+                        option_names_kr = [o[0] for o in opt_rows if o[0] and o[0].strip() and o[0] != "default"]
+            except Exception as e:
+                logger.debug(f"[qoo10_content] option fetch fail d={d_id}: {e}")
+
+            # 옵션 N개면 ' | ' join, 0개면 "default"
+            option_input = " | ".join(option_names_kr[:10]) if option_names_kr else "default"
+
             try:
                 res = await generate_qoo10_content_async(
                     product_name_kr=input_name,
                     category=cat or "기타",
                     price_krw=int(d_price or 0) or None,
-                    option_name_kr="default",
+                    option_name_kr=option_input,
+                    related_popular_keywords=related_kws,
                 )
             except Exception as e:
                 fail_n += 1

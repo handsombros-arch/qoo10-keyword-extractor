@@ -27,6 +27,14 @@ interface KeywordWithScore extends Keyword {
   recommend_score: number;
 }
 
+// MMM-1: raw 큐텐 카테고리명 cleanup (e티켓 → 티켓 등 표기 정정)
+function cleanCategoryName(c: string): string {
+  if (!c) return '';
+  return c
+    .replace('엔터테인먼트&e티켓', '엔터테인먼트&티켓')
+    .replace('e티켓', '티켓');
+}
+
 function CriteriaModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -183,6 +191,21 @@ export default function RecommendPage() {
   const [dates, setDates] = useState<{ lookup_date: string; count: number }[]>([]);
   const [interestList, setInterestList] = useState<InterestKeyword[]>(() => getInterestKeywords());
   const interestCount = interestList.length;
+  // XXX-1: 관심 풀 row 별 체크
+  const [selectedInterests, setSelectedInterests] = useState<Set<string>>(new Set());
+  const toggleSelectedInterest = (jp: string) => {
+    setSelectedInterests(prev => {
+      const next = new Set(prev);
+      if (next.has(jp)) next.delete(jp); else next.add(jp);
+      return next;
+    });
+  };
+  const toggleAllInterests = () => {
+    setSelectedInterests(prev => {
+      if (prev.size === interestList.length) return new Set();
+      return new Set(interestList.map(k => k.keyword_jp));
+    });
+  };
 
   // 기간 필터: mode = single(특정일) | range(기간) | all(전체)
   const [mode, setMode] = useState<'single' | 'range' | 'all'>('all');
@@ -199,7 +222,9 @@ export default function RecommendPage() {
   const [dedupe, setDedupe] = useState(true);
   const [brandFilter, setBrandFilter] = useState<'all' | 'general' | 'brand'>('all');
   // 카테고리 필터 (빈 Set = 전체)
-  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  // YYY-1: 디폴트 카테고리 3개 (raw 큐텐 기준 — 종합/뷰티/식품 사장님 사업 영역)
+  const DEFAULT_CATS = ['01.종합', '03.뷰티&화장품', '07.식품'];
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(() => new Set(DEFAULT_CATS));
 
   useEffect(() => {
     Promise.all([getKeywords().then(r => setKeywords(r.data)).catch(() => {}),
@@ -257,24 +282,39 @@ export default function RecommendPage() {
         if (c < compMin || c > compMax) return false;
         if (brandFilter === 'general' && isBrand(kw.keyword_jp)) return false;
         if (brandFilter === 'brand' && !isBrand(kw.keyword_jp)) return false;
-        if (selectedCategories.size > 0 && !selectedCategories.has(kw.category || '')) return false;
+        // YYY-1: raw 큐텐 카테고리로 필터 (사장님 디폴트 종합/뷰티/식품 = raw)
+        // LLM 분류는 표시 컬럼만 사용
+        const rawCat = kw.category || '';
+        if (selectedCategories.size > 0 && !selectedCategories.has(rawCat)) return false;
         return true;
       });
 
     // 키워드 중복 제거: 같은 keyword_jp는 최고 점수만, 카테고리 목록 합침
+    // categories 는 LLM category_inferred 우선, raw 는 raw_categories 별도
     if (dedupe) {
-      const byKw = new Map<string, KeywordWithScore & { categories: string[] }>();
+      const byKw = new Map<string, KeywordWithScore & { categories: string[]; raw_categories?: string[] }>();
       for (const r of rows) {
         const k = r.keyword_jp;
         const existing = byKw.get(k);
-        const cat = r.category || '';
+        const llmCat = (r as any).category_inferred || '';
+        const rawCat = r.category || '';
         if (!existing) {
-          byKw.set(k, { ...r, categories: [cat].filter(Boolean) });
+          byKw.set(k, {
+            ...r,
+            categories: llmCat ? [llmCat] : [],
+            raw_categories: rawCat ? [rawCat] : [],
+          });
         } else {
-          if (cat && !existing.categories.includes(cat)) existing.categories.push(cat);
+          if (llmCat && !existing.categories.includes(llmCat)) existing.categories.push(llmCat);
+          if (rawCat && !(existing.raw_categories || []).includes(rawCat)) {
+            existing.raw_categories = [...(existing.raw_categories || []), rawCat];
+          }
           if (r.recommend_score > existing.recommend_score) {
-            const cats = existing.categories;
-            byKw.set(k, { ...r, categories: cats });
+            byKw.set(k, {
+              ...r,
+              categories: existing.categories,
+              raw_categories: existing.raw_categories,
+            });
           }
         }
       }
@@ -284,7 +324,7 @@ export default function RecommendPage() {
     return rows.sort((a, b) => b.recommend_score - a.recommend_score);
   }, [keywords, mode, singleDate, fromDate, toDate, minSearch, minKrRatio, compMin, compMax, dedupe, brandFilter, selectedCategories]);
 
-  // DB에 존재하는 카테고리 목록 (빠른 필터 버튼용)
+  // YYY-1: raw 큐텐 카테고리 목록 (필터 버튼용)
   const availableCats = useMemo(() => {
     const s = new Set<string>();
     keywords.forEach(k => { if (k.category) s.add(k.category); });
@@ -302,12 +342,30 @@ export default function RecommendPage() {
   const pctFmt = (p: any) => p.value == null ? '' : `${Number(p.value).toFixed(1)}%`;
   const scoreFmt = (p: any) => p.value == null ? '' : Number(p.value).toFixed(2);
 
+  // YYY-1: 관심 풀 keyword_jp set (구분 컬럼용)
+  const interestSet = useMemo(() => new Set(interestList.map(k => k.keyword_jp)), [interestList]);
+
   const columnDefs: ColDef[] = useMemo(() => [
     {
-      headerName: '관심', width: 70, pinned: 'left', sortable: false, filter: false,
+      headerName: '', width: 50, pinned: 'left', sortable: false, filter: false,
       checkboxSelection: true, headerCheckboxSelection: true, headerCheckboxSelectionFilteredOnly: true,
     },
-    { field: 'lookup_date', headerName: '조회날짜', width: 110 },
+    {
+      headerName: '구분', width: 70, pinned: 'left',
+      valueGetter: (p: any) => interestSet.has(p.data?.keyword_jp) ? '관심' : '추천',
+      cellRenderer: (p: any) => {
+        const v = p.value;
+        const cls = v === '관심'
+          ? 'bg-amber-100 text-amber-800 font-bold'
+          : 'bg-blue-50 text-blue-700';
+        return <span className={`text-[10px] px-1.5 py-0.5 rounded ${cls}`}>{v}</span>;
+      },
+      filter: 'agSetColumnFilter',
+      filterParams: { values: ['관심', '추천'] },
+    },
+    { field: 'lookup_date', headerName: '날짜', width: 110,
+      valueGetter: (p: any) => p.data?.added_at || p.data?.lookup_date || '',
+    },
     { headerName: '#', valueGetter: (p: any) => (p.node?.rowIndex ?? 0) + 1, width: 60, sortable: false, filter: false },
     { field: 'recommend_score', headerName: '추천점수', width: 100, type: 'numericColumn', valueFormatter: scoreFmt,
       cellStyle: { fontWeight: 700, backgroundColor: '#ecfeff' } },
@@ -338,19 +396,25 @@ export default function RecommendPage() {
     { field: 'kr_ratio', headerName: '한국비율(%)', width: 110, type: 'numericColumn', valueFormatter: pctFmt,
       cellStyle: (p: any) => p.value >= 30 ? { backgroundColor: '#fef3c7' } : null },
     {
-      field: 'category', headerName: '카테고리', width: 140,
+      field: 'category', headerName: '카테고리 (LLM)', width: 160,
       valueGetter: (p: any) => {
+        // LLM 분류 우선 표시
         const cats = p.data?.categories;
-        if (Array.isArray(cats) && cats.length > 0) return cats.join(', ');
-        return p.data?.category || '';
+        if (Array.isArray(cats) && cats.length > 0) return cats.map(cleanCategoryName).join(', ');
+        const eff = p.data?.category_inferred || p.data?.category || '';
+        return cleanCategoryName(eff);
       },
       cellRenderer: (p: any) => {
         const cats = p.data?.categories;
+        const rawCats = p.data?.raw_categories || [];
+        const tooltip = rawCats.length > 0
+          ? `LLM: ${(cats || []).map(cleanCategoryName).join(', ')}\n큐텐 raw: ${rawCats.map(cleanCategoryName).join(', ')}`
+          : '';
         if (Array.isArray(cats) && cats.length > 0) {
-          const first = cats[0];
+          const first = cleanCategoryName(cats[0]);
           const extra = cats.length - 1;
           return (
-            <span className="inline-flex items-center gap-1" title={cats.join(', ')}>
+            <span className="inline-flex items-center gap-1" title={tooltip || cats.map(cleanCategoryName).join(', ')}>
               <span className="truncate">{first}</span>
               {extra > 0 && (
                 <span className="px-1 text-[10px] font-semibold text-blue-700 bg-blue-100 rounded">+{extra}</span>
@@ -358,7 +422,8 @@ export default function RecommendPage() {
             </span>
           );
         }
-        return p.data?.category || '';
+        const eff = p.data?.category_inferred || p.data?.category || '';
+        return <span title={tooltip}>{cleanCategoryName(eff)}</span>;
       },
     },
     { field: 'search_volume_weekly', headerName: '검색수(주평)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
@@ -467,6 +532,25 @@ export default function RecommendPage() {
     alert(`✓ ${added}건 시트에 추가 (관심 풀 ${items.length} 중 중복 제외).`);
   };
 
+  // XXX-1: 관심 풀 — 체크된 row 만 시트로
+  const sendSelectedInterestsToSheet = async () => {
+    const sel = interestList.filter(k => selectedInterests.has(k.keyword_jp));
+    if (!sel.length) { alert('체크된 관심 키워드가 없습니다.'); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    const added = await mergeKeywordsToSheet(
+      sel.map(k => ({
+        keyword_jp: k.keyword_jp,
+        keyword_kr: k.keyword_kr,
+        category: k.category,
+        search_volume_weekly: k.search_volume_weekly,
+      })),
+      `interest:${today}`,
+    );
+    alert(`✓ ${added}건 시트에 추가 (선택 ${sel.length} 중 중복 제외).`);
+    // 시트 보낸 후 선택 해제
+    setSelectedInterests(new Set());
+  };
+
   const sourceSelectedKeywords = () => {
     const api = gridRef.current?.api as any;
     if (!api) return;
@@ -499,6 +583,21 @@ export default function RecommendPage() {
     if (!confirm('관심 키워드를 모두 삭제할까요?')) return;
     clearInterestKeywords();
     setInterestList([]);
+  };
+  // YYY-1: AG-Grid 선택 row → 관심 풀에서 제거
+  const removeSelectedFromInterest = () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const selected: any[] = api.getSelectedRows?.() || [];
+    if (selected.length === 0) { alert('체크된 row 가 없습니다.'); return; }
+    const jpsInPool = selected.filter(r => interestSet.has(r.keyword_jp)).map(r => r.keyword_jp);
+    if (!jpsInPool.length) { alert('선택된 row 중 관심 풀에 있는 항목이 없습니다.'); return; }
+    if (!confirm(`${jpsInPool.length}건을 관심 풀에서 제거합니다.`)) return;
+    let next = interestList;
+    for (const jp of jpsInPool) {
+      next = removeInterestKeyword(jp);
+    }
+    setInterestList(next);
   };
   const sourceInterestList = () => {
     if (interestList.length === 0) {
@@ -776,7 +875,8 @@ export default function RecommendPage() {
                   key={c}
                   onClick={() => toggleCategoryFilter(c)}
                   className={`px-2 py-0.5 text-xs rounded border ${on ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                >{c}</button>
+                  title={c}
+                >{cleanCategoryName(c)}</button>
               );
             })}
           </div>
@@ -788,7 +888,8 @@ export default function RecommendPage() {
         </div>
       </div>
 
-      {/* 관심 키워드 풀 */}
+      {/* YYY-1: 관심 풀 별도 테이블 삭제 — 추천 통합 테이블의 "구분" 컬럼으로 대체 */}
+      {false && (
       <div className="bg-white rounded-lg shadow p-5 mb-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
@@ -796,6 +897,14 @@ export default function RecommendPage() {
             <span className="text-xs text-gray-500">({interestList.length}개)</span>
           </div>
           <div className="flex gap-1">
+            <button
+              onClick={sendSelectedInterestsToSheet}
+              disabled={selectedInterests.size === 0}
+              className="text-xs px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-40"
+              title="체크된 row 만 시트에 추가"
+            >
+              📋 선택 {selectedInterests.size > 0 ? `${selectedInterests.size}건 ` : ''}시트로
+            </button>
             <button
               onClick={sendInterestToSheet}
               disabled={interestList.length === 0}
@@ -830,6 +939,13 @@ export default function RecommendPage() {
             <table className="w-full text-[11px]">
               <thead className="bg-gray-50 sticky top-0 z-10">
                 <tr>
+                  <th className="border-b px-2 py-1 text-center w-8">
+                    <input type="checkbox"
+                      checked={selectedInterests.size === interestList.length && interestList.length > 0}
+                      ref={el => { if (el) el.indeterminate = selectedInterests.size > 0 && selectedInterests.size < interestList.length; }}
+                      onChange={toggleAllInterests}
+                      title="전체 선택/해제" />
+                  </th>
                   <th className="border-b px-2 py-1 text-left">체크한 날짜</th>
                   <th className="border-b px-2 py-1 text-left">일본어</th>
                   <th className="border-b px-2 py-1 text-left">한국어</th>
@@ -853,14 +969,23 @@ export default function RecommendPage() {
                   const krRatio = total > 0 ? (kr / total) * 100 : 0;
                   const fmtN = (n?: number) => n == null ? '-' : Number(n).toLocaleString();
                   return (
-                    <tr key={k.keyword_jp} className="hover:bg-yellow-50">
+                    <tr key={k.keyword_jp}
+                      className={`hover:bg-yellow-50 ${selectedInterests.has(k.keyword_jp) ? 'bg-emerald-50' : ''}`}>
+                      <td className="border-b px-2 py-0.5 text-center">
+                        <input type="checkbox"
+                          checked={selectedInterests.has(k.keyword_jp)}
+                          onChange={() => toggleSelectedInterest(k.keyword_jp)} />
+                      </td>
                       <td className="border-b px-2 py-0.5 text-gray-600 whitespace-nowrap">{k.added_at || '-'}</td>
                       <td className="border-b px-2 py-0.5 whitespace-nowrap">
                         <a href={`https://www.qoo10.jp/s/?keyword=${k.keyword_jp}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">{k.keyword_jp}</a>
                       </td>
                       <td className="border-b px-2 py-0.5 text-gray-700 whitespace-nowrap">{k.keyword_kr || '-'}</td>
                       <td className={`border-b px-2 py-0.5 text-right ${krRatio >= 30 ? 'bg-amber-50 font-semibold' : ''}`}>{krRatio.toFixed(1)}%</td>
-                      <td className="border-b px-2 py-0.5 text-gray-700 whitespace-nowrap">{k.category || '-'}</td>
+                      <td className="border-b px-2 py-0.5 text-gray-700 whitespace-nowrap"
+                        title={k.category ? `큐텐 raw: ${cleanCategoryName(k.category)}` : ''}>
+                        {cleanCategoryName((k as any).category_inferred || k.category || '') || '-'}
+                      </td>
                       <td className="border-b px-2 py-0.5 text-right">{fmtN(k.search_volume_weekly)}</td>
                       <td className="border-b px-2 py-0.5 text-right">{fmtN(k.search_volume_daily)}</td>
                       <td className="border-b px-2 py-0.5 text-right">{k.competition_intensity?.toFixed(2) ?? '-'}</td>
@@ -886,6 +1011,7 @@ export default function RecommendPage() {
           </div>
         )}
       </div>
+      )}
 
       {retranslating && (
         <div className="bg-blue-50 border-l-4 border-blue-400 text-xs p-3 mb-4 rounded flex items-center gap-2">
@@ -896,35 +1022,52 @@ export default function RecommendPage() {
       )}
 
       <div className="bg-white rounded-lg shadow p-2">
-        <div className="px-2 py-2 flex items-center justify-between">
-          <div className="text-sm text-gray-500">추천 키워드 {enriched.length}개 (추천점수 내림차순)</div>
-          <div className="flex items-center gap-2">
+        <div className="px-2 py-2 flex items-center justify-between flex-wrap gap-2">
+          <div className="text-sm text-gray-500">
+            추천+관심 통합 {enriched.length}개 (관심 {interestCount} / 추천 {enriched.length - interestCount}, 추천점수 내림차순)
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={sendSelectedToSheet}
               className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
-              title="선택 키워드를 상품 시트에 직접 추가 (사장님이 한국 셀러 검색 → URL/원가 입력)"
+              title="체크한 키워드를 상품 시트로 (URL/원가는 직접 입력)"
             >
               📋 선택을 시트로
             </button>
             <button
               onClick={addSelectedToInterest}
               className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded hover:bg-emerald-700"
-              title="관심 풀에 북마크 — 즉시 시트 추가 안 하고 검토 후 결정"
+              title="체크한 키워드를 관심으로 표시 (구분 컬럼 = '관심')"
             >
-              ⭐ 관심 풀에 (북마크)
+              ⭐ 관심으로 표시
+            </button>
+            <button
+              onClick={removeSelectedFromInterest}
+              className="text-xs px-3 py-1.5 bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
+              title="체크한 키워드 중 관심 표시 해제"
+            >
+              ↺ 관심 해제
             </button>
             <button
               onClick={sourceSelectedKeywords}
               className="text-xs px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700"
-              title="체크한 키워드를 관심에 추가하고 자동 소싱 페이지로 이동 (interest 모드 자동 세팅)"
+              title="체크한 키워드 자동 소싱 페이지 이동 (이동만, 자동 시작 X)"
             >
-              ⚡ 자동 소싱 시작
+              ⚡ 자동 소싱 페이지로
+            </button>
+            <button
+              onClick={clearAllInterest}
+              disabled={interestCount === 0}
+              className="text-xs px-3 py-1.5 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-40"
+              title="모든 관심 표시 해제"
+            >
+              관심 전체 해제
             </button>
             <Link
               to="/recommend-products"
               className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700"
             >
-              📋 시트 ({interestCount})
+              📋 시트로 이동
             </Link>
           </div>
         </div>

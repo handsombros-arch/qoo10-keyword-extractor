@@ -83,6 +83,11 @@ async def _migrate_add_columns(conn) -> None:
         ("domestic_products", "weight_g", "REAL"),
         ("domestic_products", "weight_source", "TEXT"),
         ("brands", "aliases", "TEXT DEFAULT '[]'"),
+        ("qoo10_products", "cover_description", "TEXT"),
+        ("domestic_products", "cover_description", "TEXT"),
+        ("domestic_match_candidates", "quality_score", "REAL"),
+        ("domestic_products", "extras_eval_json", "TEXT"),
+        ("qoo10_products", "qoo10_jp_detail", "TEXT"),
     ]
     for table, col, col_type in new_columns:
         try:
@@ -131,6 +136,11 @@ app.include_router(margin.router)
 app.include_router(recommendations.router)
 app.include_router(user_data.router)
 app.include_router(automation.router)
+
+# 이미지 폴더 정적 서빙 — 패널이 한국 SKU extras 보여주기 위해 (WWW-1)
+_IMAGE_ROOT = Path(__file__).resolve().parent.parent.parent / "image"
+if _IMAGE_ROOT.exists():
+    app.mount("/image", StaticFiles(directory=str(_IMAGE_ROOT)), name="image")
 
 # 프론트엔드 정적 파일 서빙
 if FRONTEND_DIST.exists():

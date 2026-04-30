@@ -64,26 +64,52 @@ function AutoResultModal({ onClose, onMerge }: { onClose: () => void; onMerge: P
       const cands = r.data.candidates || [];
       if (!cands.length) { setMsg('후보 0건 — 다른 날짜 확인'); return; }
 
-      const rows: SheetRow[] = cands.map(c => newSheetRow({
-        keyword_jp: c.keyword_jp,
-        keyword_kr: c.keyword_kr,
-        product_name: c.cheapest_domestic?.product_name || c.keyword_jp,
-        product_name_ko: c.qoo10?.product_name_ko || '',
-        product_url: c.cheapest_domestic?.product_url || '',
-        cover_image_url: c.cheapest_domestic?.cover_image_url || '',
-        item_price_krw: c.cheapest_domestic?.price_krw || 0,
-        sell_price_jpy: Math.round(c.qoo10_avg_jpy || 0),
-        competitor_price_jpy: Math.round(c.qoo10_avg_jpy || 0),
-        source: `auto:${date}`,
-        match_decision: c.match?.decision || c.cheapest_domestic?.match_source || 'pending',
-        match_image_score: c.match?.image_score ?? undefined,
-        match_name_score: c.match?.name_score ?? undefined,
-        match_note: c.match?.note || '',
-        qoo10_title_jp: c.qoo10?.title_jp || '',
-        qoo10_tags: c.qoo10?.tags || [],
-        qoo10_marketing: c.qoo10?.marketing_points || [],
-        qoo10_option_name: c.qoo10?.option_name || '',
-      }));
+      // 폴더 매핑 (folder_index/name + qoo10_url) — STEP 6.7 출력
+      const folderMap: Record<string, any> = {};
+      try {
+        const fr = await api.get<{ data: { items: any[] } | null }>(`/user-data/last_candidate_folders:${date}`);
+        const items = fr.data?.data?.items || [];
+        for (const it of items) {
+          if (it.keyword_jp) folderMap[it.keyword_jp] = it;
+        }
+      } catch { /* 매핑 없으면 빈 값으로 진행 */ }
+
+      const rows: SheetRow[] = cands.map(c => {
+        const fm = folderMap[c.keyword_jp] || {};
+        const cd = c.cheapest_domestic;
+        // PPP-1: 한국 검색 결과 0건 — 사장님이 직접 한국 SKU 찾아야 함
+        const needsSearch = !cd || !cd.product_name;
+        return newSheetRow({
+          keyword_jp: c.keyword_jp,
+          keyword_kr: c.keyword_kr,
+          product_name: needsSearch ? '' : (cd.product_name || c.keyword_jp),
+          product_name_ko: c.qoo10?.product_name_ko || '',
+          product_url: cd?.product_url || '',
+          qoo10_url: fm.qoo10_url || '',
+          cover_image_url: cd?.cover_image_url || '',
+          qoo10_cover_image_url: fm.qoo10_cover_image_url || '',
+          folder_index: fm.folder_index ?? undefined,
+          folder_name: fm.folder_name || '',
+          item_price_krw: cd?.price_krw || 0,
+          sell_price_jpy: Math.round(c.qoo10_avg_jpy || 0),
+          competitor_price_jpy: Math.round(c.qoo10_avg_jpy || 0),
+          source: `auto:${date}`,
+          created_at: date,
+          match_decision: needsSearch
+            ? 'needs_search'
+            : (c.match?.decision || cd.match_source || 'pending'),
+          match_image_score: c.match?.image_score ?? undefined,
+          match_name_score: c.match?.name_score ?? undefined,
+          match_note: c.match?.note || '',
+          qoo10_title_jp: c.qoo10?.title_jp || '',
+          qoo10_tags: c.qoo10?.tags || [],
+          qoo10_marketing: c.qoo10?.marketing_points || [],
+          qoo10_option_name: c.qoo10?.option_name || '',
+          qoo10_jp_detail: c.qoo10?.jp_detail || undefined,  // FFFF-1
+        });
+      });
+      // folder_index 순으로 정렬 (1, 2, 3, ...)
+      rows.sort((a, b) => (a.folder_index ?? 999) - (b.folder_index ?? 999));
       const added = onMerge(rows, 'keyword_jp');
       setMsg(`✓ ${added}건 추가 (${cands.length}건 중 중복 제외)`);
       setTimeout(onClose, 1500);

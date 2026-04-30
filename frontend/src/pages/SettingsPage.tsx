@@ -35,6 +35,22 @@ const DEFAULT_FILTER_THRESHOLDS: FilterThresholdsPayload = {
   volume_min: 40,
 };
 
+interface QualityThresholdsPayload {
+  accept: number;
+  review: number;
+  desc_weight: number;
+  image_weight_with_desc: number;
+  image_weight_no_desc: number;
+}
+
+const DEFAULT_QUALITY_THRESHOLDS: QualityThresholdsPayload = {
+  accept: 0.70,
+  review: 0.50,
+  desc_weight: 0.25,
+  image_weight_with_desc: 0.60,
+  image_weight_no_desc: 0.75,
+};
+
 export default function SettingsPage() {
   const [threshold, setThreshold] = useState<number>(DEFAULT_THRESHOLD);
   const [thLoading, setThLoading] = useState<boolean>(true);
@@ -53,6 +69,27 @@ export default function SettingsPage() {
   const [ftSaving, setFtSaving] = useState<boolean>(false);
   const [ftSavedAt, setFtSavedAt] = useState<string | null>(null);
   const [ftError, setFtError] = useState<string | null>(null);
+
+  const [qt, setQt] = useState<QualityThresholdsPayload>(DEFAULT_QUALITY_THRESHOLDS);
+  const [qtLoading, setQtLoading] = useState<boolean>(true);
+  const [qtSaving, setQtSaving] = useState<boolean>(false);
+  const [qtSavedAt, setQtSavedAt] = useState<string | null>(null);
+  const [qtError, setQtError] = useState<string | null>(null);
+  const [qtRecomputing, setQtRecomputing] = useState<boolean>(false);
+  const [qtRecomputeResult, setQtRecomputeResult] = useState<string | null>(null);
+
+  const [metrics, setMetrics] = useState<any>(null);
+  const [metricsLoading, setMetricsLoading] = useState<boolean>(true);
+
+  const reloadMetrics = async () => {
+    setMetricsLoading(true);
+    try {
+      const r = await fetch('/api/sheet/corrections/metrics');
+      const d = await r.json();
+      setMetrics(d);
+    } catch { setMetrics(null); }
+    finally { setMetricsLoading(false); }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -81,8 +118,25 @@ export default function SettingsPage() {
         setFtSavedAt(ft.updated_at);
         setFtLoading(false);
       }
+      const qtr = await fetchCloud<QualityThresholdsPayload>('quality_thresholds');
+      if (!cancelled) {
+        if (qtr.data && typeof qtr.data.accept === 'number') {
+          setQt({
+            accept: qtr.data.accept,
+            review: qtr.data.review,
+            desc_weight: qtr.data.desc_weight,
+            image_weight_with_desc: qtr.data.image_weight_with_desc ?? 0.60,
+            image_weight_no_desc: qtr.data.image_weight_no_desc ?? 0.75,
+          });
+        }
+        setQtSavedAt(qtr.updated_at);
+        setQtLoading(false);
+      }
+      // metrics
+      reloadMetrics();
     })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const saveThreshold = async () => {
@@ -116,6 +170,39 @@ export default function SettingsPage() {
       if (ok) setFtSavedAt(new Date().toISOString());
       else setFtError('저장 실패. 백엔드 연결을 확인하세요.');
     } finally { setFtSaving(false); }
+  };
+
+  const saveQualityThresholds = async () => {
+    setQtSaving(true); setQtError(null); setQtRecomputeResult(null);
+    try {
+      const ok = await pushCloud<QualityThresholdsPayload>('quality_thresholds', qt);
+      if (ok) setQtSavedAt(new Date().toISOString());
+      else setQtError('저장 실패. 백엔드 연결을 확인하세요.');
+    } finally { setQtSaving(false); }
+  };
+
+  const recomputeQuality = async () => {
+    setQtRecomputing(true); setQtRecomputeResult(null);
+    try {
+      const r = await fetch('/api/recommendations/recompute-quality', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({only_missing: false, relabel: true}),
+      });
+      const d = await r.json();
+      if (d.processed != null) {
+        const c = d.decision_changed || {};
+        setQtRecomputeResult(
+          `${d.processed}건 재계산 — accepted ${c.accepted||0} / needs_review ${c.needs_review||0} / rejected ${c.rejected||0} / unchanged ${c.unchanged||0}`
+        );
+      } else {
+        setQtRecomputeResult(`결과: ${JSON.stringify(d)}`);
+      }
+    } catch (e: any) {
+      setQtRecomputeResult(`실패: ${e?.message || e}`);
+    } finally {
+      setQtRecomputing(false);
+    }
   };
 
   return (
@@ -286,6 +373,206 @@ export default function SettingsPage() {
                 </span>
               )}
             </div>
+          </>
+        )}
+      </section>
+
+      {/* 2.4) AI 학습 metrics — 사장님 swap/reject 기반 (FFF-2 누적) */}
+      <section className="bg-white rounded shadow p-5 border mb-6">
+        <h3 className="font-semibold text-base mb-1">AI 학습 진행 (사장님 수정 누적)</h3>
+        <p className="text-xs text-gray-500 mb-3">
+          사장님이 시트에서 swap/reject 할 때마다 자동 기록. 누적되면 임계값 조정 + prompt 개선 근거.
+          GGG-2 (5/6 분석 예약) 가 이 데이터로 모델 튜닝 제안 생성.
+        </p>
+        {metricsLoading ? (
+          <div className="text-sm text-gray-500">불러오는 중…</div>
+        ) : !metrics || metrics.total === 0 ? (
+          <div className="text-sm text-gray-500 bg-gray-50 rounded px-3 py-2">
+            아직 누적된 수정 없음. 우측 패널에서 swap/reject 시 자동 기록됩니다.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div className="bg-blue-50 rounded p-2">
+              <div className="text-[11px] text-gray-500">누적 수정</div>
+              <div className="text-xl font-bold text-blue-700">{metrics.total}건</div>
+            </div>
+            <div className="bg-amber-50 rounded p-2">
+              <div className="text-[11px] text-gray-500">최근 7일 swap</div>
+              <div className="text-xl font-bold text-amber-700">{metrics.swap_count_recent_7d ?? 0}건</div>
+            </div>
+            <div className="bg-emerald-50 rounded p-2">
+              <div className="text-[11px] text-gray-500">AI 정확도 추정</div>
+              <div className="text-xl font-bold text-emerald-700">
+                {metrics.ai_accuracy_estimate != null ? `${(metrics.ai_accuracy_estimate * 100).toFixed(0)}%` : '-'}
+              </div>
+              <div className="text-[10px] text-gray-400">accept_as_is / (swap + accept_as_is)</div>
+            </div>
+            <div className="bg-purple-50 rounded p-2">
+              <div className="text-[11px] text-gray-500">AI 평균 image_score</div>
+              <div className="text-xl font-bold text-purple-700">
+                {metrics.ai_avg_image_score != null ? metrics.ai_avg_image_score.toFixed(2) : '-'}
+              </div>
+              <div className="text-[10px] text-gray-400">낮을수록 vision 신뢰도↓</div>
+            </div>
+          </div>
+        )}
+        {metrics?.top_swapped_keywords?.length > 0 && (
+          <div className="mt-3 text-xs">
+            <div className="text-gray-500 mb-1">가장 많이 swap 된 키워드 (top 5)</div>
+            <div className="flex flex-wrap gap-1">
+              {metrics.top_swapped_keywords.map((k: any) => (
+                <span key={k.keyword_jp} className="bg-amber-100 border border-amber-300 text-amber-800 rounded px-2 py-0.5 font-mono">
+                  {k.keyword_jp} <strong>×{k.count}</strong>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="mt-3 flex items-center gap-2">
+          <button onClick={reloadMetrics} className="px-3 py-1 bg-gray-100 rounded text-xs hover:bg-gray-200">
+            ↻ 새로고침
+          </button>
+          <a href="/api/sheet/corrections" target="_blank" rel="noreferrer"
+            className="text-xs text-blue-600 hover:underline">전체 수정 사례 (RD JSON)</a>
+        </div>
+      </section>
+
+      {/* 2.5) 매칭 품질 임계값 (III-1) */}
+      <section className="bg-white rounded shadow p-5 border mb-6">
+        <h3 className="font-semibold text-base mb-1">매칭 품질 임계값 (III-1)</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          모든 매칭 직후 <strong>quality_score</strong> 자동 계산 → decision 라벨링.
+          quality = (image × W<sub>img</sub>) + (text × W<sub>txt</sub>) + (description 자카드 × W<sub>desc</sub>).
+          <code className="bg-gray-100 px-1 rounded ml-1">accept</code> 이상 → <span className="text-emerald-700 font-bold">accepted</span>,
+          <code className="bg-gray-100 px-1 rounded ml-1">review</code> 이상 → <span className="text-amber-700 font-bold">needs_review</span>,
+          그 외 → <span className="text-red-700 font-bold">rejected</span>.
+        </p>
+
+        {qtLoading ? (
+          <div className="text-sm text-gray-500">불러오는 중…</div>
+        ) : (
+          <>
+            {/* accept 임계값 */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm">accept 임계값 (높을수록 엄격)</label>
+                <span className="text-xs text-gray-500">현재: <strong className="text-emerald-700">{qt.accept.toFixed(2)}</strong> 이상 → accepted</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input type="range" min={0.5} max={0.95} step={0.01}
+                  value={qt.accept}
+                  onChange={(e) => setQt(p => ({...p, accept: parseFloat(e.target.value)}))}
+                  className="flex-1" disabled={qtSaving} />
+                <input type="number" min={0} max={1} step={0.01}
+                  value={qt.accept}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!Number.isNaN(v)) setQt(p => ({...p, accept: Math.min(1, Math.max(0, v))}));
+                  }}
+                  className="w-20 px-2 py-1 border rounded text-right" disabled={qtSaving} />
+              </div>
+            </div>
+
+            {/* review 임계값 */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm">review 임계값 (낮을수록 더 많은 검수)</label>
+                <span className="text-xs text-gray-500">현재: <strong className="text-amber-700">{qt.review.toFixed(2)}</strong> 이상 → needs_review</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input type="range" min={0.3} max={0.7} step={0.01}
+                  value={qt.review}
+                  onChange={(e) => setQt(p => ({...p, review: parseFloat(e.target.value)}))}
+                  className="flex-1" disabled={qtSaving} />
+                <input type="number" min={0} max={1} step={0.01}
+                  value={qt.review}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!Number.isNaN(v)) setQt(p => ({...p, review: Math.min(qt.accept, Math.max(0, v))}));
+                  }}
+                  className="w-20 px-2 py-1 border rounded text-right" disabled={qtSaving} />
+              </div>
+            </div>
+
+            {/* 가중치 — image / desc */}
+            <div className="grid grid-cols-3 gap-4 mb-4">
+              <div>
+                <label className="text-sm block mb-1">image 가중치 (desc 있을 때)</label>
+                <input type="number" min={0} max={1} step={0.05}
+                  value={qt.image_weight_with_desc}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!Number.isNaN(v)) setQt(p => ({...p, image_weight_with_desc: Math.min(1, Math.max(0, v))}));
+                  }}
+                  className="w-full px-2 py-1 border rounded text-right" disabled={qtSaving} />
+                <div className="text-[10px] text-gray-400">기본 0.60</div>
+              </div>
+              <div>
+                <label className="text-sm block mb-1">image 가중치 (desc 없을 때)</label>
+                <input type="number" min={0} max={1} step={0.05}
+                  value={qt.image_weight_no_desc}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!Number.isNaN(v)) setQt(p => ({...p, image_weight_no_desc: Math.min(1, Math.max(0, v))}));
+                  }}
+                  className="w-full px-2 py-1 border rounded text-right" disabled={qtSaving} />
+                <div className="text-[10px] text-gray-400">기본 0.75</div>
+              </div>
+              <div>
+                <label className="text-sm block mb-1">description 가중치</label>
+                <input type="number" min={0} max={0.5} step={0.05}
+                  value={qt.desc_weight}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!Number.isNaN(v)) setQt(p => ({...p, desc_weight: Math.min(0.5, Math.max(0, v))}));
+                  }}
+                  className="w-full px-2 py-1 border rounded text-right" disabled={qtSaving} />
+                <div className="text-[10px] text-gray-400">기본 0.25 (GGG-1)</div>
+              </div>
+            </div>
+
+            <div className="text-[11px] text-gray-500 bg-gray-50 rounded px-2 py-1 mb-3">
+              💡 미리보기 — img=0.85, txt=0.14, desc=0.20 일 때 quality ≈ <strong>{
+                (qt.image_weight_with_desc * 0.85 +
+                 Math.max(0.05, 1 - qt.image_weight_with_desc - qt.desc_weight) * 0.14 +
+                 qt.desc_weight * 0.20).toFixed(2)
+              }</strong> →
+              {(() => {
+                const q = qt.image_weight_with_desc * 0.85 +
+                  Math.max(0.05, 1 - qt.image_weight_with_desc - qt.desc_weight) * 0.14 +
+                  qt.desc_weight * 0.20;
+                if (q >= qt.accept) return <span className="text-emerald-700 font-bold ml-1">accepted</span>;
+                if (q >= qt.review) return <span className="text-amber-700 font-bold ml-1">needs_review</span>;
+                return <span className="text-red-700 font-bold ml-1">rejected</span>;
+              })()}
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={saveQualityThresholds} disabled={qtSaving}
+                className="px-4 py-2 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-400">
+                {qtSaving ? '저장 중…' : '저장'}
+              </button>
+              <button onClick={() => setQt(DEFAULT_QUALITY_THRESHOLDS)} disabled={qtSaving}
+                className="px-4 py-2 bg-gray-100 rounded text-sm hover:bg-gray-200">
+                기본값 (0.70 / 0.50 / 0.25)
+              </button>
+              <button onClick={recomputeQuality} disabled={qtRecomputing}
+                className="px-4 py-2 bg-amber-600 text-white rounded text-sm hover:bg-amber-700 disabled:bg-gray-400"
+                title="기존 매칭 후보 전부 새 임계값으로 재라벨">
+                {qtRecomputing ? '재계산 중…' : '↻ 기존 매칭 일괄 재라벨'}
+              </button>
+              {qtError && <span className="text-sm text-red-600 ml-2">{qtError}</span>}
+              {!qtError && qtSavedAt && (
+                <span className="text-xs text-gray-400 ml-2">
+                  저장됨: {new Date(qtSavedAt).toLocaleString('ko-KR')}
+                </span>
+              )}
+            </div>
+            {qtRecomputeResult && (
+              <div className="mt-2 text-xs text-gray-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                {qtRecomputeResult}
+              </div>
+            )}
           </>
         )}
       </section>

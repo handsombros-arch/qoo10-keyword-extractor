@@ -835,10 +835,15 @@ async def _run_match_images(
     어느 한쪽이라도 미달이면 rejected (광고 키워드 도용 자동 거부).
     """
     from pathlib import Path as _P
-    from app.db.models import DomesticMatchCandidate as _DMC
+    from app.db.models import DomesticMatchCandidate as _DMC, Qoo10Product as _Q, DomesticProduct as _DP
     from app.services.domestic_image_pipeline import download_to_temp, IMAGE_ROOT
     from app.services.llm.image_match import compare_two_images_async
     from app.services.llm.text_match import name_similarity
+    from app.services.match_quality import compute_quality_score, decide_with_quality, warm_quality_cache
+    from app.services.auto_learning import load_reject_blocklist, is_blocked
+    await warm_quality_cache()
+    blocklist = await load_reject_blocklist()
+    skipped_blocked = 0
 
     # image_local_path 가 'image/...' 같은 상대경로로 저장돼 있어도 안전하게 절대경로로.
     # 백엔드 cwd 가 프로젝트 루트가 아닐 때(IDE/서비스 실행 등) 발생하던 FileNotFoundError 회피.
@@ -858,6 +863,15 @@ async def _run_match_images(
     try:
         for idx, p in enumerate(pairs, 1):
             qid, did = p["qid"], p["did"]
+
+            # KKK-1 A: 사장님이 reject 한 매칭 자동 skip (학습)
+            if is_blocked(blocklist, qid, did):
+                skipped_blocked += 1
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(pairs)}] BLOCKED q={qid} d={did} (사장님 학습)",
+                )
+                continue
 
             # 큐텐 cover — URL 만 있어 매번 다운로드
             q_tmp = await download_to_temp(p["qurl"]) if p["qurl"] else None
@@ -910,12 +924,28 @@ async def _run_match_images(
                     try: _P(d_tmp).unlink(missing_ok=True)
                     except Exception: pass
 
-            # 결합 룰: 양쪽 모두 임계값 통과 + 비전 호출 ok
-            decision = (
-                "accepted"
-                if (ok and score >= img_threshold and text_score >= text_threshold)
-                else "rejected"
-            )
+            # III-1: quality_score 계산 (description 자카드 포함)
+            q_desc, d_desc = "", ""
+            try:
+                async with async_session() as session:
+                    qd = (await session.execute(
+                        select(_Q.cover_description).where(_Q.id == qid).limit(1)
+                    )).first()
+                    dd = (await session.execute(
+                        select(_DP.cover_description).where(_DP.id == did).limit(1)
+                    )).first()
+                    q_desc = (qd[0] if qd else "") or ""
+                    d_desc = (dd[0] if dd else "") or ""
+            except Exception:
+                pass
+            quality_score, _ = compute_quality_score(score, text_score, q_desc, d_desc)
+
+            # 결합 룰: image+text 임계값 통과 시 quality 기반 분기 (accepted/needs_review)
+            if ok and score >= img_threshold and text_score >= text_threshold:
+                decision = decide_with_quality(quality_score, image_ok=ok)
+            else:
+                decision = "rejected"
+
             if decision == "accepted":
                 accepted += 1
             else:
@@ -930,6 +960,7 @@ async def _run_match_images(
                         name_score=text_score,
                         image_score=score,
                         image_match_note=note,
+                        quality_score=quality_score,
                         decision=decision,
                     ))
                     await session.commit()
@@ -948,10 +979,201 @@ async def _run_match_images(
         task_manager.complete_task(
             task_id,
             message=(
-                f"완료 — accepted {accepted}, rejected {rejected}, failed {failed} "
-                f"(쌍 {len(pairs)})"
+                f"완료 — accepted {accepted}, rejected {rejected}, failed {failed}, "
+                f"blocked {skipped_blocked} (쌍 {len(pairs)})"
             ),
         )
     except Exception as e:
         task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
         traceback.print_exc()
+
+
+# ─── 매칭 retry — alt 키워드 의역 (HHH-1) ───────────────
+
+class MatchRetryRequest(BaseModel):
+    date: str = Field("", description="YYYY-MM-DD (기본 오늘)")
+
+
+@router.post("/match-retry")
+async def match_retry(req: MatchRetryRequest):
+    """이미지 매칭 점수 낮은 candidate 의 alt 한국어 키워드 재검색 + 재매칭 (HHH-1).
+
+    body: {"date": "2026-04-28"}
+    snapshot last_auto_collected:{date} 기반.
+    백그라운드 task 로 실행 — /api/tasks/{task_id} 폴링.
+    """
+    from datetime import date as _date_cls, datetime as _dt
+    from app.services.match_retry import run_match_retry
+
+    raw = req.date or ""
+    if raw:
+        try:
+            target_date = _dt.strptime(raw, "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target_date = _date_cls.today()
+
+    task_id = task_manager.create_task(
+        name=f"매칭 retry ({target_date})", total=0,
+    )
+
+    async def _run():
+        task_manager.start_task(task_id)
+        try:
+            summary = await run_match_retry(
+                target_date,
+                task_manager_obj=task_manager,
+                task_id=task_id,
+            )
+            task_manager.complete_task(
+                task_id,
+                message=(
+                    f"완료 — retried {summary.get('retried', 0)}, "
+                    f"alt {summary.get('alt_searched', 0)}, "
+                    f"pairs {summary.get('pairs_matched', 0)}, "
+                    f"개선 {summary.get('improved', 0)}, "
+                    f"accepted {summary.get('accepted', 0)}"
+                ),
+            )
+            # 결과 storage 에 저장 (사장님이 /api/tasks 또는 별도 endpoint 로 확인 가능)
+            try:
+                async with async_session() as s:
+                    from app.db.models import UserData
+                    import json as _json
+                    key = f"last_match_retry:{target_date}"
+                    existing = (await s.execute(
+                        select(UserData).where(UserData.key == key)
+                    )).scalar_one_or_none()
+                    blob = _json.dumps(summary, ensure_ascii=False)
+                    if existing:
+                        existing.data = blob
+                    else:
+                        s.add(UserData(key=key, data=blob))
+                    await s.commit()
+            except Exception:
+                pass
+        except Exception as e:
+            task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+    asyncio.create_task(_run())
+    return {"task_id": task_id, "date": str(target_date)}
+
+
+@router.post("/recompute-quality")
+async def recompute_quality(body: dict | None = None):
+    """기존 DomesticMatchCandidate 의 quality_score 일괄 재계산 (III-1).
+
+    body:
+      date:           YYYY-MM-DD (선택, lookup_date 한정)
+      keywords_jp:    list (선택)
+      only_missing:   bool (기본 True — quality_score IS NULL 만)
+      relabel:        bool (기본 True — decision 도 갱신)
+    """
+    from sqlalchemy import update as _upd
+    from app.db.models import DomesticMatchCandidate as _DMC, Qoo10Product as _Q, DomesticProduct as _DP
+    from app.services.match_quality import compute_quality_score, decide_with_quality, warm_quality_cache
+    await warm_quality_cache()
+
+    body = body or {}
+    only_missing = bool(body.get("only_missing", True))
+    relabel = bool(body.get("relabel", True))
+    keywords_jp = body.get("keywords_jp") or []
+    raw_date = body.get("date")
+
+    async with async_session() as s:
+        stmt = (
+            select(
+                _DMC.id, _DMC.image_score, _DMC.name_score, _DMC.decision,
+                _Q.cover_description, _DP.cover_description,
+            )
+            .join(_Q, _Q.id == _DMC.qoo10_product_id)
+            .join(_DP, _DP.id == _DMC.domestic_product_id)
+        )
+        if only_missing:
+            stmt = stmt.where(_DMC.quality_score.is_(None))
+        if keywords_jp:
+            stmt = stmt.where(_Q.search_keyword.in_(keywords_jp))
+        if raw_date:
+            from datetime import datetime as _dt
+            try:
+                d = _dt.strptime(str(raw_date), "%Y-%m-%d").date()
+                stmt = stmt.where(_Q.lookup_date == d)
+            except ValueError:
+                return {"error": "date 형식: YYYY-MM-DD"}
+        rows = (await s.execute(stmt)).all()
+
+    if not rows:
+        return {"processed": 0, "message": "대상 0건"}
+
+    counts = {"accepted": 0, "needs_review": 0, "rejected": 0, "unchanged": 0}
+    async with async_session() as s:
+        for dmc_id, img, txt, old_dec, qd, dd in rows:
+            q, _ = compute_quality_score(img or 0.0, txt or 0.0, qd or "", dd or "")
+            updates = {"quality_score": q}
+            if relabel:
+                # 기존 accepted/rejected 만 quality 기반 재라벨 (manual/needs_review 는 보존 X — 다시 계산)
+                if old_dec in ("accepted", "rejected", "needs_review"):
+                    image_ok = (img or 0.0) > 0
+                    new_dec = decide_with_quality(q, image_ok=image_ok)
+                    if new_dec != old_dec:
+                        updates["decision"] = new_dec
+                        counts[new_dec] = counts.get(new_dec, 0) + 1
+                    else:
+                        counts["unchanged"] += 1
+            await s.execute(_upd(_DMC).where(_DMC.id == dmc_id).values(**updates))
+        await s.commit()
+
+    return {
+        "processed": len(rows),
+        "relabel": relabel,
+        "decision_changed": counts,
+    }
+
+
+@router.post("/auto-learning/inject-preferred")
+async def auto_learning_inject(body: dict | None = None):
+    """KKK-1 B — swap 사례 기반 preferred kw 를 expanded_keywords 에 주입.
+
+    daily_workflow STEP 5.6 (brand_expand 후, expanded_search 전) 에서 호출.
+    """
+    from datetime import date as _date_cls, datetime as _dt
+    from app.services.auto_learning import inject_user_preferred_keywords
+    body = body or {}
+    raw = body.get("date")
+    if raw:
+        try:
+            target = _dt.strptime(str(raw), "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "date 형식: YYYY-MM-DD"}
+    else:
+        target = _date_cls.today()
+    return await inject_user_preferred_keywords(target)
+
+
+@router.post("/auto-learning/autotune")
+async def auto_learning_autotune():
+    """KKK-1 C — swap_rate 기반 quality 임계값 자동 조정.
+
+    매주 1회 권장 (daily_workflow 또는 cron).
+    """
+    from app.services.auto_learning import autotune_quality_thresholds
+    return await autotune_quality_thresholds()
+
+
+@router.get("/match-retry/{date}")
+async def match_retry_result(date: str):
+    """retry 결과 조회 — last_match_retry:{date}."""
+    import json as _json
+    from app.db.models import UserData
+    async with async_session() as s:
+        row = (await s.execute(
+            select(UserData).where(UserData.key == f"last_match_retry:{date}")
+        )).scalar_one_or_none()
+    if not row:
+        return {"error": f"결과 없음: {date}"}
+    try:
+        return _json.loads(row.data)
+    except Exception:
+        return {"error": "파싱 실패"}

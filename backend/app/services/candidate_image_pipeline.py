@@ -28,15 +28,22 @@ import httpx
 from app.services.domestic_image_pipeline import (
     IMAGE_ROOT, _safe_folder_name, download_to_temp,
 )
+from app.services.llm.cover_describe import to_large_qoo10_url
 
 logger = logging.getLogger(__name__)
 
 
-def _keyword_folder(date_str: str, keyword_kr: str | None, keyword_jp: str) -> Path:
-    """keyword 단위 폴더. 사장님 가독성 우선 — 한국어 keyword 우선, 없으면 jp."""
+def _keyword_folder_label(idx: int, keyword_kr: str | None, keyword_jp: str) -> str:
+    """폴더명 레이블 — 'N. <safe_name>' (N: 1-based 날짜 내 순번)."""
     label = (keyword_kr or "").strip() or keyword_jp
     safe = _safe_folder_name(label)
-    folder = IMAGE_ROOT / date_str / safe
+    return f"{idx}. {safe}"
+
+
+def _keyword_folder(date_str: str, idx: int, keyword_kr: str | None, keyword_jp: str) -> Path:
+    """N번 폴더 생성. 사장님 가독성 — 한국어 우선."""
+    label = _keyword_folder_label(idx, keyword_kr, keyword_jp)
+    folder = IMAGE_ROOT / date_str / label
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -66,6 +73,8 @@ def _write_info_txt(folder: Path, meta: dict) -> None:
     lines.append(f"  URL        : {ch.get('url', '')}")
     lines.append(f"  매칭       : {ch.get('match_source', '')}")
     lines.append(f"  파일       : {ch.get('file', '')}")
+    if ch.get("cover_description"):
+        lines.append(f"  AI 묘사    : {ch.get('cover_description')}")
     lines.append("")
     margin = meta.get("margin") or {}
     if margin:
@@ -80,12 +89,16 @@ def _write_info_txt(folder: Path, meta: dict) -> None:
         lines.append(f"=== 한국 ALT 후보 ({len(alts)}개, 가격순) ===")
         for a in alts:
             lines.append(f"  {a.get('price_krw') or 0:>8,}원  {a.get('file', '')}  ← {(a.get('product_name') or '')[:50]}")
+            if a.get("cover_description"):
+                lines.append(f"             AI 묘사: {a.get('cover_description')}")
         lines.append("")
     qoo10s = meta.get("qoo10_samples") or []
     if qoo10s:
-        lines.append(f"=== 큐텐 원본 샘플 ({len(qoo10s)}개) ===")
+        lines.append(f"=== 큐텐 원본 샘플 ({len(qoo10s)}개, g_500 큰 이미지) ===")
         for q in qoo10s:
             lines.append(f"  ¥{q.get('price_jpy') or 0:>7,}  {q.get('file', '')}  ← {(q.get('product_name') or '')[:50]}")
+            if q.get("cover_description"):
+                lines.append(f"             AI 묘사: {q.get('cover_description')}")
         lines.append("")
     lines.append(f"생성: {meta.get('generated_at', '')}")
     try:
@@ -141,8 +154,24 @@ async def build_candidate_folders(
     processed = 0
     skipped = 0
     folder_paths: list[str] = []
+    folder_index_map: list[dict] = []
 
-    for c in candidates:
+    # 기존 폴더 모두 삭제 후 새 넘버링으로 재생성 (사장님 요청: 폴더명-시트 1:1 동기화)
+    try:
+        date_root = IMAGE_ROOT / date_str
+        if date_root.exists():
+            shutil.rmtree(date_root, ignore_errors=True)
+    except Exception as e:
+        logger.warning(f"[candidate_image] 기존 폴더 삭제 실패 {date_str}: {e}")
+
+    # 넘버링 — final_score DESC (best 후보를 1번)
+    candidates_sorted = sorted(
+        candidates,
+        key=lambda c: float(c.get("final_score") or 0.0),
+        reverse=True,
+    )
+
+    for idx_zero, c in enumerate(candidates_sorted):
         kw_jp = c.get("keyword_jp")
         if not kw_jp:
             skipped += 1
@@ -152,13 +181,27 @@ async def build_candidate_folders(
             skipped += 1
             continue
 
-        folder = _keyword_folder(date_str, c.get("keyword_kr"), kw_jp)
+        idx_one = idx_zero + 1  # 1-based 사장님 가독
+        folder_label = _keyword_folder_label(idx_one, c.get("keyword_kr"), kw_jp)
+        folder = _keyword_folder(date_str, idx_one, c.get("keyword_kr"), kw_jp)
 
-        # 1) cheapest cover 다운
+        # 1) cheapest cover 다운 + cover_description fetch
         ch_id = ch["id"]
         ch_price = ch.get("price_krw") or 0
         cover_file = folder / f"cover_{(ch.get('source') or 'src')}_{ch_id}.jpg"
         await _download_to(ch.get("cover_image_url") or "", cover_file)
+        ch_desc = ""
+        try:
+            async with async_session() as s:
+                r = await s.execute(
+                    select(DomesticProduct.cover_description)
+                    .where(DomesticProduct.id == ch_id).limit(1)
+                )
+                row = r.first()
+                if row:
+                    ch_desc = row[0] or ""
+        except Exception:
+            pass
 
         # 2) alt covers — 같은 keyword 의 다른 한국 SKU 가격 순 alt_count
         alts: list[dict] = []
@@ -168,7 +211,8 @@ async def build_candidate_folders(
                     select(DomesticProduct.id, DomesticProduct.product_name,
                            DomesticProduct.price_krw, DomesticProduct.product_url,
                            DomesticProduct.cover_image_url, DomesticProduct.source,
-                           DomesticProduct.image_score_overall)
+                           DomesticProduct.image_score_overall,
+                           DomesticProduct.cover_description)
                     .where(DomesticProduct.search_keyword == c.get("keyword_kr"))
                     .where(DomesticProduct.id != ch_id)
                     .where(DomesticProduct.cover_image_url.is_not(None))
@@ -176,7 +220,7 @@ async def build_candidate_folders(
                     .order_by(DomesticProduct.price_krw.asc())
                     .limit(alt_count)
                 )
-                for aid, aname, aprice, aurl, acov, asrc, ascore in r.all():
+                for aid, aname, aprice, aurl, acov, asrc, ascore, adesc in r.all():
                     alt_file = folder / f"alt_{(asrc or 'src')}_{aid}_{aprice}원.jpg"
                     await _download_to(acov or "", alt_file)
                     alts.append({
@@ -186,6 +230,7 @@ async def build_candidate_folders(
                         "url": aurl,
                         "cover_url": acov,
                         "image_score_overall": ascore,
+                        "cover_description": adesc or "",
                         "file": alt_file.name,
                     })
         except Exception as e:
@@ -198,16 +243,19 @@ async def build_candidate_folders(
                 r = await s.execute(
                     select(Qoo10Product.id, Qoo10Product.product_name,
                            Qoo10Product.product_name_ko, Qoo10Product.price_jpy,
-                           Qoo10Product.cover_image_url, Qoo10Product.product_url)
+                           Qoo10Product.cover_image_url, Qoo10Product.product_url,
+                           Qoo10Product.cover_description)
                     .where(Qoo10Product.search_keyword == kw_jp)
                     .where(Qoo10Product.cover_image_url.is_not(None))
                     .where(Qoo10Product.price_jpy > 0)
                     .order_by(Qoo10Product.price_jpy.asc())
                     .limit(qoo10_sample_count)
                 )
-                for qid, qname, qko, qprice, qcov, qurl in r.all():
+                for qid, qname, qko, qprice, qcov, qurl, qdesc in r.all():
+                    # g_500 큰 이미지로 다운 (cover_describe.py 와 동일 변환)
+                    qcov_large = to_large_qoo10_url(qcov or "", target_size=500)
                     q_file = folder / f"qoo10_{qid}_{qprice}엔.jpg"
-                    await _download_to(qcov or "", q_file)
+                    await _download_to(qcov_large, q_file)
                     qoo10_samples.append({
                         "qoo10_id": qid,
                         "product_name": qname,
@@ -215,13 +263,19 @@ async def build_candidate_folders(
                         "price_jpy": qprice,
                         "url": qurl,
                         "cover_url": qcov,
+                        "cover_url_large": qcov_large,
+                        "cover_description": qdesc or "",
                         "file": q_file.name,
                     })
         except Exception as e:
             logger.warning(f"[candidate_image] 큐텐 샘플 조회 실패 {kw_jp}: {e}")
 
         # 4) meta.json — keyword/translation/cheapest/alts/qoo10_samples 추적
+        # 큐텐 cheapest (시트 좌측 이미지 + 큐텐 URL 컬럼용)
+        qoo10_cheapest = qoo10_samples[0] if qoo10_samples else {}
         meta = {
+            "folder_index": idx_one,
+            "folder_name": folder_label,
             "keyword_jp": kw_jp,
             "keyword_kr": c.get("keyword_kr"),
             "qoo10_count": c.get("qoo10_count"),
@@ -231,6 +285,14 @@ async def build_candidate_folders(
             "search_volume": c.get("search_volume"),
             "kr_ratio": c.get("kr_ratio"),
             "competition_intensity": c.get("competition_intensity"),
+            "qoo10_cheapest": {
+                "qoo10_id": qoo10_cheapest.get("qoo10_id"),
+                "url": qoo10_cheapest.get("url"),
+                "cover_url": qoo10_cheapest.get("cover_url"),
+                "cover_url_large": qoo10_cheapest.get("cover_url_large"),
+                "price_jpy": qoo10_cheapest.get("price_jpy"),
+                "product_name": qoo10_cheapest.get("product_name"),
+            },
             "cheapest": {
                 "domestic_id": ch_id,
                 "product_name": ch.get("product_name"),
@@ -239,6 +301,7 @@ async def build_candidate_folders(
                 "cover_url": ch.get("cover_image_url"),
                 "source": ch.get("source"),
                 "match_source": ch.get("match_source"),
+                "cover_description": ch_desc,
                 "file": cover_file.name,
             },
             "alts": alts,
@@ -259,12 +322,40 @@ async def build_candidate_folders(
 
         processed += 1
         folder_paths.append(str(folder))
+        # 시트 row 와 폴더 1:1 매핑용 (자동화 STEP 6.7 후 send-to-sheet 가 활용)
+        folder_index_map.append({
+            "folder_index": idx_one,
+            "folder_name": folder_label,
+            "keyword_jp": kw_jp,
+            "keyword_kr": c.get("keyword_kr"),
+            "qoo10_url": qoo10_cheapest.get("url"),
+            "qoo10_cover_image_url": qoo10_cheapest.get("cover_url_large") or qoo10_cheapest.get("cover_url"),
+            "qoo10_price_jpy": qoo10_cheapest.get("price_jpy"),
+        })
 
     logger.info(f"[candidate_image] 완료 — {processed} 폴더, skipped {skipped}")
+
+    # 폴더 매핑 → UserData (last_candidate_folders:{date}) 저장 — 시트 컬럼 채우기용
+    try:
+        async with async_session() as s:
+            from app.db.models import UserData as _UD
+            from sqlalchemy import select as _sel
+            key = f"last_candidate_folders:{date_str}"
+            existing = (await s.execute(_sel(_UD).where(_UD.key == key))).scalar_one_or_none()
+            blob = json.dumps({"date": date_str, "items": folder_index_map}, ensure_ascii=False)
+            if existing:
+                existing.data = blob
+            else:
+                s.add(_UD(key=key, data=blob))
+            await s.commit()
+    except Exception as e:
+        logger.warning(f"[candidate_image] folder map UserData 저장 실패: {e}")
+
     return {
         "processed": processed,
         "skipped": skipped,
         "folders": folder_paths,
+        "folder_index_map": folder_index_map,
     }
 
 

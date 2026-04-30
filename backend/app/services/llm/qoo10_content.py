@@ -1,10 +1,10 @@
-"""큐텐 등록용 콘텐츠 생성 (Phase 4-B).
+"""큐텐 등록용 콘텐츠 생성 (Phase 4-B + qoo10-seo-guide.md).
 
-명세 (MASTER_SPEC § 3.3#12, 4-3):
-    - title_jp — 큐텐 fit 일본어 상품명 (40자 SEO)
-    - tags — 검색 태그 5~10개
+가이드:
+    - title_jp — 일본어 상품명 (최대 100자, 첫 30자 핵심 노출)
+    - tags — 검색 키워드 5~10개 (상품명 단어와 중복 X)
     - option_name — 단품/세트 표기
-    - marketing_points — 마케팅 포인트 3~4개
+    - marketing_points — 홍보문구 3~4개 (이벤트 문구 여기에)
 
 env: QOO10_CONTENT_MODEL=<provider:model>  (기본 추천 ollama:qwen3:14b — 일본어/한국어 전환 강함)
 prompt: app/services/llm/prompts/qoo10_content.txt
@@ -46,7 +46,8 @@ def _empty() -> dict:
     }
 
 
-def _truncate_title(s: str, limit: int = 40) -> str:
+def _truncate_title(s: str, limit: int = 100) -> str:
+    """큐텐 가이드 — 상품명 100자 (첫 30자 핵심)."""
     s = (s or "").strip()
     return s[:limit]
 
@@ -90,8 +91,12 @@ async def generate_qoo10_content_async(
     category: str = "기타",
     price_krw: int | None = None,
     option_name_kr: str = "default",
+    related_popular_keywords: list[dict] | None = None,
 ) -> dict:
     """한국 상품 → 큐텐 등록용 콘텐츠 (LLM 호출).
+
+    related_popular_keywords (QQQ-1): [{"keyword_jp": str, "search_volume": int, ...}]
+      → SEO 부스트용 인기 검색어. LLM 이 title_jp/tags 에 자연 포함.
 
     실패 시 ok=False, 빈 필드 반환 (자동화 막지 않음).
     """
@@ -105,6 +110,15 @@ async def generate_qoo10_content_async(
         logger.error(f"[qoo10_content] 클라이언트 생성 실패 ({e})")
         return _empty()
 
+    # 인기 검색어 블록 (없으면 빈 줄)
+    if related_popular_keywords:
+        related_block = "\n".join(
+            f"- {r['keyword_jp']:30s} (검색량 {r.get('search_volume', 0):,})"
+            for r in related_popular_keywords[:8]
+        )
+    else:
+        related_block = "(제공된 관련 인기 검색어 없음)"
+
     template = load_prompt("qoo10_content")
     prompt = (
         template
@@ -112,6 +126,7 @@ async def generate_qoo10_content_async(
         .replace("{category}", category or "기타")
         .replace("{price_krw}", str(price_krw or "(미상)"))
         .replace("{option_name_kr}", option_name_kr or "default")
+        .replace("{related_popular_keywords}", related_block)
     )
 
     try:
@@ -141,7 +156,7 @@ async def generate_qoo10_content_async(
     if not isinstance(parsed, dict):
         return _empty()
 
-    title = _truncate_title(parsed.get("title_jp") or "", 40)
+    title = _truncate_title(parsed.get("title_jp") or "", 100)
     tags = _normalize_tags(parsed.get("tags") or [])
     option_name = _truncate_title(parsed.get("option_name") or option_name_kr, 100)
     marketing = _normalize_marketing(parsed.get("marketing_points") or [])

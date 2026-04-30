@@ -20,19 +20,28 @@ type RowMeta = {
     tags: string[];
     marketing_points: string[];
     option_name: string;
+    cover_description?: string;
+  };
+  domestic?: {
+    id: number;
+    cover_description: string;
+    extras?: { file: string; path: string; score: number | null; desc: string }[];
   };
   match?: {
     image_score: number | null;
     name_score: number | null;
+    quality_score?: number | null;
     note: string;
     decision: string;
   };
   options_full?: { name: string; price_krw: number | null; in_stock: boolean }[];
   alt_skus?: { id: number; source: string; product_name: string; price_krw: number;
     product_url: string; cover_image_url: string; image_score: number | null;
+    cover_description?: string;
     is_current_cheapest: boolean }[];
   qoo10_samples?: { id: number; product_name: string; product_name_ko: string;
-    price_jpy: number; product_url: string; cover_image_url: string }[];
+    price_jpy: number; product_url: string; cover_image_url: string;
+    cover_description?: string }[];
 };
 
 type Props = {
@@ -41,6 +50,8 @@ type Props = {
   onSave: (updated: Partial<SheetRow>) => void;
   onReject?: () => void;
 };
+
+type AltSku = NonNullable<RowMeta['alt_skus']>[number];
 
 export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: Props) {
   const [meta, setMeta] = useState<RowMeta | null>(null);
@@ -57,6 +68,19 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
   });
   const [newTag, setNewTag] = useState('');
   const [newPoint, setNewPoint] = useState('');
+  // LLL-1 — alt SKU 클릭 시 즉시 swap 안 하고 한국 슬롯에 preview 확대
+  const [previewAlt, setPreviewAlt] = useState<AltSku | null>(null);
+  // DDDD-1 — URL 기반 SEO 자동 재생성 상태
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenMsg, setRegenMsg] = useState<string>('');
+
+  // alt_skus 적합도 (image_score) DESC, 동점은 가격 ASC. cheapest 표식은 보존.
+  const sortedAlts: AltSku[] = (meta?.alt_skus || []).slice().sort((a, b) => {
+    const sa = a.image_score ?? -1;
+    const sb = b.image_score ?? -1;
+    if (sa !== sb) return sb - sa;
+    return (a.price_krw || 0) - (b.price_krw || 0);
+  });
 
   useEffect(() => {
     const kw = row.keyword_jp || row.product_name;
@@ -102,9 +126,145 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
     patch({ qoo10_marketing: arr });
   }
 
-  function selectAltSku(alt: NonNullable<RowMeta['alt_skus']>[number]) {
+  // DDDD-1 + HHHH-1: URL 기반 SEO 콘텐츠 자동 재생성 (background task + 진행률)
+  const [regenProgress, setRegenProgress] = useState<{cur:number,total:number,msg:string}>({cur:0,total:0,msg:''});
+  // IIII-1: Naver 로그인 setup
+  const [needsNaverLogin, setNeedsNaverLogin] = useState(false);
+  const [naverLoginRunning, setNaverLoginRunning] = useState(false);
+
+  async function setupNaverLogin() {
+    setNaverLoginRunning(true);
+    setRegenMsg('Chrome 창 열림 — 로그인 후 창 닫아주세요 (5분 안)');
+    try {
+      const start = await api.post<any>('/products/naver-login-setup', {timeout_min: 5});
+      const taskId = start.data.task_id;
+      // poll
+      while (true) {
+        await new Promise(r => setTimeout(r, 3000));
+        let t;
+        try { const r = await api.get<any>(`/tasks/${taskId}`); t = r.data; }
+        catch { continue; }
+        if (t.status === 'completed') {
+          setRegenMsg(`✓ ${t.message}`);
+          setNeedsNaverLogin(false);
+          break;
+        }
+        if (t.status === 'failed') {
+          setRegenMsg(`✗ ${t.message}`);
+          break;
+        }
+      }
+    } catch (e: any) {
+      setRegenMsg(`✗ ${e?.message || e}`);
+    } finally {
+      setNaverLoginRunning(false);
+    }
+  }
+
+  async function regenerateFromUrl() {
+    const url = (edit.product_url || '').trim();
+    if (!url) { setRegenMsg('URL 먼저 입력하세요'); return; }
+    if (!/naver\.com\/.+\/products\//.test(url)) {
+      setRegenMsg('네이버 smartstore/brand URL 만 지원');
+      return;
+    }
+    setRegenerating(true);
+    setRegenMsg('백엔드 task 시작...');
+    setRegenProgress({cur:0, total:5, msg:''});
+    try {
+      // 1. 즉시 task_id 받기
+      const start = await api.post<any>('/products/regenerate-content-from-url', { url, async: true });
+      const taskId = start.data.task_id;
+      const total = start.data.total || 5;
+      if (!taskId) {
+        setRegenMsg('✗ task 시작 실패');
+        return;
+      }
+
+      // 2. 폴링 (1.5s 간격)
+      const pollOnce = async (): Promise<any> => {
+        const r = await api.get<any>(`/tasks/${taskId}`);
+        return r.data;
+      };
+
+      let lastStatus = '';
+      let result: any = null;
+      while (true) {
+        await new Promise(r => setTimeout(r, 1500));
+        let t;
+        try { t = await pollOnce(); }
+        catch { continue; }
+        const cur = t.progress || 0;
+        const status = t.status || '';
+        const msg = (t.message || '').slice(0, 80);
+        setRegenProgress({cur, total, msg});
+        if (status === 'completed') {
+          // message 안에 결과 JSON
+          try { result = JSON.parse(t.message); }
+          catch { result = null; }
+          break;
+        }
+        if (status === 'failed') {
+          setRegenMsg(`✗ ${msg}`);
+          return;
+        }
+        if (status === lastStatus && cur === total) break;
+        lastStatus = status;
+      }
+
+      if (!result) {
+        setRegenMsg('✗ 결과 파싱 실패');
+        return;
+      }
+      if (result.error) {
+        setRegenMsg(`✗ ${result.error}`);
+        // IIII-1: Naver 로그인 필요 에러면 setup 버튼 표시
+        if (result.error.includes('로그인 필요') || result.error.includes('nidlogin')) {
+          setNeedsNaverLogin(true);
+        }
+        return;
+      }
+      setNeedsNaverLogin(false);
+
+      // 시트 row 자동 업데이트
+      const updates: any = {
+        product_name: result.product_name,
+        cover_image_url: result.cover_image_url,
+        item_price_krw: result.item_price_krw,
+        domestic_shipping_krw: result.domestic_shipping_krw ?? edit.domestic_shipping_krw,
+        qoo10_title_jp: result.qoo10_title_jp,
+        qoo10_tags: result.qoo10_tags,
+        qoo10_marketing: result.qoo10_marketing,
+        qoo10_option_name: result.qoo10_option_name,
+        qoo10_jp_detail: result.qoo10_jp_detail,
+        match_decision: 'manual',
+      };
+      onSave(updates);
+      patch(updates);
+      const tags = result.qoo10_tags?.length || 0;
+      const mkt = result.qoo10_marketing?.length || 0;
+      const jpDetail = result.qoo10_jp_detail && !result.qoo10_jp_detail.error;
+      const shipping = result.shipping_text || '';
+      setRegenMsg(`✓ 완료 (tags ${tags}, marketing ${mkt}${jpDetail ? ', JP 카피' : ''}${shipping ? `, 배송:${shipping}` : ''})`);
+    } catch (e: any) {
+      setRegenMsg(`✗ ${e?.message || e}`);
+    } finally {
+      setRegenerating(false);
+      setRegenProgress({cur:0, total:0, msg:''});
+    }
+  }
+
+  function previewAltSku(alt: AltSku) {
+    // 클릭 한 번 = preview 만 (한국 슬롯에 확대), 확정은 별도 버튼
+    if (alt.is_current_cheapest) {
+      setPreviewAlt(null);
+      return;
+    }
+    setPreviewAlt(alt);
+  }
+
+  function confirmSwap(alt: AltSku) {
     if (alt.is_current_cheapest) return;
-    if (!confirm(`이 한국 SKU 로 swap?\n${alt.product_name.slice(0, 40)} (${alt.price_krw.toLocaleString()}원)`)) return;
     onSave({
       product_name: alt.product_name,
       product_url: alt.product_url,
@@ -128,6 +288,13 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
       user_choice_url: alt.product_url,
       user_choice_cover_url: alt.cover_image_url,
     }).catch(() => { /* 실패해도 UI 영향 X */ });
+    // SSS-1 — swap 시 큐텐 SEO 콘텐츠 자동 재생성
+    if (row.keyword_jp) {
+      api.post('/products/qoo10/generate-content', {
+        keywords_jp: [row.keyword_jp],
+        reset: true,
+      }).catch(() => { /* 실패해도 UI 영향 X */ });
+    }
     onClose();
   }
 
@@ -146,6 +313,42 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
       <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
         {loading && <div className="text-gray-500">메타 로딩...</div>}
 
+        {/* PPP-1: 한국 검색 결과 0건 — 사장님이 직접 찾아야 하는 row */}
+        {row.match_decision === 'needs_search' && (
+          <div className="border-2 border-red-300 bg-red-50 rounded p-3">
+            <div className="font-bold text-red-800 mb-2">🔍 한국 SKU 직접 검색 필요</div>
+            <div className="text-red-700 mb-3 text-[11px]">
+              자동화가 한국 쇼핑몰에서 적합한 SKU 를 못 찾았습니다.<br/>
+              아래 링크에서 직접 한국 셀러 찾고, URL/가격/이미지를 시트에 입력하세요.
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <a href={`https://www.qoo10.jp/s/?keyword=${encodeURIComponent(row.keyword_jp || '')}`}
+                target="_blank" rel="noreferrer"
+                className="bg-orange-100 hover:bg-orange-200 text-orange-800 text-center py-1.5 rounded font-semibold text-[11px]">
+                🛒 큐텐 검색
+              </a>
+              <a href={`https://search.shopping.naver.com/search/all?query=${encodeURIComponent(row.keyword_kr || row.keyword_jp || '')}`}
+                target="_blank" rel="noreferrer"
+                className="bg-green-100 hover:bg-green-200 text-green-800 text-center py-1.5 rounded font-semibold text-[11px]">
+                🛍 네이버 검색
+              </a>
+              <a href={`https://www.coupang.com/np/search?q=${encodeURIComponent(row.keyword_kr || row.keyword_jp || '')}`}
+                target="_blank" rel="noreferrer"
+                className="bg-red-100 hover:bg-red-200 text-red-800 text-center py-1.5 rounded font-semibold text-[11px]">
+                🅒 쿠팡 검색
+              </a>
+              <a href={`https://shopping.daum.net/search?q=${encodeURIComponent(row.keyword_kr || row.keyword_jp || '')}`}
+                target="_blank" rel="noreferrer"
+                className="bg-yellow-100 hover:bg-yellow-200 text-yellow-800 text-center py-1.5 rounded font-semibold text-[11px]">
+                🔎 다음 쇼핑
+              </a>
+            </div>
+            <div className="mt-2 text-[10px] text-gray-600">
+              찾은 후 아래 입력란에 URL/가격/무게 직접 입력 → 매칭 라벨 자동 'manual' 변경
+            </div>
+          </div>
+        )}
+
         {/* 큐텐 ↔ 한국 cover 큰 비교 (h-64) */}
         <div className="grid grid-cols-2 gap-2">
           <div>
@@ -158,38 +361,104 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
             <div className="text-[10px] text-gray-500 mt-1 truncate" title={meta?.qoo10?.product_name_jp}>
               {meta?.qoo10?.product_name_jp || '-'}
             </div>
+            {meta?.qoo10?.cover_description && (
+              <div className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-1 mt-1"
+                title="qwen2.5vl cover description (GGG-1)">
+                👁 {meta.qoo10.cover_description}
+              </div>
+            )}
           </div>
           <div>
-            <div className="font-semibold text-gray-600 mb-1">한국 (cheapest)</div>
-            {row.cover_image_url ? (
-              <a href={row.cover_image_url} target="_blank" rel="noreferrer">
-                <img src={row.cover_image_url} className="w-full h-64 object-contain bg-gray-50 border rounded hover:ring-2 hover:ring-blue-400" />
-              </a>
-            ) : <div className="w-full h-64 bg-gray-100 border rounded flex items-center justify-center text-gray-400">no image</div>}
-            <div className="text-[10px] text-gray-500 mt-1 truncate" title={row.product_name}>
-              {row.product_name || '-'}
+            <div className="font-semibold text-gray-600 mb-1 flex items-center justify-between">
+              <span>{previewAlt ? <span className="text-amber-700">한국 (미리보기)</span> : '한국 (현재)'}</span>
+              {previewAlt && (
+                <span className="flex gap-1">
+                  <button onClick={() => confirmSwap(previewAlt)}
+                    className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded hover:bg-emerald-700">
+                    ✓ 이 SKU 로 교체
+                  </button>
+                  <button onClick={() => setPreviewAlt(null)}
+                    className="text-[10px] bg-gray-300 text-gray-800 px-1.5 py-0.5 rounded hover:bg-gray-400">
+                    ↶ 취소
+                  </button>
+                </span>
+              )}
             </div>
+            {(() => {
+              const showImg = previewAlt?.cover_image_url || row.cover_image_url;
+              const showName = previewAlt?.product_name || row.product_name;
+              const showDesc = previewAlt?.cover_description || meta?.domestic?.cover_description;
+              return (
+                <>
+                  {showImg ? (
+                    <a href={showImg} target="_blank" rel="noreferrer">
+                      <img src={showImg}
+                        className={`w-full h-64 object-contain bg-gray-50 border rounded hover:ring-2 hover:ring-blue-400 ${
+                          previewAlt ? 'ring-2 ring-amber-400' : ''}`} />
+                    </a>
+                  ) : <div className="w-full h-64 bg-gray-100 border rounded flex items-center justify-center text-gray-400">no image</div>}
+                  <div className="text-[10px] text-gray-500 mt-1 truncate" title={showName}>
+                    {showName || '-'}
+                    {previewAlt && (
+                      <span className="ml-1 text-amber-700 font-bold">— {previewAlt.price_krw.toLocaleString()}원</span>
+                    )}
+                  </div>
+                  {showDesc && (
+                    <div className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-100 rounded px-1.5 py-1 mt-1"
+                      title="qwen2.5vl cover description (GGG-1)">
+                      👁 {showDesc}
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
 
-        {/* 한국 ALT SKU — 클릭 시 swap (FFF-1) */}
-        {meta?.alt_skus && meta.alt_skus.length > 0 && (
+        {/* 한국 ALT SKU — 적합도 DESC 정렬, 클릭 시 미리보기 → 확정은 한국 슬롯 버튼 (LLL-1) */}
+        {sortedAlts.length > 0 && (
           <div className="border rounded p-2">
-            <div className="font-semibold text-gray-700 mb-2">한국 다른 SKU ({meta.alt_skus.length}개) — 클릭 시 swap</div>
+            <div className="font-semibold text-gray-700 mb-2">
+              한국 다른 SKU ({sortedAlts.length}개) — 적합도 순 · 클릭 → 한국 슬롯 미리보기
+            </div>
             <div className="grid grid-cols-3 gap-2">
-              {meta.alt_skus.map(alt => (
-                <button key={alt.id}
-                  onClick={() => selectAltSku(alt)}
-                  className={`border rounded p-1 text-left hover:ring-2 hover:ring-blue-400 transition ${
-                    alt.is_current_cheapest ? 'ring-2 ring-emerald-500 bg-emerald-50' : 'bg-white'}`}
-                  title={alt.product_name}
-                >
-                  <img src={alt.cover_image_url} className="w-full h-24 object-contain bg-gray-50 rounded" />
-                  <div className="text-[10px] mt-1 truncate font-semibold">{alt.price_krw.toLocaleString()}원</div>
-                  <div className="text-[10px] text-gray-500 truncate">{alt.product_name}</div>
-                  {alt.is_current_cheapest && <div className="text-[9px] text-emerald-700 font-bold">★ 현재 시트</div>}
-                </button>
-              ))}
+              {sortedAlts.map((alt, idx) => {
+                const isPrev = previewAlt?.id === alt.id;
+                const isTopMatch = idx === 0 && (alt.image_score ?? 0) > 0;
+                return (
+                  <button key={alt.id}
+                    onClick={() => previewAltSku(alt)}
+                    className={`border rounded p-1 text-left hover:ring-2 hover:ring-amber-400 transition ${
+                      alt.is_current_cheapest ? 'ring-2 ring-emerald-500 bg-emerald-50' :
+                      isPrev ? 'ring-2 ring-amber-500 bg-amber-50' : 'bg-white'}`}
+                    title={alt.cover_description ? `${alt.product_name}\n👁 ${alt.cover_description}` : alt.product_name}
+                  >
+                    <img src={alt.cover_image_url} className="w-full h-24 object-contain bg-gray-50 rounded" />
+                    <div className="text-[10px] mt-1 truncate font-semibold flex justify-between">
+                      <span>{alt.price_krw.toLocaleString()}원</span>
+                      {alt.image_score != null && (
+                        <span className={alt.image_score >= 0.7 ? 'text-emerald-700' :
+                          alt.image_score >= 0.5 ? 'text-amber-700' : 'text-red-700'}>
+                          img {alt.image_score.toFixed(2)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[10px] text-gray-500 truncate">{alt.product_name}</div>
+                    {alt.cover_description && (
+                      <div className="text-[9px] text-indigo-700 truncate" title={alt.cover_description}>
+                        👁 {alt.cover_description}
+                      </div>
+                    )}
+                    {alt.is_current_cheapest && <div className="text-[9px] text-emerald-700 font-bold">★ 현재 시트</div>}
+                    {isTopMatch && !alt.is_current_cheapest && (
+                      <div className="text-[9px] text-amber-700 font-bold">⭐ 적합도 1위</div>
+                    )}
+                    {isPrev && (
+                      <div className="text-[9px] text-amber-800 font-bold">▶ 미리보기 중</div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -201,24 +470,86 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
             <div className="grid grid-cols-4 gap-1">
               {meta.qoo10_samples.map(q => (
                 <a key={q.id} href={q.product_url} target="_blank" rel="noreferrer"
-                  className="border rounded p-1 hover:ring-2 hover:ring-blue-400" title={q.product_name}>
+                  className="border rounded p-1 hover:ring-2 hover:ring-blue-400"
+                  title={q.cover_description ? `${q.product_name}\n👁 ${q.cover_description}` : q.product_name}>
                   <img src={q.cover_image_url} className="w-full h-20 object-contain bg-gray-50 rounded" />
                   <div className="text-[10px] mt-1 truncate font-semibold">¥{q.price_jpy.toLocaleString()}</div>
+                  {q.cover_description && (
+                    <div className="text-[9px] text-indigo-700 truncate" title={q.cover_description}>
+                      👁 {q.cover_description}
+                    </div>
+                  )}
                 </a>
               ))}
             </div>
           </div>
         )}
 
+        {/* WWW-1: 한국 SKU 상세 페이지 이미지 (extras) — vision 점수 + 묘사 */}
+        {meta?.domestic?.extras && meta.domestic.extras.length > 0 && (
+          <div className="border rounded p-2">
+            <div className="font-semibold text-gray-700 mb-2 flex items-center justify-between">
+              <span>한국 상세 이미지 ({meta.domestic.extras.length}개, 점수순)</span>
+              <span className="text-[10px] text-gray-500">vision 평가 (qwen2.5vl)</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1">
+              {meta.domestic.extras.map((ex, i) => {
+                const sc = ex.score;
+                const scColor = sc == null ? 'text-gray-400'
+                  : sc >= 0.9 ? 'text-emerald-700 font-bold'
+                  : sc >= 0.6 ? 'text-amber-700'
+                  : sc >= 0.3 ? 'text-gray-600'
+                  : 'text-red-600';
+                const url = ex.path?.startsWith('http')
+                  ? ex.path
+                  : `/${ex.path?.replace(/\\/g, '/')}`;
+                return (
+                  <a key={i} href={url} target="_blank" rel="noreferrer"
+                    className="border rounded p-1 hover:ring-2 hover:ring-blue-400 block"
+                    title={ex.desc ? `score=${sc?.toFixed(2) ?? '-'}\n${ex.desc}` : `score=${sc?.toFixed(2) ?? '-'}`}>
+                    <img src={url} className="w-full h-20 object-contain bg-gray-50 rounded" />
+                    <div className={`text-[10px] mt-1 truncate ${scColor}`}>
+                      {sc != null ? `score ${sc.toFixed(2)}` : '미평가'}
+                    </div>
+                    {ex.desc && (
+                      <div className="text-[9px] text-gray-500 truncate" title={ex.desc}>
+                        {ex.desc}
+                      </div>
+                    )}
+                  </a>
+                );
+              })}
+            </div>
+            <div className="text-[10px] text-gray-400 mt-1">
+              💡 score 0.9+ 녹색 = 좋은 컷 (등록용), 0.3- 빨강 = 텍스트/저화질
+            </div>
+          </div>
+        )}
+
         {/* 매칭 사유 */}
         {meta?.match && (
-          <div className="border rounded p-2 bg-amber-50">
-            <div className="font-semibold text-gray-700 mb-1">매칭</div>
+          <div className={`border rounded p-2 ${
+            meta.match.decision === 'needs_review' ? 'bg-amber-100 border-amber-400' : 'bg-amber-50'}`}>
+            <div className="font-semibold text-gray-700 mb-1 flex items-center gap-2">
+              매칭
+              {meta.match.decision === 'needs_review' && (
+                <span className="text-amber-800 text-[10px] font-bold">⚠ 사장님 검수 우선</span>
+              )}
+            </div>
             <div className="flex gap-3">
               <span>img <b>{meta.match.image_score?.toFixed(2) ?? '-'}</b></span>
               <span>txt <b>{meta.match.name_score?.toFixed(2) ?? '-'}</b></span>
+              {meta.match.quality_score != null && (
+                <span title="결합 품질 점수 (image+text+description)">
+                  Q <b className={
+                    meta.match.quality_score >= 0.7 ? 'text-emerald-700' :
+                    meta.match.quality_score >= 0.5 ? 'text-amber-700' : 'text-red-700'
+                  }>{meta.match.quality_score.toFixed(2)}</b>
+                </span>
+              )}
               <span className={`px-1 py-0.5 rounded text-[10px] ${
                 meta.match.decision === 'accepted' ? 'bg-emerald-100 text-emerald-800' :
+                meta.match.decision === 'needs_review' ? 'bg-amber-200 text-amber-900 font-bold' :
                 meta.match.decision === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-gray-100'
               }`}>{meta.match.decision}</span>
             </div>
@@ -228,12 +559,65 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
 
         {/* 한국 URL / 원가 / 무게 (인플레이스 편집) */}
         <div className="border rounded p-2 space-y-2">
-          <div className="font-semibold text-gray-700">한국 상품 정보 (직접 편집)</div>
+          <div className="font-semibold text-gray-700 flex items-center justify-between">
+            <span>한국 상품 정보 (직접 편집)</span>
+          </div>
           <div>
             <label className="block text-gray-500 mb-0.5">URL</label>
-            <input type="text" value={edit.product_url || ''}
-              onChange={e => patch({ product_url: e.target.value })}
-              className="w-full border rounded px-1 py-0.5 text-[11px]" />
+            <div className="flex gap-1">
+              <input type="text" value={edit.product_url || ''}
+                onChange={e => patch({ product_url: e.target.value })}
+                className="flex-1 border rounded px-1 py-0.5 text-[11px]"
+                placeholder="https://smartstore.naver.com/.../products/... 또는 brand.naver.com/.../products/..." />
+              <button
+                onClick={regenerateFromUrl}
+                disabled={regenerating || !edit.product_url}
+                className="relative px-2 py-0.5 bg-purple-600 text-white text-[11px] rounded hover:bg-purple-700 disabled:bg-gray-400 whitespace-nowrap overflow-hidden min-w-[140px]"
+                title="URL 의 한국 SKU 정보 + 큐텐 SEO + JP 상세 카피 자동 재생성"
+              >
+                {regenerating && regenProgress.total > 0 && (
+                  <span
+                    className="absolute inset-0 bg-purple-800 transition-all"
+                    style={{ width: `${(regenProgress.cur / regenProgress.total) * 100}%` }}
+                  />
+                )}
+                <span className="relative z-10">
+                  {regenerating
+                    ? `⏳ ${Math.round((regenProgress.cur / Math.max(regenProgress.total, 1)) * 100)}% (${regenProgress.cur}/${regenProgress.total})`
+                    : '🔄 URL 로 SEO 재생성'}
+                </span>
+              </button>
+            </div>
+            {regenMsg && (
+              <div className={`text-[10px] mt-1 ${
+                regenMsg.startsWith('✓') ? 'text-emerald-700' :
+                regenMsg.startsWith('✗') ? 'text-red-700' :
+                'text-gray-500'
+              }`}>{regenMsg}</div>
+            )}
+            {regenerating && regenProgress.msg && (
+              <div className="text-[10px] mt-0.5 text-purple-700 truncate" title={regenProgress.msg}>
+                ▸ {regenProgress.msg}
+              </div>
+            )}
+            {/* IIII-1: Naver 로그인 setup — 항상 표시 (작은 버튼) */}
+            <div className="mt-1 flex items-center gap-2 text-[10px]">
+              <button
+                onClick={setupNaverLogin}
+                disabled={naverLoginRunning}
+                className={`px-2 py-0.5 rounded text-[10px] ${
+                  needsNaverLogin
+                    ? 'bg-amber-600 text-white hover:bg-amber-700'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                } disabled:bg-gray-400`}
+                title="Naver 로그인 cookies 1회 설정 (만료 시 재실행)"
+              >
+                {naverLoginRunning ? '⏳ Chrome 열림 — 로그인 후 닫기' : '🔐 Naver 로그인 setup'}
+              </button>
+              {needsNaverLogin && (
+                <span className="text-amber-700 font-bold">← 클릭 (로그인 필요)</span>
+              )}
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div>
@@ -267,10 +651,16 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
           <div className="font-semibold text-gray-700">큐텐 등록 콘텐츠 (직접 편집)</div>
 
           <div>
-            <label className="block text-gray-500 mb-0.5">title_jp (40자 이내)</label>
+            <label className="block text-gray-500 mb-0.5">
+              title_jp (최대 100자, 첫 30자 핵심)
+              <span className="ml-2 text-[10px] text-gray-400">
+                현재: {(edit.qoo10_title_jp || '').length}자
+              </span>
+            </label>
             <input type="text" value={edit.qoo10_title_jp || ''}
               onChange={e => patch({ qoo10_title_jp: e.target.value })}
-              className="w-full border rounded px-1 py-0.5" maxLength={40} />
+              className="w-full border rounded px-1 py-0.5" maxLength={100}
+              title="큐텐 가이드: 100자 이내, 첫 30자에 핵심 키워드, 브랜드 중복 X, 특수문자 X, 이벤트 문구 X (marketing_points 에)" />
           </div>
 
           <div>
@@ -293,31 +683,59 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
           </div>
 
           <div>
-            <label className="block text-gray-500 mb-0.5">marketing_points ({(edit.qoo10_marketing || []).length}/4)</label>
-            <ul className="space-y-1 mb-1">
-              {(edit.qoo10_marketing || []).map((p, i) => (
-                <li key={i} className="flex gap-1 items-start">
-                  <span className="text-gray-400 mt-0.5">•</span>
-                  <input value={p} onChange={e => updatePoint(i, e.target.value)}
-                    className="flex-1 border rounded px-1 py-0.5 text-[11px]" />
-                  <button onClick={() => removePoint(i)} className="text-gray-400 hover:text-red-500 px-1">×</button>
-                </li>
-              ))}
+            <label className="block text-gray-500 mb-0.5">
+              marketing_points ({(edit.qoo10_marketing || []).length}/4)
+              <span className="ml-2 text-[10px] text-gray-400">
+                각 30자 이내 / 의태어+약사법회피 (qoo10-jp-detail-master 가이드)
+              </span>
+            </label>
+            <ul className="space-y-1.5 mb-1">
+              {(edit.qoo10_marketing || []).map((p, i) => {
+                const len = (p || '').length;
+                const lenColor = len > 30 ? 'text-red-600' : 'text-gray-400';
+                return (
+                  <li key={i} className="flex gap-1 items-start">
+                    <span className="text-purple-700 font-bold text-[10px] mt-1 w-8 shrink-0">P{i+1}</span>
+                    <textarea value={p} onChange={e => updatePoint(i, e.target.value)}
+                      rows={2}
+                      placeholder={`패턴 ${['A 효과/편의성','B 성분/기술','C 사용감/디자인','D 이벤트(送料無料 等)'][i] || ''} — 의태어 + 약사법 회피 (印象/サポート)`}
+                      className="flex-1 border rounded px-1.5 py-1 text-[11px] resize-y" />
+                    <div className="flex flex-col gap-0.5">
+                      <span className={`text-[9px] ${lenColor}`}>{len}자</span>
+                      <button onClick={() => removePoint(i)} className="text-gray-400 hover:text-red-500 text-xs">×</button>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
             <div className="flex gap-1">
-              <input value={newPoint} onChange={e => setNewPoint(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addPoint()}
-                placeholder="새 마케팅 포인트 + Enter"
-                className="flex-1 border rounded px-1 py-0.5 text-[11px]" />
-              <button onClick={addPoint} className="bg-blue-600 text-white px-2 rounded text-[11px]">+</button>
+              <textarea value={newPoint} onChange={e => setNewPoint(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) addPoint(); }}
+                rows={2}
+                placeholder="새 마케팅 포인트 (Ctrl/Cmd + Enter)"
+                className="flex-1 border rounded px-1.5 py-1 text-[11px] resize-y" />
+              <button onClick={addPoint} className="bg-blue-600 text-white px-2 rounded text-[11px] self-start">+</button>
+            </div>
+            <div className="text-[9px] text-gray-500 mt-1">
+              💡 패턴 분산 권장: <strong>A</strong> 효과 (예: "1日10分で本格ケア♪"),
+              <strong> B</strong> 성분 (예: "コラーゲン*配合"),
+              <strong> C</strong> 사용감 (예: "ぴたっと密着"),
+              <strong> D</strong> 이벤트 (예: "送料無料 正規品")
             </div>
           </div>
 
           <div>
-            <label className="block text-gray-500 mb-0.5">option_name (단품/3個セット 등)</label>
+            <label className="block text-gray-500 mb-0.5">
+              option_name (UUU-1: ' | ' separator)
+              <span className="ml-2 text-[10px] text-gray-400">
+                단품 / 3個セット / 5+1セット / リフィル付き 등
+              </span>
+            </label>
             <input type="text" value={edit.qoo10_option_name || ''}
               onChange={e => patch({ qoo10_option_name: e.target.value })}
-              className="w-full border rounded px-1 py-0.5" />
+              placeholder="単品 | 3個セット | 5+1セット"
+              className="w-full border rounded px-1 py-0.5"
+              title="옵션 여러 개면 ' | ' separator. 한국 옵션을 일본어 친숙 표현으로 (UUU-1)" />
           </div>
         </div>
 
@@ -334,6 +752,139 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
             </ul>
           </div>
         )}
+
+        {/* EEEE-1: JP 상세페이지 카피 + 한글 번역 (qoo10-jp-detail-master.md 가이드) */}
+        <details className="border-2 border-purple-300 rounded p-2 bg-purple-50" open>
+          <summary className="font-semibold text-purple-800 cursor-pointer">
+            📄 JP 상세페이지 카피 (한글 번역 포함, 가이드 준수)
+            {!row.qoo10_jp_detail && (
+              <span className="ml-2 text-[10px] text-gray-500 font-normal">(데이터 없음 — URL 재생성 필요)</span>
+            )}
+            {row.qoo10_jp_detail?.error && (
+              <span className="ml-2 text-[10px] text-red-600 font-normal">(생성 오류)</span>
+            )}
+            {row.qoo10_jp_detail && !row.qoo10_jp_detail.error && (
+              <span className="ml-2 text-[10px] text-emerald-700 font-normal">✓ 생성됨</span>
+            )}
+          </summary>
+          {!row.qoo10_jp_detail && (
+            <div className="mt-2 text-[11px] text-gray-600 bg-white rounded p-2 border border-dashed">
+              💡 위 "한국 상품 정보" 섹션에서 <strong>URL 입력 → [🔄 URL 로 SEO 재생성]</strong> 클릭하면<br/>
+              여기에 자동 생성됩니다 (qoo10-jp-detail-master.md 가이드 적용).
+            </div>
+          )}
+          {row.qoo10_jp_detail?.error && (
+            <div className="mt-2 text-[11px] text-red-700 bg-white rounded p-2 border border-red-200">
+              생성 오류: {row.qoo10_jp_detail.error}
+            </div>
+          )}
+        {row.qoo10_jp_detail && !row.qoo10_jp_detail.error && (
+          <>
+            <div className="mt-2 space-y-3 text-[11px]">
+              {/* 인트로 */}
+              {row.qoo10_jp_detail.intro && (
+                <div>
+                  <div className="font-bold text-gray-700 mb-1">[인트로]</div>
+                  {row.qoo10_jp_detail.intro.pain_points && (
+                    <div className="mb-2">
+                      <div className="text-gray-500 text-[10px]">고민 포인트 (4)</div>
+                      {row.qoo10_jp_detail.intro.pain_points.map((p: any, i: number) => (
+                        <div key={i} className="grid grid-cols-2 gap-1 border-b py-0.5">
+                          <span className="text-blue-700">{p.jp}</span>
+                          <span className="text-gray-600">{p.ko}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {row.qoo10_jp_detail.intro.official_name && (
+                    <div className="grid grid-cols-2 gap-1 mb-1">
+                      <span className="text-blue-700"><b>정식명:</b> {row.qoo10_jp_detail.intro.official_name.jp}</span>
+                      <span className="text-gray-600">{row.qoo10_jp_detail.intro.official_name.ko}</span>
+                    </div>
+                  )}
+                  {row.qoo10_jp_detail.intro.main_headline && (
+                    <div className="grid grid-cols-2 gap-1 mb-1">
+                      <span className="text-blue-700"><b>헤드라인:</b><br/>
+                        {row.qoo10_jp_detail.intro.main_headline.line1?.jp} / {row.qoo10_jp_detail.intro.main_headline.line2?.jp}
+                      </span>
+                      <span className="text-gray-600">{row.qoo10_jp_detail.intro.main_headline.line1?.ko} / {row.qoo10_jp_detail.intro.main_headline.line2?.ko}</span>
+                    </div>
+                  )}
+                  {row.qoo10_jp_detail.intro.hero_number && (
+                    <div className="grid grid-cols-2 gap-1 mb-1">
+                      <span className="text-blue-700 font-bold text-base">{row.qoo10_jp_detail.intro.hero_number.jp}</span>
+                      <span className="text-gray-600">{row.qoo10_jp_detail.intro.hero_number.ko}</span>
+                    </div>
+                  )}
+                  {row.qoo10_jp_detail.intro.benefit_description && (
+                    <div className="grid grid-cols-2 gap-1 mb-1">
+                      <span className="text-blue-700">
+                        {row.qoo10_jp_detail.intro.benefit_description.line1?.jp} →<br/>
+                        {row.qoo10_jp_detail.intro.benefit_description.line2?.jp}
+                      </span>
+                      <span className="text-gray-600">
+                        {row.qoo10_jp_detail.intro.benefit_description.line1?.ko} →<br/>
+                        {row.qoo10_jp_detail.intro.benefit_description.line2?.ko}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* POINT 1-3 */}
+              {Array.isArray(row.qoo10_jp_detail.points) && row.qoo10_jp_detail.points.map((pt: any, i: number) => (
+                <div key={i} className="border-t pt-2">
+                  <div className="font-bold text-gray-700 mb-1">
+                    [{pt.badge}] <span className="text-[9px] text-gray-500">({pt.type})</span>
+                  </div>
+                  {pt.headline && (
+                    <div className="grid grid-cols-2 gap-1 mb-1">
+                      <span className="text-blue-700 font-semibold">
+                        {pt.headline.line1?.jp}<br/>{pt.headline.line2?.jp}
+                      </span>
+                      <span className="text-gray-600">
+                        {pt.headline.line1?.ko}<br/>{pt.headline.line2?.ko}
+                      </span>
+                    </div>
+                  )}
+                  {Array.isArray(pt.description) && pt.description.map((d: any, j: number) => (
+                    <div key={j} className="grid grid-cols-2 gap-1 text-[10px] text-gray-600 ml-2">
+                      <span>· {d.jp}</span>
+                      <span>· {d.ko}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+
+              {/* 추천 */}
+              {row.qoo10_jp_detail.target && (
+                <div className="border-t pt-2">
+                  <div className="font-bold text-gray-700 mb-1">
+                    [{row.qoo10_jp_detail.target.header?.jp}]
+                    <span className="text-[9px] text-gray-500 ml-2">({row.qoo10_jp_detail.target.header?.ko})</span>
+                  </div>
+                  {Array.isArray(row.qoo10_jp_detail.target.bullets) && row.qoo10_jp_detail.target.bullets.map((b: any, i: number) => (
+                    <div key={i} className="grid grid-cols-2 gap-1 border-b py-0.5">
+                      <span className="text-blue-700">{b.jp}</span>
+                      <span className="text-gray-600">{b.ko}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* 면책 */}
+              {Array.isArray(row.qoo10_jp_detail.footnotes) && row.qoo10_jp_detail.footnotes.length > 0 && (
+                <div className="border-t pt-2 text-[9px] text-gray-500">
+                  <div className="font-bold mb-0.5">[면책]</div>
+                  {row.qoo10_jp_detail.footnotes.map((f: any, i: number) => (
+                    <div key={i}>{f.jp} <span className="text-gray-400">({f.ko})</span></div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+        </details>
       </div>
 
       {/* Footer */}

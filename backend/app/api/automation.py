@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json as jsonlib
 import math
+import os
 import uuid
 from datetime import date as date_cls, datetime
 from typing import Optional
@@ -56,6 +57,10 @@ class AutoFilterRequest(BaseModel):
     categories: Optional[list[str]] = Field(
         None,
         description="category_inferred 화이트리스트. None 이면 모두 통과. 예: ['03.뷰티&화장품','07.식품']",
+    )
+    category_blacklist: Optional[list[str]] = Field(
+        None,
+        description="raw 큐텐 category blacklist. 예: ['05.디지털', '08.엔터테인먼트&e티켓']",
     )
     limit: int = Field(50, description="상위 N개만 반환")
 
@@ -100,9 +105,14 @@ async def auto_filter(req: AutoFilterRequest):
 
     # categories 화이트리스트 정규화 (None/빈 리스트면 모두 통과)
     cat_whitelist = set(req.categories) if req.categories else None
+    # MMM-1: raw 큐텐 카테고리 blacklist (디지털/엔터테인먼트 등 제외)
+    cat_blacklist = set(req.category_blacklist) if req.category_blacklist else set()
 
     filtered = []
     for kw in by_jp.values():
+        # MMM-1: blacklist 우선 (브랜드 무관 — 디지털/엔터테인먼트는 사장님 사업 영역 X)
+        if cat_blacklist and kw.get("category") in cat_blacklist:
+            continue
         if kw["search_volume"] < req.search_volume_min:
             continue
         if kw["kr_ratio"] < req.kr_ratio_min:
@@ -210,30 +220,48 @@ async def auto_build(req: AutoBuildRequest):
             qoo10_count, qoo10_min, qoo10_avg, qoo10_max, qoo10_avg_set = q.one()
             qoo10_count = qoo10_count or 0
 
-            # 3) 국내 매칭 한국 상품 (구매가 후보)
+            # 3) 국내 매칭 한국 상품 (구매가 후보) — RRR-1 적합도 우선
             #    우선순위:
-            #      ① DomesticMatchCandidate.decision='accepted' (Phase 1 결합 룰 통과) 의 최저가
-            #      ② 없으면 같은 search_keyword 의 단순 최저가 (legacy fallback)
+            #      ① accepted + quality_score >= QUALITY_CHEAPEST_MIN (기본 0.6) 중 최저가
+            #      ② accepted 만 (quality 통과 0건 시 relax)
+            #      ③ 같은 search_keyword 단순 최저가 (legacy fallback, 매칭 0건)
             #    옵션 정보 (DomesticProductOption) 도 같이 조회해서 payload 에 포함.
             from app.db.models import DomesticMatchCandidate as _DMC, DomesticProductOption as _DPO
 
             kw_ko = meta.get("keyword_kr") or ""
+            quality_min = float(os.getenv("QUALITY_CHEAPEST_MIN", "0.6") or 0.6)
             cheapest = None
 
-            # ① 매칭된 한국 상품 — 큐텐 search_keyword(jp) 기준 join
+            # ① 적합도 우선 — accepted + quality_score >= 0.6 중 최저가
             row = (await session.execute(
                 select(DomesticProduct)
                 .join(_DMC, _DMC.domestic_product_id == DomesticProduct.id)
                 .join(Qoo10Product, Qoo10Product.id == _DMC.qoo10_product_id)
                 .where(Qoo10Product.search_keyword == jp)
                 .where(_DMC.decision == "accepted")
+                .where(_DMC.quality_score >= quality_min)
                 .where(DomesticProduct.price_krw > 0)
                 .order_by(DomesticProduct.price_krw.asc())
                 .limit(1)
             )).scalar_one_or_none()
-            match_source = "matched" if row else None
+            match_source = "matched_high_quality" if row else None
 
-            # ② legacy fallback — 같은 keyword_ko 단순 최저가
+            # ② accepted relax — quality 통과 0건이면 그냥 accepted 중 최저가
+            if row is None:
+                row = (await session.execute(
+                    select(DomesticProduct)
+                    .join(_DMC, _DMC.domestic_product_id == DomesticProduct.id)
+                    .join(Qoo10Product, Qoo10Product.id == _DMC.qoo10_product_id)
+                    .where(Qoo10Product.search_keyword == jp)
+                    .where(_DMC.decision == "accepted")
+                    .where(DomesticProduct.price_krw > 0)
+                    .order_by(DomesticProduct.price_krw.asc())
+                    .limit(1)
+                )).scalar_one_or_none()
+                if row:
+                    match_source = "matched_any"
+
+            # ③ legacy fallback — 같은 keyword_ko 단순 최저가 (매칭 0건)
             if row is None and kw_ko:
                 row = (await session.execute(
                     select(DomesticProduct)
@@ -410,6 +438,7 @@ async def get_review_payload(target_date: str):
                         Qoo10Product.qoo10_option_name,
                         Qoo10Product.product_name,
                         Qoo10Product.product_name_ko,
+                        Qoo10Product.qoo10_jp_detail,
                     )
                     .where(Qoo10Product.search_keyword == kw_jp)
                     .where(Qoo10Product.qoo10_title_jp.is_not(None))
@@ -426,12 +455,13 @@ async def get_review_payload(target_date: str):
                             Qoo10Product.qoo10_option_name,
                             Qoo10Product.product_name,
                             Qoo10Product.product_name_ko,
+                            Qoo10Product.qoo10_jp_detail,
                         )
                         .where(Qoo10Product.search_keyword == kw_jp)
                         .limit(1)
                     )).first()
                 if qres:
-                    cov, title, tags, marketing, opt, jp_name, ko_name = qres
+                    cov, title, tags, marketing, opt, jp_name, ko_name, jp_detail_raw = qres
                     try:
                         tags_list = jsonlib.loads(tags) if tags else []
                     except Exception:
@@ -440,6 +470,12 @@ async def get_review_payload(target_date: str):
                         marketing_list = jsonlib.loads(marketing) if marketing else []
                     except Exception:
                         marketing_list = []
+                    jp_detail = None
+                    if jp_detail_raw:
+                        try:
+                            jp_detail = jsonlib.loads(jp_detail_raw)
+                        except Exception:
+                            jp_detail = None
                     c["qoo10"] = {
                         "cover_image_url": cov or "",
                         "product_name_jp": jp_name or "",
@@ -448,6 +484,7 @@ async def get_review_payload(target_date: str):
                         "tags": tags_list,
                         "marketing_points": marketing_list,
                         "option_name": opt or "",
+                        "jp_detail": jp_detail,  # FFFF-1
                     }
 
             # 2) 매칭 사유 — DomesticMatchCandidate
@@ -527,6 +564,7 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                     Qoo10Product.qoo10_option_name,
                     Qoo10Product.product_name,
                     Qoo10Product.product_name_ko,
+                    Qoo10Product.cover_description,
                 )
                 .where(Qoo10Product.search_keyword == keyword_jp)
                 .where(Qoo10Product.qoo10_title_jp.is_not(None))
@@ -543,12 +581,13 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                         Qoo10Product.qoo10_option_name,
                         Qoo10Product.product_name,
                         Qoo10Product.product_name_ko,
+                        Qoo10Product.cover_description,
                     )
                     .where(Qoo10Product.search_keyword == keyword_jp)
                     .limit(1)
                 )).first()
             if qres:
-                qid, cov, title, tags, marketing, opt, jp_name, ko_name = qres
+                qid, cov, title, tags, marketing, opt, jp_name, ko_name, cov_desc = qres
                 try:
                     tags_list = jsonlib.loads(tags) if tags else []
                 except Exception:
@@ -566,6 +605,7 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                     "tags": tags_list,
                     "marketing_points": marketing_list,
                     "option_name": opt or "",
+                    "cover_description": cov_desc or "",
                 }
 
         # 2) 한국 상품 ID — product_name 으로 (또는 이미 큐텐 매칭의 cheapest 사용)
@@ -580,6 +620,30 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
             if dres:
                 d_id = dres[0]
 
+        # 3a) 한국 cover description (GGG-1) + extras 평가 (VVV-1/WWW-1)
+        if d_id:
+            drow = (await s.execute(
+                select(
+                    DomesticProduct.cover_description,
+                    DomesticProduct.extras_eval_json,
+                ).where(DomesticProduct.id == d_id).limit(1)
+            )).first()
+            if drow:
+                desc, extras_json = drow
+                extras = []
+                if extras_json:
+                    try:
+                        extras = jsonlib.loads(extras_json)
+                        # score DESC 정렬 (None 은 마지막)
+                        extras.sort(key=lambda x: -(x.get("score") if x.get("score") is not None else -1))
+                    except Exception:
+                        extras = []
+                out["domestic"] = {
+                    "id": d_id,
+                    "cover_description": desc or "",
+                    "extras": extras,
+                }
+
         # 3) 매칭 사유 — domestic_id 기준 가장 높은 image_score
         if d_id:
             mres = (await s.execute(
@@ -588,16 +652,18 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                     DomesticMatchCandidate.name_score,
                     DomesticMatchCandidate.image_match_note,
                     DomesticMatchCandidate.decision,
+                    DomesticMatchCandidate.quality_score,
                 )
                 .where(DomesticMatchCandidate.domestic_product_id == d_id)
                 .order_by(DomesticMatchCandidate.image_score.desc().nullslast())
                 .limit(1)
             )).first()
             if mres:
-                img_s, name_s, note, dec = mres
+                img_s, name_s, note, dec, q_s = mres
                 out["match"] = {
                     "image_score": float(img_s) if img_s is not None else None,
                     "name_score": float(name_s) if name_s is not None else None,
+                    "quality_score": float(q_s) if q_s is not None else None,
                     "note": (note or "")[:200],
                     "decision": dec or "pending",
                 }
@@ -631,6 +697,7 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                         DomesticProduct.price_krw, DomesticProduct.product_url,
                         DomesticProduct.cover_image_url, DomesticProduct.source,
                         DomesticProduct.image_score_overall,
+                        DomesticProduct.cover_description,
                     )
                     .where(DomesticProduct.search_keyword == kw_kr)
                     .where(DomesticProduct.cover_image_url.is_not(None))
@@ -644,9 +711,10 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                             "id": aid, "source": asrc, "product_name": aname,
                             "price_krw": aprice, "product_url": aurl,
                             "cover_image_url": acov, "image_score": ascore,
+                            "cover_description": adesc,
                             "is_current_cheapest": (aid == d_id),
                         }
-                        for aid, aname, aprice, aurl, acov, asrc, ascore in alt_rows
+                        for aid, aname, aprice, aurl, acov, asrc, ascore, adesc in alt_rows
                     ]
 
         # 6) 큐텐 원본 cover N개 (가격 ASC) — 사장님이 큐텐 vs 한국 비교
@@ -656,6 +724,7 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                     Qoo10Product.id, Qoo10Product.product_name,
                     Qoo10Product.product_name_ko, Qoo10Product.price_jpy,
                     Qoo10Product.cover_image_url, Qoo10Product.product_url,
+                    Qoo10Product.cover_description,
                 )
                 .where(Qoo10Product.search_keyword == keyword_jp)
                 .where(Qoo10Product.cover_image_url.is_not(None))
@@ -668,8 +737,9 @@ async def get_sheet_row_meta(keyword_jp: str = "", product_name: str = ""):
                     {
                         "id": qid, "product_name": qname, "product_name_ko": qko,
                         "price_jpy": qprice, "product_url": qurl, "cover_image_url": qcov,
+                        "cover_description": qdesc,
                     }
-                    for qid, qname, qko, qprice, qcov, qurl in qsamples
+                    for qid, qname, qko, qprice, qcov, qurl, qdesc in qsamples
                 ]
 
     return out
@@ -726,6 +796,66 @@ async def record_correction(req: CorrectionRequest):
         return {"status": "ok"}
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
+
+
+@router.get("/api/sheet/corrections/metrics")
+async def correction_metrics():
+    """학습 루프 metrics — AI vs 사장님 swap/reject 누적 통계 (학습 효과 추적).
+
+    - total: 누적 corrections 수
+    - by_kind: swap/reject/accept_as_is 분포
+    - ai_avg_image_score: AI 가 매겼던 image_score 평균 (낮을수록 모델 신뢰도 ↓)
+    - swap_count_recent_7d: 최근 7일 swap 수
+    - top_keywords: 가장 많이 swap 된 키워드 top 5
+    """
+    from datetime import timedelta
+    from app.db.models import UserCorrection
+    async with async_session() as s:
+        rows = (await s.execute(
+            select(UserCorrection)
+        )).scalars().all()
+
+    if not rows:
+        return {"total": 0, "message": "corrections 0건 — 사장님 swap/reject 누적 후 의미 있는 통계"}
+
+    by_kind: dict[str, int] = {}
+    img_scores = []
+    kw_swap: dict[str, int] = {}
+    cutoff_7d = datetime.utcnow() - timedelta(days=7)
+    swap_recent = 0
+
+    for r in rows:
+        k = r.decision_kind or "unknown"
+        by_kind[k] = by_kind.get(k, 0) + 1
+        if r.ai_image_score is not None:
+            img_scores.append(float(r.ai_image_score))
+        if k == "swap" and r.keyword_jp:
+            kw_swap[r.keyword_jp] = kw_swap.get(r.keyword_jp, 0) + 1
+        if k == "swap" and r.corrected_at and r.corrected_at >= cutoff_7d:
+            swap_recent += 1
+
+    top_keywords = sorted(kw_swap.items(), key=lambda x: -x[1])[:5]
+    avg_img = sum(img_scores) / len(img_scores) if img_scores else None
+
+    # AI 정확도 추정 (rough): 1 - swap_rate.
+    # swap → AI 가 잘못 매칭, accept_as_is → AI 가 잘 매칭
+    swap_n = by_kind.get("swap", 0)
+    accept_n = by_kind.get("accept_as_is", 0)
+    rate_basis = swap_n + accept_n
+    ai_accuracy = (accept_n / rate_basis) if rate_basis > 0 else None
+
+    return {
+        "total": len(rows),
+        "by_kind": by_kind,
+        "ai_avg_image_score": round(avg_img, 3) if avg_img is not None else None,
+        "ai_accuracy_estimate": round(ai_accuracy, 3) if ai_accuracy is not None else None,
+        "swap_count_recent_7d": swap_recent,
+        "top_swapped_keywords": [{"keyword_jp": k, "count": c} for k, c in top_keywords],
+        "tip": (
+            "swap 가 많은 키워드는 image_match prompt 또는 임계값 조정 후보. "
+            "ai_avg_image_score 가 낮으면 vision 모델 교체 검토."
+        ),
+    }
 
 
 @router.get("/api/sheet/corrections")

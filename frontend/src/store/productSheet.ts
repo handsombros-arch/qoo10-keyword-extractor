@@ -21,8 +21,12 @@ export interface SheetRow {
   id: string;                    // uuid
   product_name: string;          // 원문 (일본어)
   product_name_ko?: string;      // 한글 번역 (수동 편집 가능)
-  product_url?: string;
-  cover_image_url?: string;
+  product_url?: string;          // 한국 상품 URL
+  qoo10_url?: string;            // 큐텐 cheapest 상품 URL
+  cover_image_url?: string;      // 한국 cover
+  qoo10_cover_image_url?: string; // 큐텐 cheapest cover (좌측 이미지용)
+  folder_name?: string;          // image/{date}/<folder_name>/ 와 동일. 시트와 폴더 1:1 매칭. 예: "8. 프라이밀_단백질"
+  folder_index?: number;         // 날짜 내 순번 (1~N, final_score DESC)
   source?: string;               // 'shop:tsurutsuru', '수동', '관심키워드' 등
   shop_rank?: number | null;
   review_count?: number | null;
@@ -56,7 +60,7 @@ export interface SheetRow {
   keyword_kr?: string;
   match_image_score?: number;       // 0~1
   match_name_score?: number;        // 0~1
-  match_decision?: 'accepted' | 'rejected' | 'cheapest' | 'manual' | 'pending';
+  match_decision?: 'accepted' | 'rejected' | 'cheapest' | 'manual' | 'pending' | 'needs_review' | 'needs_search';
   match_note?: string;              // 비전 사유 (예: "동일 패키지, 다른 향")
 
   // 큐텐 SEO 콘텐츠 (Phase 4-B 자동 생성, 사장님 인플레이스 편집 가능)
@@ -64,6 +68,9 @@ export interface SheetRow {
   qoo10_tags?: string[];            // 검색 태그 5~10개
   qoo10_marketing?: string[];       // 마케팅 포인트 3~4개
   qoo10_option_name?: string;       // 옵션명 (단품/3個セット 등)
+
+  // EEEE-1: JP 상세페이지 카피 (qoo10-jp-detail-master.md 가이드 + 한글 번역 jp+ko 쌍)
+  qoo10_jp_detail?: any;            // {intro:{pain_points:[{jp,ko}],...}, points:[...], target:{...}, footnotes:[...]}
 
   // 하위 호환
   purchase_price_krw?: number;

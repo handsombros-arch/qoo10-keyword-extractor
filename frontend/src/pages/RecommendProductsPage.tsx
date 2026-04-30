@@ -378,6 +378,58 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       cellStyle: { padding: 2 },
     },
     {
+      field: 'folder_name', headerName: '폴더명', width: 160, pinned: 'left',
+      cellRenderer: (p: any) => {
+        const v = p.value || '';
+        if (!v) return <span className="text-[10px] text-gray-300">-</span>;
+        return <span className="text-[11px] font-mono text-gray-700" title={`image/${p.data.created_at || ''}/${v}/`}>{v}</span>;
+      },
+    },
+    {
+      field: 'qoo10_url', headerName: '큐텐 URL', width: 80, pinned: 'left',
+      cellRenderer: (p: any) => {
+        // 큐텐 product URL 이 자주 깨지므로 keyword_jp 검색 URL 우선
+        const kwJp = p.data?.keyword_jp || '';
+        const url = kwJp
+          ? `https://www.qoo10.jp/s/?keyword=${encodeURIComponent(kwJp)}`
+          : (p.value || '');
+        if (!url) return <span className="text-[10px] text-gray-300">-</span>;
+        return (
+          <a href={url} target="_blank" rel="noreferrer"
+             className="text-[11px] text-orange-700 hover:underline"
+             title={url}>🛒 검색</a>
+        );
+      },
+    },
+    {
+      field: 'keyword_jp', headerName: '키워드(일본어)', width: 150, pinned: 'left',
+      cellRenderer: (p: any) => {
+        const v = p.value || '';
+        if (!v) return <span className="text-[10px] text-gray-300">-</span>;
+        return (
+          <a href={`https://www.qoo10.jp/s/?keyword=${encodeURIComponent(v)}`}
+             target="_blank" rel="noreferrer"
+             className="text-[11px] text-blue-600 hover:underline" title={`큐텐 검색: ${v}`}>
+            {v}
+          </a>
+        );
+      },
+    },
+    {
+      field: 'keyword_kr', headerName: '키워드(한국어)', width: 150, pinned: 'left',
+      cellRenderer: (p: any) => {
+        const v = p.value || '';
+        if (!v) return <span className="text-[10px] text-gray-300">-</span>;
+        return (
+          <a href={`https://search.shopping.naver.com/search/all?query=${encodeURIComponent(v)}`}
+             target="_blank" rel="noreferrer"
+             className="text-[11px] text-green-700 hover:underline" title={`네이버 검색: ${v}`}>
+            {v}
+          </a>
+        );
+      },
+    },
+    {
       field: 'source', headerName: '출처', width: 120, pinned: 'left',
       cellRenderer: (p: any) => {
         const v = p.value || '';
@@ -386,23 +438,23 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
     },
     {
-      field: 'product_name', headerName: '상품명', width: 300, pinned: 'left', autoHeight: false,
+      field: 'product_name', headerName: '한국 SKU 명', width: 360, pinned: 'left', autoHeight: false,
       cellRenderer: (p: any) => {
         if (p.data?.__expansion) return null;
-        const img = p.data.cover_image_url;
+        const qImg = p.data.qoo10_cover_image_url;
+        const krImg = p.data.cover_image_url;
         const name = p.value || '';
-        const thumb = img ? (
+        const renderImg = (src: string | undefined, label: string) => src ? (
           <img
-            src={img}
-            alt=""
+            src={src}
+            alt={label}
             className="w-14 h-14 object-cover rounded border border-gray-200 flex-shrink-0 cursor-zoom-in hover:ring-2 hover:ring-blue-400 transition"
-            onClick={(e) => { e.stopPropagation(); setZoomImg(img); }}
-            title="클릭 확대"
+            onClick={(e) => { e.stopPropagation(); setZoomImg(src); }}
+            title={`${label} — 클릭 확대`}
           />
         ) : (
-          <div className="w-14 h-14 rounded bg-gray-100 flex-shrink-0" />
+          <div className="w-14 h-14 rounded bg-gray-100 flex-shrink-0 flex items-center justify-center text-[8px] text-gray-400">{label}</div>
         );
-        // 상품명 클릭 → 우측 슬라이드 패널 (SEO/매칭/옵션/URL/원가/무게 통합 편집)
         const text = (
           <span
             onClick={(e) => { e.stopPropagation(); onOpenDetailPanel?.(p.data); }}
@@ -412,13 +464,19 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             {name}
           </span>
         );
-        return <div className="flex items-center gap-2 overflow-hidden h-full">{thumb}<div className="flex-1 overflow-hidden">{text}</div></div>;
+        return (
+          <div className="flex items-center gap-1 overflow-hidden h-full">
+            {renderImg(qImg, '큐텐')}
+            {renderImg(krImg, '한국')}
+            <div className="flex-1 overflow-hidden ml-1">{text}</div>
+          </div>
+        );
       },
     },
     {
-      field: 'product_name_ko', headerName: '한글명', width: 200, pinned: 'left', editable: true,
+      field: 'product_name_ko', headerName: '큐텐 → 한글', width: 220, pinned: 'left', editable: true,
       cellStyle: { backgroundColor: '#fefce8' },
-      valueFormatter: (p: any) => p.value || '(번역 필요)',
+      valueFormatter: (p: any) => p.value || '(LLM 번역 필요)',
     },
 
     // ─ 원가 섹션 (엑셀 L, M 근처) ─
@@ -587,15 +645,19 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     { field: 'notes', headerName: '메모', width: 130, editable: true },
 
     // ─ 매칭 메타 (TT-1A 신규, decision/마케팅포인트는 default visible) ─
-    { field: 'match_decision', headerName: '매칭', width: 80, hide: false,
+    { field: 'match_decision', headerName: '매칭', width: 110, hide: false,
       cellRenderer: (p: any) => {
         const v = p.value || 'pending';
         const cls = v === 'accepted' ? 'bg-emerald-100 text-emerald-800'
+          : v === 'needs_review' ? 'bg-amber-200 text-amber-900 font-bold'
+          : v === 'needs_search' ? 'bg-red-200 text-red-900 font-bold'
           : v === 'rejected' ? 'bg-red-100 text-red-700'
           : v === 'cheapest' ? 'bg-blue-100 text-blue-700'
           : v === 'manual' ? 'bg-gray-100 text-gray-700'
           : 'bg-yellow-50 text-yellow-700';
-        return <span className={`text-[10px] px-1.5 py-0.5 rounded ${cls}`}>{v}</span>;
+        const label = v === 'needs_review' ? '⚠ 검수'
+          : v === 'needs_search' ? '🔍 검색 필요' : v;
+        return <span className={`text-[10px] px-1.5 py-0.5 rounded ${cls}`} title={v}>{label}</span>;
       },
     },
     { field: 'match_image_score', headerName: 'img점수', width: 75, hide: true, type: 'numericColumn',
@@ -721,7 +783,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   // ─ CSV 내보내기 ─
   const exportCsv = () => {
     const headers = [
-      '작성일', '출처', '상품명', '한글명', '상품URL',
+      '작성일', '출처', '한국 SKU 명', '큐텐→한글', '상품URL',
       '경쟁가(¥)', '예상판매가(¥)', '차이%', '내판매가(¥)', '메가가(¥)',
       '무게(g)', '구매가(원)', '국내배송(원)', '합계(원)', '포장+KSE(원)',
       '배송모드', '배송비(원)', '수수료(¥)', '매출(원)', '총원가(원)',

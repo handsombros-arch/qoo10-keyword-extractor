@@ -91,6 +91,16 @@ SET_COUNT_VERIFY_MIN_MARGIN = float(_env("SET_COUNT_VERIFY_MIN_MARGIN", "2.0"))
 # Phase 4-B 큐텐 SEO 콘텐츠 자동 생성 (title_jp/tags/option_name/marketing_points)
 ENABLE_QOO10_CONTENT = _env("ENABLE_QOO10_CONTENT", "1") == "1"
 
+# FFFF-1 — JP 상세 카피 자동 생성 (qoo10-jp-detail-master.md 가이드 + 한글 번역)
+# 사장님 결정: 기능만 만들고 자동화 반영 X (ENABLE_JP_DETAIL=0). 사장님이 수동 trigger 또는 UI 버튼(DDDD-1) 사용.
+ENABLE_JP_DETAIL = _env("ENABLE_JP_DETAIL", "0") == "1"
+
+# HHH-1 — 매칭 image_score 낮을 때 alt 키워드 의역 → 재검색 → 재매칭
+ENABLE_MATCH_RETRY = _env("ENABLE_MATCH_RETRY", "1") == "1"
+
+# KKK-1 — 자동 학습 (사장님 swap 기반 preferred kw 주입 + quality auto-tune)
+ENABLE_AUTO_LEARNING = _env("ENABLE_AUTO_LEARNING", "1") == "1"
+
 # 자동 필터 카테고리 화이트리스트 (콤마구분). 비어있으면 UserData 우선 → 그것도 없으면 모두 통과.
 AUTO_FILTER_CATEGORIES_ENV = _env("AUTO_FILTER_CATEGORIES", "")
 
@@ -256,13 +266,13 @@ async def _ensure_chrome_debug() -> None:
         log.warning(f"Chrome 디버그 launch 실패 (browser_manager fallback): {e}")
         return
 
-    # 5초 대기 후 재점검 (로드 시간)
-    for i in range(10):
+    # 30초 대기 후 재점검 (Chrome 첫 launch 는 5초 부족 — 4/29 case)
+    for i in range(30):
         await asyncio.sleep(1)
         if _port_open():
             log.info(f"디버그 Chrome 9222 활성화 ({i+1}초)")
             return
-    log.warning("디버그 Chrome 5초 내 응답 없음 — fallback")
+    log.warning("디버그 Chrome 30초 내 응답 없음 — fallback")
 
 
 async def _check_naver_api() -> tuple[bool, str]:
@@ -287,6 +297,24 @@ async def _check_naver_api() -> tuple[bool, str]:
         return False, f"HTTP {r.status_code}"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+
+
+async def _check_naver_smartstore_session(
+    client: httpx.AsyncClient,
+) -> tuple[bool, str, int | None]:
+    """naver-browser-profile 쿠키 디스크 검사 (네트워크 호출 없음, 빠름).
+
+    백엔드의 /api/products/naver-session-check 호출 → (alive, details, days_left).
+    """
+    try:
+        data = await _get(client, "/api/products/naver-session-check", timeout=5)
+        return (
+            bool(data.get("alive")),
+            str(data.get("details") or "?"),
+            data.get("days_left"),
+        )
+    except Exception as e:
+        return False, f"점검 실패: {type(e).__name__}: {e}", None
 
 
 async def _check_chrome_debug() -> tuple[bool, str]:
@@ -336,21 +364,37 @@ async def step_login_status(client: httpx.AsyncClient) -> None:
     # 3) 디버그 Chrome (CDP attach 위해)
     chrome_ok, chrome_msg = await _check_chrome_debug()
 
+    # 4) Naver smartstore 세션 (naver-browser-profile 쿠키)
+    naver_sess_ok, naver_sess_msg, naver_days_left = await _check_naver_smartstore_session(client)
+
     # 모두 통과
     log.info(f"큐텐: {'✓' if qoo10_ok else '✗'} {qoo10_msg}")
     log.info(f"네이버 API: {'✓' if naver_ok else '✗'} {naver_msg}")
     log.info(f"디버그 Chrome: {'✓' if chrome_ok else '✗'} {chrome_msg}")
+    log.info(f"Naver 세션: {'✓' if naver_sess_ok else '✗'} {naver_sess_msg}")
 
-    if qoo10_ok and naver_ok:
+    if qoo10_ok and naver_ok and naver_sess_ok:
         # Chrome 은 critical 아님 (warning 만)
         if not chrome_ok:
             log.warning(f"디버그 Chrome 9222 비활성 — 한국 셀러 진입 차단 가능: {chrome_msg}")
+        # D-7 임박 알림 (alive 지만 만료 임박 — 자동화는 진행)
+        if naver_days_left is not None and naver_days_left <= 7:
+            warn = (
+                f"📌 Naver 세션 만료 임박 — D-{naver_days_left}\n"
+                f"open_naver_login_chrome.bat 실행 → 재로그인 (로그인 유지 체크) → 창 닫기"
+            )
+            log.warning(warn)
+            try:
+                await notify.send(warn, level="warn")
+            except Exception:
+                pass
         return
 
     # 실패 시 — 어느 보안 풀어야 하는지 명시
     failed = []
     if not qoo10_ok: failed.append(f"큐텐 ({qoo10_msg})")
-    if not naver_ok: failed.append(f"네이버 ({naver_msg})")
+    if not naver_ok: failed.append(f"네이버 API ({naver_msg})")
+    if not naver_sess_ok: failed.append(f"Naver 세션 ({naver_sess_msg}) → open_naver_login_chrome.bat 실행")
     if not chrome_ok: failed.append(f"Chrome9222 ({chrome_msg})")
 
     msg_lines = "\n".join(f"  - {f}" for f in failed)
@@ -457,6 +501,27 @@ async def _resolve_categories(client: httpx.AsyncClient) -> list[str] | None:
     return None
 
 
+# MMM-1: raw 큐텐 카테고리 blacklist 기본값 (사장님 사업 영역 X)
+DEFAULT_CATEGORY_BLACKLIST = ["05.디지털", "08.엔터테인먼트&e티켓", "10.모바일"]
+
+
+async def _resolve_category_blacklist(client: httpx.AsyncClient) -> list[str]:
+    """raw 큐텐 카테고리 blacklist (디지털/엔터테인먼트 자동 제외).
+
+    UserData → 기본값 (DEFAULT_CATEGORY_BLACKLIST)
+    """
+    try:
+        d = await _get(client, "/api/user-data/auto_filter_category_blacklist", timeout=10)
+        payload = d.get("data") or {}
+        if isinstance(payload, dict):
+            v = payload.get("value")
+            if isinstance(v, list):
+                return [str(x).strip() for x in v if str(x).strip()]
+    except Exception as e:
+        log.warning(f"UserData blacklist 조회 실패 (기본값): {e}")
+    return DEFAULT_CATEGORY_BLACKLIST
+
+
 async def _resolve_filter_thresholds(client: httpx.AsyncClient) -> tuple[float, float, int]:
     """자동 필터 임계값 조회. 우선순위: UserData > env > 하드코딩.
 
@@ -487,10 +552,13 @@ async def step_auto_filter(client: httpx.AsyncClient, target_date: date) -> list
         log.info("카테고리 화이트리스트: (미설정 — 전체 통과)")
 
     cm, kr, vm = await _resolve_filter_thresholds(client)
+    blacklist = await _resolve_category_blacklist(client)
     log.info(
         f"임계값: competition_max={cm} kr_ratio_min={kr} volume_min={vm} "
         f"(UserData → env → 하드코딩 순)"
     )
+    if blacklist:
+        log.info(f"카테고리 blacklist: {blacklist}")
 
     async def _call() -> dict:
         body = {
@@ -502,6 +570,8 @@ async def step_auto_filter(client: httpx.AsyncClient, target_date: date) -> list
         }
         if categories:
             body["categories"] = categories
+        if blacklist:
+            body["category_blacklist"] = blacklist
         return await _post(client, "/api/keywords/auto-filter", body)
 
     result = await with_retry(_call, label="자동 필터")
@@ -581,6 +651,35 @@ async def step_process_domestic_images(
     except Exception as e:
         log.warning(f"이미지 처리 실패 (best-effort): {e}")
         return {"error": str(e), "candidates": candidates_n}
+
+
+async def step_translate_qoo10_names(
+    client: httpx.AsyncClient, target_date: date
+) -> dict:
+    """STEP 5.4 — 큐텐 상품명 jp→ko 번역 (배치).
+
+    이 단계 누락 시 시트의 "큐텐→한글" 컬럼이 비게 됨.
+    """
+    log.info("=== STEP 5.4: 큐텐 상품명 번역 (jp→ko) ===")
+    try:
+        result = await _post(client, "/api/products/qoo10/translate-names", {
+            "date": str(target_date),
+        })
+    except Exception as e:
+        log.warning(f"번역 시작 실패 (best-effort): {e}")
+        return {"error": str(e)}
+    task_id = result.get("task_id")
+    candidates = result.get("candidates", 0)
+    if not task_id:
+        log.info(f"번역 대상 0건 (이미 처리됨)")
+        return {"candidates": 0}
+    log.info(f"번역 task_id={task_id} (대상 {candidates}개 unique 상품명)")
+    try:
+        await wait_task(client, task_id, label="큐텐 상품명 번역")
+        return {"task_id": task_id, "candidates": candidates}
+    except Exception as e:
+        log.warning(f"번역 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates}
 
 
 async def step_extract_set_counts(
@@ -788,6 +887,142 @@ async def step_generate_qoo10_content(
         return {"error": str(e), "candidates": candidates_n}
 
 
+async def step_auto_learning_inject(
+    client: httpx.AsyncClient, target_date: date
+) -> dict:
+    """STEP 5.6 (KKK-1 B) — swap 사례 기반 preferred kw 자동 주입.
+
+    expanded_search 전에 호출 → 사장님이 학습한 keyword_kr 가 자동 검색됨.
+    """
+    log.info("=== STEP 5.6: 자동 학습 — preferred kw 주입 (KKK-1 B) ===")
+    if not ENABLE_AUTO_LEARNING:
+        log.info("ENABLE_AUTO_LEARNING=0 — 스킵")
+        return {"skipped": True}
+    try:
+        result = await _post(client, "/api/recommendations/auto-learning/inject-preferred", {
+            "date": str(target_date),
+        })
+        inserted = result.get("inserted", 0)
+        if inserted:
+            log.info(f"학습 — {inserted}건 preferred kw 주입")
+        else:
+            log.info(f"학습 — {result.get('message') or '주입 0건'}")
+        return result
+    except Exception as e:
+        log.warning(f"자동 학습 inject 실패 (best-effort): {e}")
+        return {"error": str(e)}
+
+
+async def step_auto_learning_autotune(
+    client: httpx.AsyncClient,
+) -> dict:
+    """STEP 7 (KKK-1 C) — quality 임계값 swap_rate 기반 자동 조정.
+
+    매주 1회 권장. 매일 호출해도 변동 작아 상관없음 (sample < 5 면 skip).
+    """
+    log.info("=== STEP 7: 자동 학습 — quality 임계값 auto-tune (KKK-1 C) ===")
+    if not ENABLE_AUTO_LEARNING:
+        log.info("ENABLE_AUTO_LEARNING=0 — 스킵")
+        return {"skipped": True}
+    try:
+        result = await _post(client, "/api/recommendations/auto-learning/autotune", {})
+        decision = result.get("decision", "?")
+        if decision == "tightened":
+            log.info(f"학습 — 임계값 ↑ {result.get('before')} → {result.get('after')} "
+                     f"(swap_rate {result.get('swap_rate')})")
+        elif decision == "loosened":
+            log.info(f"학습 — 임계값 ↓ {result.get('before')} → {result.get('after')} "
+                     f"(swap_rate {result.get('swap_rate')})")
+        else:
+            log.info(f"학습 — {decision} ({result.get('message') or ''})")
+        return result
+    except Exception as e:
+        log.warning(f"자동 학습 autotune 실패 (best-effort): {e}")
+        return {"error": str(e)}
+
+
+async def step_build_jp_detail(
+    client: httpx.AsyncClient, target_date: date,
+) -> dict:
+    """STEP 6.05 (FFFF-1) — accepted/needs_review 매칭 candidate 마다 JP 상세 카피 + 한글 번역 자동 생성.
+
+    qoo10-jp-detail-master.md 가이드 적용. ~30 후보 × ~2분 = ~1h 소요.
+    """
+    log.info("=== STEP 6.05: JP 상세 카피 자동 (FFFF-1) ===")
+    if not ENABLE_JP_DETAIL:
+        log.info("ENABLE_JP_DETAIL=0 — 스킵")
+        return {"skipped": True}
+    try:
+        result = await _post(client, "/api/products/qoo10/build-jp-detail", {
+            "date": str(target_date),
+        })
+    except Exception as e:
+        log.warning(f"JP 상세 시작 실패 (best-effort): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates = result.get("candidates", 0)
+    if not task_id:
+        log.info(f"JP 상세 대상 0건 ({result.get('message', '')})")
+        return {"candidates": 0}
+    log.info(f"JP 상세 task_id={task_id} (대상 {candidates}건)")
+    try:
+        await wait_task(client, task_id, label="JP 상세 카피")
+    except Exception as e:
+        log.warning(f"JP 상세 wait 실패 (best-effort): {e}")
+        return {"error": str(e), "task_id": task_id}
+    return {"task_id": task_id, "candidates": candidates}
+
+
+async def step_match_retry(
+    client: httpx.AsyncClient, target_date: date
+) -> dict:
+    """STEP 6.6 (HHH-1) — image_score 낮은 candidate alt 키워드 재검색 + 재매칭.
+
+    auto-build 가 storage 만든 후 호출. snapshot 의 best image_score < 0.5 인
+    keyword 에 대해 LLM 으로 alt 한국어 키워드 2~3개 생성 → Naver 재검색 →
+    cheapest qoo10 vs 새 한국 cover 매칭. 결과 accepted DMC 행 INSERT.
+    이후 candidate-images 빌드가 새 cheapest 반영.
+    """
+    log.info("=== STEP 6.6: 매칭 retry (HHH-1) ===")
+    if not ENABLE_MATCH_RETRY:
+        log.info("ENABLE_MATCH_RETRY=0 — 스킵")
+        return {"skipped": True}
+
+    try:
+        result = await _post(client, "/api/recommendations/match-retry", {
+            "date": str(target_date),
+        })
+    except Exception as e:
+        log.warning(f"retry 시작 실패 (best-effort): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    if not task_id:
+        log.info(f"retry 실행 안됨: {result}")
+        return result
+
+    log.info(f"retry task_id={task_id}")
+    try:
+        await wait_task(client, task_id, label="매칭 retry")
+    except Exception as e:
+        log.warning(f"retry wait 실패 (best-effort): {e}")
+        return {"error": str(e), "task_id": task_id}
+
+    # 결과 조회
+    try:
+        summary = (await client.get(
+            f"{BACKEND}/api/recommendations/match-retry/{target_date}"
+        )).json()
+        improved = summary.get("improved", 0)
+        retried = summary.get("retried", 0)
+        log.info(f"retry 완료 — retried {retried}, 개선 {improved}")
+        return {"task_id": task_id, **summary}
+    except Exception as e:
+        log.warning(f"retry 결과 조회 실패: {e}")
+        return {"task_id": task_id, "error": str(e)}
+
+
 async def step_candidate_images(
     client: httpx.AsyncClient, target_date: date
 ) -> dict:
@@ -956,25 +1191,13 @@ def _format_summary(
 
     qc_line = _line(content_result, "ENABLE_QOO10_CONTENT=0", "개 큐텐 콘텐츠")
 
+    # 핵심만 — 모바일 한눈에 (~150자)
+    final_count = build_result.get('count', 0)
+    total_count = build_result.get('total_candidates', 0)
     return (
-        f"야간 자동화 완료\n"
-        f"시작: {started.strftime('%Y-%m-%d %H:%M')}\n"
-        f"종료: {ended.strftime('%H:%M')} (소요 {elapsed_str})\n\n"
-        f"트렌드 수집: {trend_status}\n"
-        f"카테고리 분류: {classify_line}\n"
-        f"필터 통과 키워드: {filtered_count}개\n"
-        f"한국상품 수집 키워드: {domestic_count}개\n"
-        f"set_count 추출: {sc_line}\n"
-        f"브랜드 확장: {be_line}\n"
-        f"확장 검색: {es_line}\n"
-        f"이미지 처리: {img_line}\n"
-        f"이미지+텍스트 매칭: {mt_line}\n"
-        f"큐텐 SEO 콘텐츠: {qc_line}\n"
-        f"set_count 비전 검증: {vf_line}\n"
-        f"마진 통과 후보: {build_result.get('count', 0)}개 "
-        f"(전체 {build_result.get('total_candidates', 0)})\n"
-        f"저장 키: {build_result.get('storage_key', '')}\n\n"
-        f"📊 출근 후 시트 빌드: {BACKEND}/recommend-products"
+        f"야간 자동화 완료 ({elapsed_str})\n"
+        f"📊 후보 {final_count}/{total_count} (필터통과 {filtered_count})\n"
+        f"📋 시트: {BACKEND}/recommend-products"
     )
 
 
@@ -1025,6 +1248,8 @@ async def main_async() -> int:
                 return 0
 
             domestic_kw_count = await step_collect_domestic(client, candidates)
+            # MMM-1: 큐텐 상품명 jp→ko 번역 (시트 "큐텐→한글" 컬럼 채움)
+            await step_translate_qoo10_names(client, target_date)
             set_count_result = await step_extract_set_counts(client, target_date)
 
             # Phase 1-D: brand expand → expanded search → image dl+vision → match
@@ -1033,17 +1258,30 @@ async def main_async() -> int:
             #   - process_domestic_images 가 새로 들어온 한국 cover 까지 다운+vision
             #   - match-images 가 1:N 매칭으로 accepted/rejected 결정
             brand_expand_result = await step_brand_expand(client, target_date, candidates)
+            # KKK-1 B — 사장님 swap 학습 → preferred kw 자동 주입 (expanded_keywords)
+            await step_auto_learning_inject(client, target_date)
             expanded_search_result = await step_expanded_search(client)
             image_result = await step_process_domestic_images(client, target_date, candidates)
             match_result = await step_match_images(client, target_date, candidates)
 
             # Phase 4-B 큐텐 SEO 콘텐츠 — auto_build 전에 생성 (검수 페이지 enrich 용)
             content_result = await step_generate_qoo10_content(client, target_date, candidates)
+            # FFFF-1: JP 상세 카피 + 한글 번역 (qoo10-jp-detail-master.md 가이드)
+            await step_build_jp_detail(client, target_date)
 
             build_result = await step_auto_build(client, candidates, target_date)
+            # HHH-1 — image_score 낮은 candidate alt 키워드 재검색 + 재매칭
+            #         (재매칭이 accepted DMC 만들면 다음 candidate-images 가 새 cheapest 사용)
+            retry_result = await step_match_retry(client, target_date)
+            if retry_result.get("improved", 0) > 0:
+                # alt 매칭 결과 반영을 위해 auto_build 재실행 (cheapest_domestic 갱신)
+                build_result = await step_auto_build(client, candidates, target_date)
             # DDD-1 — auto-build storage 후 candidates 만 keyword 폴더로
             await step_candidate_images(client, target_date)
             verify_result = await step_verify_set_counts(client, target_date, candidates)
+
+            # KKK-1 C — quality 임계값 자동 조정 (매주 수렴)
+            await step_auto_learning_autotune(client)
 
             ended = datetime.now()
             await notify.send(

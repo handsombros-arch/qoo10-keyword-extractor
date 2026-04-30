@@ -84,12 +84,12 @@ $Action = New-ScheduledTaskAction `
 # Trigger — 매일 지정 시간
 $Trigger = New-ScheduledTaskTrigger -Daily -At $TriggerTime
 
-# Settings — 누락 실행 처리, 실패 재시도, 30분 안에 끝나면 끝나는 대로 종료
+# Settings — 누락 실행 처리, 실패 재시도, 6시간 제한 (이전 2h 는 LLM 분류 도중 강제 종료 발생)
 $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -RestartCount 1 `
     -RestartInterval (New-TimeSpan -Minutes 3) `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 6) `
     -DontStopIfGoingOnBatteries `
     -AllowStartIfOnBatteries
 
@@ -131,13 +131,15 @@ if ($IncludeChromeDebug) {
                 -Execute "cmd.exe" `
                 -Argument "/c `"$ChromeBat`"" `
                 -WorkingDirectory $ProjectRoot
-            # PS5.1 호환 — CIM 클래스로 trigger + Delay 설정
-            $ChromeTrigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
+            # 트리거 2개: AtLogOn (사용자 로그인) + AtStartup (PC 부팅, SYSTEM 로그인 X 사용자 로그인 전 보장)
+            # AtLogOn 만 있으면 PC 가 계속 켜져있고 사용자 재로그인 안 하면 안 돔 → 4/29 case
+            $ChromeTrigger1 = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
+            $ChromeTrigger2 = New-ScheduledTaskTrigger -AtStartup
             try {
-                $ChromeTrigger.Delay = "PT1M"
+                $ChromeTrigger1.Delay = "PT1M"
+                $ChromeTrigger2.Delay = "PT2M"  # 부팅 후 2분 대기 (네트워크/드라이버 준비)
             } catch {
-                # PS5.1 일부 빌드에서 Delay property set 안 됨 — 무시 (즉시 시작)
-                Write-Host "[INFO] AtLogOn Delay 미지원 — 사용자 로그인 즉시 Chrome 시작" -ForegroundColor Yellow
+                Write-Host "[INFO] Delay 미지원 — 즉시 시작" -ForegroundColor Yellow
             }
             $ChromeSettings = New-ScheduledTaskSettingsSet `
                 -StartWhenAvailable `
@@ -147,12 +149,12 @@ if ($IncludeChromeDebug) {
             Register-ScheduledTask `
                 -TaskName $ChromeTaskName `
                 -Action $ChromeAction `
-                -Trigger $ChromeTrigger `
+                -Trigger @($ChromeTrigger1, $ChromeTrigger2) `
                 -Settings $ChromeSettings `
                 -Principal $Principal `
-                -Description "Qoo10 자동화용 디버그 Chrome (포트 9222, 사용자 로그인 시 자동 시작)" `
+                -Description "Qoo10 자동화용 디버그 Chrome (포트 9222, PC 부팅 + 사용자 로그인 시 자동 시작)" `
                 | Out-Null
-            Write-Host "[OK] '$ChromeTaskName' 등록 완료 — 사용자 로그인 시 디버그 Chrome 자동 시작" -ForegroundColor Green
+            Write-Host "[OK] '$ChromeTaskName' 등록 완료 — PC 부팅 + 사용자 로그인 시 자동 시작" -ForegroundColor Green
         }
     }
 }

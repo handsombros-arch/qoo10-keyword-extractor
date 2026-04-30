@@ -22,7 +22,20 @@ ALLOWED_KEYS = {
     "brand_auto_add_threshold",  # /settings 에서 조정. payload: {"value": 0.0~1.0}
     "auto_filter_categories",     # /settings 카테고리 화이트리스트. payload: {"value": ["03.뷰티&화장품", ...]}
     "auto_filter_thresholds",     # /settings 슬라이더. payload: {"competition_max": 2.0, "kr_ratio_min": 0.3, "volume_min": 40}
+    "quality_thresholds",          # III-1 매칭 quality. payload: {"accept": 0.7, "review": 0.5, "desc_weight": 0.25}
+    "auto_filter_category_blacklist",  # MMM-1 raw 큐텐 카테고리 blacklist. payload: {"value": ["05.디지털", ...]}
 }
+
+# 와일드카드 prefix — 날짜별 storage (시트가 read-only fetch)
+_PREFIX_KEYS = (
+    "last_auto_collected:",     # auto-build 결과 snapshot
+    "last_match_retry:",        # HHH-1 결과
+    "last_candidate_folders:",  # 후보 폴더 매핑 (folder_index/name + qoo10_url)
+)
+
+
+def _is_allowed(key: str) -> bool:
+    return key in ALLOWED_KEYS or any(key.startswith(p) for p in _PREFIX_KEYS)
 
 
 class PutRequest(BaseModel):
@@ -31,7 +44,7 @@ class PutRequest(BaseModel):
 
 @router.get("/{key}")
 async def get_data(key: str, session: AsyncSession = Depends(get_session)):
-    if key not in ALLOWED_KEYS:
+    if not _is_allowed(key):
         raise HTTPException(400, f"허용되지 않은 키: {key}")
 
     result = await session.execute(select(UserData).where(UserData.key == key))
@@ -52,7 +65,7 @@ async def get_data(key: str, session: AsyncSession = Depends(get_session)):
 
 @router.put("/{key}")
 async def put_data(key: str, req: PutRequest, session: AsyncSession = Depends(get_session)):
-    if key not in ALLOWED_KEYS:
+    if not _is_allowed(key):
         raise HTTPException(400, f"허용되지 않은 키: {key}")
 
     payload = jsonlib.dumps(req.data, ensure_ascii=False)
@@ -67,12 +80,19 @@ async def put_data(key: str, req: PutRequest, session: AsyncSession = Depends(ge
         session.add(UserData(key=key, data=payload, updated_at=now))
 
     await session.commit()
+    # III-1 — quality_thresholds 변경 시 매칭 캐시 무효화
+    if key == "quality_thresholds":
+        try:
+            from app.services.match_quality import invalidate_quality_cache
+            invalidate_quality_cache()
+        except Exception:
+            pass
     return {"key": key, "updated_at": now.isoformat()}
 
 
 @router.delete("/{key}")
 async def delete_data(key: str, session: AsyncSession = Depends(get_session)):
-    if key not in ALLOWED_KEYS:
+    if not _is_allowed(key):
         raise HTTPException(400, f"허용되지 않은 키: {key}")
     from sqlalchemy import delete as sql_delete
     await session.execute(sql_delete(UserData).where(UserData.key == key))

@@ -122,6 +122,8 @@ class Qoo10Product(Base):
     qoo10_option_name = Column(String)               # 큐텐 등록 옵션명 (단품/세트 표기)
     qoo10_marketing = Column(Text)                   # JSON 배열 — 마케팅 포인트 3~4개
     qoo10_content_generated_at = Column(DateTime)    # 콘텐츠 생성 시각
+    qoo10_jp_detail = Column(Text)                   # FFFF-1: JP 상세 카피 JSON (인트로/POINT/추천 + 한글 번역)
+    cover_description = Column(Text)                 # GGG-1: vision LLM 한 줄 설명 (큐텐 g_500 큰 이미지)
 
 
 class DomesticProduct(Base):
@@ -140,6 +142,7 @@ class DomesticProduct(Base):
     lookup_date = Column(Date, default=date.today)
     image_local_path = Column(String)        # image/{date}/{kr_name}/cover.jpg
     image_score_overall = Column(Float)       # 정렬용 종합 점수
+    cover_description = Column(Text)          # GGG-1: vision LLM 한 줄 설명 (한국 cover)
     image_score_json = Column(Text)           # 4항목 raw 점수 JSON
     # ─── Phase 2 — 상세 페이지 진입 결과 ───
     shipping_kind = Column(String)            # "free" / "paid" / "conditional" / "unknown"
@@ -147,6 +150,7 @@ class DomesticProduct(Base):
     shipping_threshold = Column(Integer)      # conditional 시 무료 기준 (예: 50000)
     detail_scraped_at = Column(DateTime)      # 상세 진입 처리 시점
     detail_image_paths = Column(Text)         # 누끼/내용물 이미지 로컬 경로 JSON 배열
+    extras_eval_json = Column(Text)           # VVV-1 vision 평가 JSON [{file, score, desc}]
     # ─── Phase 4 — 무게 추출 ───
     weight_g = Column(Float)                  # +200g 패키지 룰 적용된 등록용 무게 (g)
     weight_source = Column(String)            # "name" / "ocr" / "manual" / "default"
@@ -248,7 +252,8 @@ class DomesticMatchCandidate(Base):
       - "translated_name": 번역된 큐텐 product_name_ko 로 검색된 결과
       - "brand_expanded": 브랜드 키워드 확장 (3-2)에서 발견된 결과
 
-    decision: "pending" | "accepted" | "rejected" — 임계값 + 향후 사용자 검수
+    decision: "pending" | "accepted" | "rejected" | "needs_review" (III-1)
+    quality_score: 0~1 — image+text+description 결합 (III-1)
     """
     __tablename__ = "domestic_match_candidates"
 
@@ -259,6 +264,7 @@ class DomesticMatchCandidate(Base):
     name_score = Column(Float)                  # 텍스트 유사도 (선택)
     image_score = Column(Float)                 # 비전 유사도 0~1
     image_match_note = Column(Text)             # 비전 사유 텍스트
+    quality_score = Column(Float)               # III-1 결합 quality
     decision = Column(String, default="pending")
     created_at = Column(DateTime, default=datetime.utcnow)
 
