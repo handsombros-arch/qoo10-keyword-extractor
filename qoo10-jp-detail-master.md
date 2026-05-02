@@ -2,7 +2,7 @@
 
 > **목적**: 한국 상품 URL이 주어졌을 때, 마케팅 포인트 추출 → 일본어 번역 → Qoo10 Japan 상세페이지 톤앤매너로 카피 자동 생성.
 > **대상**: Claude Code 자동화 컨텍스트
-> **버전**: v1.0 (인트로 + POINT 1~3 + 추천 대상 통합)
+> **버전**: v1.1 (2026-05-02 — 자동화 통합 섹션 추가, 모델/OCR 흐름 명시)
 > **레퍼런스**: Anua Visibly Firming Collagen + Retinol Refining Gua Sha Cream
 
 ---
@@ -464,9 +464,22 @@ POINT 섹션은 인트로보다 **각주 빈도 높음**. 성분·효능 구체�
 
 ## 6. Claude Code 작업 워크플로우
 
+> **자동화 진입점 (2026-04-30 신규)**:
+> `POST /api/products/regenerate-content-from-url` — 시트 우측 패널 [URL 재생성] 버튼.
+> 백엔드: `backend/app/api/products.py` → `naver_fetch_v2` (Playwright CDP attach) → OCR → SEO + JP detail 분리 호출.
+>
+> **OCR 의존도가 높음** — 네이버 상세페이지는 본문이 이미지 위주(브랜드 이미지 카피, 성분/사용법 카드 등)라 텍스트 스크랩만으로는 마케팅 포인트가 부족함. EasyOCR(`backend/app/services/ocr.py`) 로 보강하지만, OCR 정확도가 곧 마케팅 포인트 품질의 상한.
+
 ### Step 1. 입력 데이터 수집·정리
 
 한국 상품 URL을 받으면 다음 정보를 추출:
+
+**소스 우선순위**:
+1. **HTML 텍스트** (제품 정식명, 브랜드, 카테고리, 가격, 옵션) — 텍스트 스크랩 안정적
+2. **detail_image_paths** 의 이미지 → **EasyOCR** → 한국어 텍스트 → LLM 추출 (성분, 사용법, 마케팅 카피, 임상 결과)
+3. OCR 신뢰 임계값 미만이면 해당 필드는 빈 값 유지 (할루시네이션 금지)
+
+
 
 ```yaml
 product:
@@ -718,5 +731,32 @@ detail_page:
 
 ---
 
+## 부록 C. 자동화 코드 진입점 (2026-05-02 추가)
+
+| 흐름 | 코드 |
+|------|------|
+| API 진입점 (UI 트리거) | `backend/app/api/products.py` → `POST /api/products/regenerate-content-from-url` |
+| 네이버 상세 fetch | `backend/app/services/naver_fetch_v2.py` (CDP 9222 attach 1순위, persistent context 2순위) |
+| OCR | `backend/app/services/ocr.py` (EasyOCR 싱글톤, 2단계 전처리) |
+| SEO 콘텐츠 생성 | `backend/app/services/llm/qoo10_content.py` (`qoo10_content.txt` prompt) |
+| JP detail 생성 | `backend/app/services/qoo10_jp_detail.py` (모델 분리 + ULTRA lenient JSON 파서) |
+| 결과 저장 | `qoo10_products` 테이블 — `qoo10_title_jp / qoo10_tags / qoo10_option_name / qoo10_marketing(JSON) / qoo10_jp_detail` |
+
+**모델 라우팅 (`.env`)**:
+- `QOO10_CONTENT_MODEL=ollama:qwen3:14b` — SEO 콘텐츠 (짧은 제목/태그/마케팅 포인트)
+- `QOO10_JP_DETAIL_MODEL=ollama:qwen2.5:14b` — JP detail 본문 (복잡 nested JSON, qwen3 thinking 토큰 truncate 회피)
+- temperature 0.4 → 0.2 (복잡 schema 는 낮게)
+
+**ULTRA lenient JSON 파서 4단계** (`qoo10_jp_detail.py`):
+1. 엄격 파싱
+2. smart-quote / trailing-comma 자동 fix
+3. incremental `}` trim (mid-output truncate 대비)
+4. 모두 실패 → raw 응답을 `backend/logs/llm_failures/` 에 저장 + None 반환
+
+**LLM 호출 누적 로그**: `logs/llm_calls/YYYY-MM-DD.jsonl`
+
+---
+
 **버전 히스토리**
-- v1.0 (현재): 인트로 6블록 + POINT 1~3 + 추천 대상 통합. 임팩트 우선 글자수 적용. 정식 상품명을 카테고리 태그 위치로 이동.
+- v1.1 (2026-05-02): 자동화 통합 섹션 (부록 C), 모델 분리 (qwen2.5:14b for JP detail), OCR 의존성 명시, ULTRA lenient JSON 파서 노트.
+- v1.0 (2026-04-29): 인트로 6블록 + POINT 1~3 + 추천 대상 통합. 임팩트 우선 글자수 적용. 정식 상품명을 카테고리 태그 위치로 이동.

@@ -352,6 +352,25 @@ async def delete_by_date(lookup_date: date, session: AsyncSession = Depends(get_
     return {"status": "deleted", "count": deleted, "lookup_date": str(lookup_date)}
 
 
+@router.post("/_delete_all")
+async def delete_all_keywords(body: dict | None = None):
+    """R-7: 전체 keywords 테이블 삭제. body 에 {"confirm": "DELETE_ALL"} 필수.
+
+    영향: /recommend 페이지 표 비어짐. 자동화 STEP 3 다시 돌리면 채워짐.
+    bid_history, expanded_keywords 등 관련 데이터는 보존.
+    """
+    body = body or {}
+    if body.get("confirm") != "DELETE_ALL":
+        return {"error": "confirm 키 필수: {\"confirm\": \"DELETE_ALL\"}"}
+    from app.db.models import Keyword as _K
+    from sqlalchemy import delete as _delete
+    async with async_session() as session:
+        result = await session.execute(_delete(_K))
+        deleted = result.rowcount or 0
+        await session.commit()
+    return {"status": "deleted", "count": deleted, "message": f"keywords 테이블 전체 {deleted}행 삭제"}
+
+
 async def _get_product_counts(page, keyword_jp: str) -> dict:
     """큐텐 검색 페이지에서 전체/JP/KR/CN/OT 상품수 추출.
     VBA: #items strong (전체), #div_global_domestic_tab .tab .local[data-nation_code] + .num
@@ -860,3 +879,211 @@ async def _run_expanded_search(task_id: str, rows: list, max_results: int) -> No
     except Exception as e:
         task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
         traceback.print_exc()
+
+
+# ─── R-5 키워드 신선도 진단 ───────────────────────────────
+
+
+@router.get("/freshness")
+async def keyword_freshness(days: int = 14):
+    """N일 윈도우 키워드 신선도 분석 (read-only).
+
+    응답:
+      daily: 일자별 unique keyword_jp 수 + 신규 (lookup_date 첫 등장) 수
+      pair_jaccard: 인접 일자 keyword_jp 자카드 (overlap %)
+      filtered_overlap: STEP 4 자동 필터 통과 후보의 일별 overlap 추정
+                       (auto-filter 가 호출 시점 기준이라 정확 측정은 불가, daily 통계로 근사)
+    """
+    from datetime import timedelta as _td
+    from sqlalchemy import select as _sel, func as _func
+    from app.db.models import Keyword as _K
+
+    days = max(1, min(days, 90))
+    end_date = date.today()
+    start_date = end_date - _td(days=days - 1)
+
+    async with async_session() as session:
+        # 1) 윈도우 내 (date, keyword_jp) — distinct
+        rows = (await session.execute(
+            _sel(_K.lookup_date, _K.keyword_jp)
+            .where(_K.lookup_date >= start_date)
+            .where(_K.lookup_date <= end_date)
+            .where(_K.keyword_jp.is_not(None))
+            .distinct()
+        )).all()
+
+        # 2) 윈도우 시작 이전 — 첫 등장 판정용
+        prior_rows = (await session.execute(
+            _sel(_K.keyword_jp)
+            .where(_K.lookup_date < start_date)
+            .where(_K.keyword_jp.is_not(None))
+            .distinct()
+        )).all()
+
+    prior_set = {r[0] for r in prior_rows}
+
+    # 일자별 keyword_jp 집합 + 누적 (신규 판정)
+    by_day: dict = {}
+    for d, jp in rows:
+        d_str = str(d)
+        by_day.setdefault(d_str, set()).add(jp)
+
+    seen_so_far = set(prior_set)
+    daily = []
+    sorted_dates = sorted(by_day.keys())
+    for d_str in sorted_dates:
+        kws = by_day[d_str]
+        new_kws = kws - seen_so_far
+        daily.append({
+            "date": d_str,
+            "total": len(kws),
+            "new": len(new_kws),
+            "returning": len(kws) - len(new_kws),
+        })
+        seen_so_far |= kws
+
+    # 인접 일자 자카드
+    pair_jaccard = []
+    for i in range(1, len(sorted_dates)):
+        a, b = sorted_dates[i - 1], sorted_dates[i]
+        sa, sb = by_day[a], by_day[b]
+        inter = len(sa & sb)
+        union = len(sa | sb)
+        pair_jaccard.append({
+            "a": a, "b": b,
+            "size_a": len(sa), "size_b": len(sb),
+            "intersect": inter,
+            "jaccard": round(inter / union, 4) if union else 0.0,
+        })
+
+    return {
+        "window_days": days,
+        "start_date": str(start_date),
+        "end_date": str(end_date),
+        "total_unique_in_window": len(set().union(*by_day.values()) if by_day else set()),
+        "daily": daily,
+        "pair_jaccard": pair_jaccard,
+    }
+
+
+# ─── R-5 M05 연관/유사 키워드 → expanded_keywords ──────────
+
+
+@router.post("/expand-related")
+async def expand_related_endpoint(body: dict | None = None):
+    """STEP 3.5 (R-5) — 자동 필터 통과 키워드 → M05 유사/연관 → expanded_keywords INSERT.
+
+    body:
+      keywords_jp:    list[str] (필수)
+      max_per_parent: int (각 parent 키워드당 저장 상한, 기본 15)
+
+    저장: ExpandedKeyword (parent_jp = 원본, keyword_jp = M05 결과, keyword_kr 자동 번역)
+          (parent_jp, keyword_jp) 중복 dedup.
+    """
+    import asyncio as _asyncio
+    from sqlalchemy import select as _sel
+    from app.db.models import ExpandedKeyword as _EK
+
+    if not browser_manager.is_logged_in:
+        return {"error": "로그인 필요"}
+
+    body = body or {}
+    keywords_jp = [k for k in (body.get("keywords_jp") or []) if isinstance(k, str) and k.strip()]
+    if not keywords_jp:
+        return {"task_id": None, "candidates": 0, "message": "keywords_jp 비어있음"}
+
+    max_per_parent = max(1, int(body.get("max_per_parent", 15)))
+
+    task_id = task_manager.create_task(
+        name=f"M05 연관/유사 키워드 ({len(keywords_jp)}개)",
+        total=len(keywords_jp),
+    )
+
+    async def _run():
+        task_manager.start_task(task_id)
+        scraper = RelatedKeywordScraper(browser_manager, task_manager)
+        expanded_n = empty_n = 0
+        try:
+            for idx, parent_jp in enumerate(keywords_jp, 1):
+                try:
+                    result = await scraper.run(keywords=[parent_jp])
+                except Exception as e:
+                    logger.warning(f"[expand-related] M05 실패 {parent_jp!r}: {e}")
+                    empty_n += 1
+                    task_manager.update_progress(
+                        task_id, increment=1,
+                        message=f"[{idx}/{len(keywords_jp)}] FAIL {parent_jp[:20]}",
+                    )
+                    continue
+
+                kws = result.get("keywords") or []
+                # M05 결과 dedup (같은 parent 안에서 keyword_jp 중복 제거)
+                seen = set()
+                deduped = []
+                for kw in kws:
+                    jp = (kw.get("keyword_jp") or "").strip()
+                    if not jp or jp == parent_jp or jp in seen:
+                        continue
+                    seen.add(jp)
+                    deduped.append(jp)
+                deduped = deduped[:max_per_parent]
+
+                if not deduped:
+                    empty_n += 1
+                    task_manager.update_progress(
+                        task_id, increment=1,
+                        message=f"[{idx}/{len(keywords_jp)}] EMPTY {parent_jp[:20]}",
+                    )
+                    continue
+
+                # 한국어 번역 batch (best-effort)
+                try:
+                    kr_translations = await translate_batch(deduped, source="ja", target="ko")
+                except Exception as e:
+                    logger.warning(f"[expand-related] 번역 실패 {parent_jp!r}: {e}")
+                    kr_translations = ["" for _ in deduped]
+                kr_map = dict(zip(deduped, kr_translations))
+
+                # DB INSERT (UNIQUE parent_jp + keyword_jp dedup)
+                inserted = 0
+                try:
+                    async with async_session() as db:
+                        existing = (await db.execute(
+                            _sel(_EK.keyword_jp).where(_EK.parent_jp == parent_jp)
+                        )).all()
+                        existing_set = {r[0] for r in existing}
+                        for kw_jp in deduped:
+                            if kw_jp in existing_set:
+                                continue
+                            db.add(_EK(
+                                parent_jp=parent_jp,
+                                parent_kr=None,
+                                keyword_jp=kw_jp,
+                                keyword_kr=(kr_map.get(kw_jp) or "").strip() or None,
+                                source_count=len(kws),  # M05 raw 개수 (dedup 전)
+                            ))
+                            inserted += 1
+                        await db.commit()
+                except Exception as e:
+                    logger.warning(f"[expand-related] DB INSERT 실패 {parent_jp!r}: {e}")
+
+                expanded_n += inserted
+                task_manager.update_progress(
+                    task_id, increment=1,
+                    message=f"[{idx}/{len(keywords_jp)}] OK {parent_jp[:18]} +{inserted}/{len(deduped)}",
+                )
+
+            task_manager.complete_task(
+                task_id,
+                message=f"완료 — 확장 {expanded_n}, 빈 {empty_n} (대상 {len(keywords_jp)})",
+            )
+        except Exception as e:
+            task_manager.fail_task(task_id, message=f"실패: {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+    _asyncio.create_task(_run())
+    return {
+        "task_id": task_id,
+        "candidates": len(keywords_jp),
+        "max_per_parent": max_per_parent,
+    }

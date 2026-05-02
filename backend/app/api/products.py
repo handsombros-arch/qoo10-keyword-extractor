@@ -1508,7 +1508,11 @@ async def _do_regenerate(
     *,
     task_id: str | None = None,
 ) -> dict:
-    """실제 작업 — task_id 있으면 update_progress 호출."""
+    """실제 작업 — task_id 있으면 update_progress 호출.
+
+    R-8 (2026-05-02): `fetch_naver_url_v2` 가 자체적으로 `EXT_USE_EXTENSION` 환경변수
+    분기 → 기본값 true 시 크롬 확장 (qoo10-helper-extension) 경유. 호출 측 변경 0.
+    """
     from app.services.naver_fetch_v2 import fetch_naver_url_v2
     from app.services.llm.qoo10_content import generate_qoo10_content_async
     from app.services.qoo10_jp_detail import generate_jp_detail, ocr_detail_images
@@ -1517,8 +1521,8 @@ async def _do_regenerate(
         if task_id:
             task_manager.update_progress(task_id, increment=1, message=msg)
 
-    # 1/5. Naver fetch
-    _progress("Naver 페이지 fetch 중...")
+    # 1/5. Naver fetch (크롬 확장 또는 레거시 — env 분기)
+    _progress("Naver 페이지 fetch 중 (popup [즉시 폴링] 권장)...")
     info = await fetch_naver_url_v2(url, headless=True)
     if "error" in info:
         return {"error": f"fetch 실패: {info['error']}"}

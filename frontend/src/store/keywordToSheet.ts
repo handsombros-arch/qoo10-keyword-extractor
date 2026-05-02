@@ -17,14 +17,20 @@ export type KeywordLike = {
   added_at?: string;
 };
 
-/** keyword → SheetRow 변환. source 자동 (예: 'keyword:2026-04-29' 또는 'interest'). */
+/** keyword → SheetRow 변환. source 자동 (예: 'keyword:2026-04-29' 또는 'interest').
+ *
+ * R-7: product_name 은 빈칸 — 사장님이 한국 셀러 검색 후 직접 입력 (이전 placeholder = keyword_jp 이라
+ * 시트 컬럼에서 keyword_jp 와 한국 SKU 가 동일하게 보이는 문제 해결).
+ * category 도 함께 자동 입력 (LLM category_inferred 또는 raw category).
+ */
 export function keywordToSheetRow(kw: KeywordLike, source: string): SheetRow {
   return newSheetRow({
     keyword_jp: kw.keyword_jp,
     keyword_kr: kw.keyword_kr || undefined,
-    product_name: kw.keyword_jp,  // placeholder — 사장님이 한국 셀러 검색 후 입력
+    product_name: '',
+    category: kw.category || undefined,
     source,
-    match_decision: 'manual',  // 수동 source 표시
+    match_decision: 'manual',
   });
 }
 

@@ -628,7 +628,7 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
                 title="한국 셀러 상품 단가 (item_price_krw)" />
             </div>
             <div>
-              <label className="block text-gray-500 mb-0.5">국내배송 (원)</label>
+              <label className="block text-gray-500 mb-0.5">구매배송 (원)</label>
               <input type="number" value={edit.domestic_shipping_krw || ''}
                 onChange={e => patch({ domestic_shipping_krw: Number(e.target.value) || 0 })}
                 className="w-full border rounded px-1 py-0.5 text-right"
@@ -642,7 +642,7 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
             </div>
           </div>
           <div className="text-[10px] text-gray-500 mt-1">
-            합계 (구매가 + 국내배송): {((edit.item_price_krw || 0) + (edit.domestic_shipping_krw || 0)).toLocaleString()}원
+            합계 (구매가 + 구매배송): {((edit.item_price_krw || 0) + (edit.domestic_shipping_krw || 0)).toLocaleString()}원
           </div>
         </div>
 

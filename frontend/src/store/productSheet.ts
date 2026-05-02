@@ -39,8 +39,9 @@ export interface SheetRow {
   shipping_packaging_krw: number; // KSE 배대지까지 배송+포장비
 
   // 판매가 (엔)
-  competitor_price_jpy?: number;  // 스크래핑된 경쟁 상품가 (참고용)
-  sell_price_jpy: number;         // 내가 실제 등록할 판매가 (마진 계산 기준)
+  competitor_price_jpy?: number;     // 경쟁 상품가 (수동/스크래핑) — 상품가만
+  competitor_shipping_jpy?: number;  // R-7 경쟁사 배송비 (¥) — 별도 입력
+  sell_price_jpy: number;            // 내가 실제 등록할 판매가 (마진 계산 기준)
   // 메가와리 판매가는 sell_price_jpy * 0.9 로 자동 계산
 
   // 예상 판매량 (월간)
@@ -58,6 +59,7 @@ export interface SheetRow {
   // 검수 / 매칭 메타 (TT-1A — auto/shop source 에서 자동 채워짐, 사장님 override 가능)
   keyword_jp?: string;             // 큐텐 검색 keyword (자동화 source 추적용)
   keyword_kr?: string;
+  category?: string;               // R-7 카테고리 (LLM category_inferred 또는 사장님 수동)
   match_image_score?: number;       // 0~1
   match_name_score?: number;        // 0~1
   match_decision?: 'accepted' | 'rejected' | 'cheapest' | 'manual' | 'pending' | 'needs_review' | 'needs_search';
@@ -71,6 +73,19 @@ export interface SheetRow {
 
   // EEEE-1: JP 상세페이지 카피 (qoo10-jp-detail-master.md 가이드 + 한글 번역 jp+ko 쌍)
   qoo10_jp_detail?: any;            // {intro:{pain_points:[{jp,ko}],...}, points:[...], target:{...}, footnotes:[...]}
+
+  // R-7 (2026-05-01) 큐텐 등록 상태 — 사장님 수동 토글
+  //   undefined / '미정' = 검토 중 (가격/무게 미입력 등)
+  //   'in_progress'      = 등록 진행 중 (세팅 완료, 큐텐 등록 작업 중)
+  //   'completed'        = 등록 완료 (판매 시작)
+  registration_status?: 'in_progress' | 'completed' | '미정';
+  registered_at?: string;          // 등록 완료 일자 (ISO yyyy-mm-dd)
+  qoo10_product_id?: string;       // 큐텐 등록 후 사장님 입력 (옵션, 추후 매출 추적용)
+
+  // R-7 행 복제 추적 — 원본은 _parent_id 없음, 복사본은 원본 id 저장
+  //   사용처: 1) 영구 색깔 구분 (복사본 = 다른 배경)
+  //          2) 정렬 시 원본 직후로 stick (그룹 동작)
+  _parent_id?: string;
 
   // 하위 호환
   purchase_price_krw?: number;
@@ -95,6 +110,7 @@ function migrateRow(raw: any): SheetRow {
   }
   if (row.normal_sales_count == null) row.normal_sales_count = 0;
   if (row.mega_sales_count == null) row.mega_sales_count = 0;
+  if (row.competitor_shipping_jpy == null) row.competitor_shipping_jpy = 0;
   if (!row.created_at) row.created_at = new Date().toISOString().slice(0, 10);
   // 레거시 shipping_mode
   const m: any = row.shipping_mode;
@@ -108,6 +124,8 @@ function migrateRow(raw: any): SheetRow {
   if (row.qoo10_title_jp == null) row.qoo10_title_jp = '';
   if (row.qoo10_option_name == null) row.qoo10_option_name = '';
   if (row.match_decision == null) row.match_decision = 'pending';
+  // R-7 — 등록 상태 default '미정'
+  if (row.registration_status == null) row.registration_status = '미정';
   return row;
 }
 
@@ -169,6 +187,7 @@ export function newSheetRow(partial: Partial<SheetRow>): SheetRow {
     qoo10_title_jp: '',
     qoo10_option_name: '',
     match_decision: 'pending',
+    registration_status: '미정',
     ...partial,
   };
   // 경쟁가와 판매가 동기화 (상품 추가 시점에는 동일하게 시작)

@@ -115,7 +115,7 @@ export default function CompositionsPanel({ row, onChange, onClose }: Props) {
                 <th className="border px-2 py-1 text-right">수량</th>
                 <th className="border px-2 py-1 text-right">무게(g)</th>
                 <th className="border px-2 py-1 text-right">구매가(원)</th>
-                <th className="border px-2 py-1 text-right">국내배송(원)</th>
+                <th className="border px-2 py-1 text-right">구매배송(원)</th>
                 <th className="border px-2 py-1 text-right">포장·KSE(원)</th>
                 <th className="border px-2 py-1 text-right">판매가(¥)</th>
                 <th className="border px-2 py-1 text-center">메가</th>

@@ -101,6 +101,20 @@ ENABLE_MATCH_RETRY = _env("ENABLE_MATCH_RETRY", "1") == "1"
 # KKK-1 — 자동 학습 (사장님 swap 기반 preferred kw 주입 + quality auto-tune)
 ENABLE_AUTO_LEARNING = _env("ENABLE_AUTO_LEARNING", "1") == "1"
 
+# R-5 (2026-05-01) — STEP 4.5 M05 연관/유사 키워드 → expanded_keywords 보강.
+# 큐텐 트렌드 페이지 인기도 누적 → 매일 같은 670 키워드 → STEP 4 통과 33개 거의 고정.
+# 자동 필터 통과 33개 대상으로 M05 호출 → 키워드당 유사 ~5 + 연관 ~10 = ~500 신규 후보 발굴.
+ENABLE_RELATED_KEYWORDS = _env("ENABLE_RELATED_KEYWORDS", "1") == "1"
+RELATED_KEYWORDS_MAX_PER_PARENT = int(_env("RELATED_KEYWORDS_MAX_PER_PARENT", "15"))
+
+# R-6 (2026-05-01) — 자동화 범위 제어. 사장님 결정: 매칭/이미지/auto-build 흐름 불안정 → 홀드.
+# 키워드 RD (수집 + 분류 + 필터 + M05 다양성) 까지만 야간 자동화. 이후 단계는 수동 진행.
+#   - "keyword_only" (기본): STEP 1~4.5 (트렌드 수집 → 분류 → 필터 → M05) 까지만 실행
+#   - "full":               기존 전체 파이프라인 (STEP 5+ 포함, 레거시)
+# 시트 등록은 수동 — 사장님이 KeywordPage / ReviewPage 에서 [시트로 보내기].
+# URL 기반 이미지+SEO 재생성은 그대로 유지 (POST /api/products/regenerate-content-from-url).
+AUTOMATION_MODE = _env("AUTOMATION_MODE", "keyword_only").lower()
+
 # 자동 필터 카테고리 화이트리스트 (콤마구분). 비어있으면 UserData 우선 → 그것도 없으면 모두 통과.
 AUTO_FILTER_CATEGORIES_ENV = _env("AUTO_FILTER_CATEGORIES", "")
 
@@ -165,10 +179,29 @@ async def _post(client: httpx.AsyncClient, path: str, json_body: Optional[dict] 
 
 
 async def with_retry(coro_factory: Callable[[], Awaitable[Any]], label: str) -> Any:
-    """1회 재시도 후 실패하면 StepFailed 발생."""
+    """1회 재시도 후 실패하면 StepFailed 발생.
+
+    Watchdog (1단계 R-4): 첫 실패가 ConnectError 류면 백엔드 점검 + 재시작 시도.
+    """
     for attempt in (1, 2):
         try:
             return await coro_factory()
+        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
+            log.warning(f"[{label}] 연결 오류 시도 {attempt}/2: {e}")
+            if attempt == 1:
+                # 첫 연결 오류 — 백엔드 점검 + 재시작
+                async with httpx.AsyncClient() as ping_client:
+                    if not await _backend_alive(ping_client):
+                        log.error(f"[{label}] 백엔드 응답 없음 — 자동 재시작 시도")
+                        if not await _restart_backend():
+                            raise StepFailed(
+                                f"{label}: 백엔드 재시작 실패 — 수동 점검 필요"
+                            ) from e
+                        # 재시작 성공 — 다음 시도
+                await asyncio.sleep(2)
+                continue
+            log.error(f"[{label}] 재시도까지 모두 실패")
+            raise StepFailed(f"{label}: {e}") from e
         except Exception as e:
             log.warning(f"[{label}] 시도 {attempt}/2 실패: {e}")
             if attempt == 2:
@@ -177,22 +210,109 @@ async def with_retry(coro_factory: Callable[[], Awaitable[Any]], label: str) -> 
             await asyncio.sleep(5)
 
 
+async def _backend_alive(client: httpx.AsyncClient, timeout: float = 5.0) -> bool:
+    """백엔드 살아있는지 빠른 ping. /api/auth/status 가 200 면 OK."""
+    try:
+        resp = await client.get(
+            f"{BACKEND}/api/auth/status",
+            timeout=httpx.Timeout(timeout),
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+async def _restart_backend() -> bool:
+    """포트 8000 점유 프로세스 종료 + start.pyw 재실행. 30초 안에 alive 면 True.
+
+    Windows 전용. PowerShell 한 번 호출로 끝냄.
+    """
+    import subprocess
+
+    log.warning("백엔드 재시작 시도 — 포트 8000 점유 프로세스 종료")
+    try:
+        # 8000 포트 listen 중인 프로세스 모두 kill (uvicorn worker 포함)
+        subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-Command",
+                "Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue "
+                "| ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"
+            ],
+            timeout=15,
+            check=False,
+        )
+        await asyncio.sleep(2)
+
+        start_pyw = _ROOT_DIR / "start.pyw"
+        if not start_pyw.exists():
+            log.error(f"start.pyw 없음 — 재시작 불가 ({start_pyw})")
+            return False
+
+        # DETACHED_PROCESS — 부모 (이 프로세스) 종료 시에도 백엔드 유지
+        subprocess.Popen(
+            ["pythonw.exe", str(start_pyw)],
+            cwd=str(_ROOT_DIR),
+            creationflags=0x00000200 | 0x00000008,
+        )
+    except Exception as e:
+        log.error(f"백엔드 재시작 실패: {e}")
+        return False
+
+    # 30초 안에 alive 확인
+    async with httpx.AsyncClient() as ping_client:
+        for i in range(30):
+            await asyncio.sleep(1)
+            if await _backend_alive(ping_client):
+                log.info(f"백엔드 재시작 완료 ({i+1}초)")
+                return True
+
+    log.error("백엔드 재시작 30초 내 응답 없음")
+    return False
+
+
 async def wait_task(client: httpx.AsyncClient, task_id: str, label: str) -> dict:
-    """task_manager 의 task가 completed/failed 가 될 때까지 폴링."""
+    """task_manager 의 task가 completed/failed 가 될 때까지 폴링.
+
+    Watchdog (1단계 R-4): 폴링 연속 실패 시 백엔드 healthcheck → 죽었으면 재시작.
+    재시작 후 task_id 는 유실 (in-memory) — caller 가 db_check 또는 verify_run 으로 확인.
+    """
     if DRY_RUN or task_id == "DRYRUN":
         log.info(f"[DRY RUN] wait_task({label}, {task_id}) 즉시 통과")
         return {"status": "completed", "message": "dry-run skip"}
 
     deadline = datetime.utcnow().timestamp() + TASK_TIMEOUT
     last_msg = ""
+    consecutive_fails = 0
+    BACKEND_DEAD_THRESHOLD = 5  # 5회 연속 실패 (≈ 50초) → 백엔드 점검
+
     while True:
         if datetime.utcnow().timestamp() > deadline:
             raise StepFailed(f"{label} 태스크 타임아웃 ({TASK_TIMEOUT}초)")
 
         try:
             data = await _get(client, f"/api/tasks/{task_id}")
+            consecutive_fails = 0  # 성공 시 리셋
         except Exception as e:
-            log.warning(f"[{label}] 태스크 폴링 실패(재시도): {e}")
+            consecutive_fails += 1
+            log.warning(f"[{label}] 태스크 폴링 실패 {consecutive_fails}회: {e}")
+
+            if consecutive_fails >= BACKEND_DEAD_THRESHOLD:
+                log.warning(f"[{label}] {consecutive_fails}회 연속 실패 — 백엔드 점검")
+                alive = await _backend_alive(client)
+                if not alive:
+                    log.error(f"[{label}] 백엔드 응답 없음 — 자동 재시작 시도")
+                    if await _restart_backend():
+                        # 재시작 성공 — task_id 유실되었을 가능성
+                        # caller (recover/verify) 가 DB 로 결과 확인 후 재실행
+                        raise StepFailed(
+                            f"{label}: 백엔드 재시작 — task_id={task_id} 유실, "
+                            f"recover.py 로 재실행 필요"
+                        )
+                    else:
+                        raise StepFailed(f"{label}: 백엔드 재시작 실패 — 수동 점검 필요")
+                # alive 면 일시 네트워크 blip — 계속 폴링
+                consecutive_fails = 0
+
             await asyncio.sleep(POLL_INTERVAL)
             continue
 
@@ -427,11 +547,11 @@ async def step_check_existing_keywords(
 
 
 async def step_collect_trend(client: httpx.AsyncClient) -> None:
-    log.info("=== STEP 3: 트렌드 키워드 수집 (전체 카테고리, 비딩 포함) ===")
+    log.info("=== STEP 3: 트렌드 키워드 수집 (01.종합 + 03.뷰티&화장품 + 07.식품, 비딩 포함) ===")
 
     async def _call() -> dict:
         return await _post(client, "/api/keywords/trend", {
-            "categories": [0],          # 0 = 전체
+            "categories": [1, 3, 7],     # 01.종합 + 03.뷰티&화장품 + 07.식품 (사장님 디폴트)
             "translate": True,
             "fill_total_products": True,
             "collect_bids": True,        # 야간엔 시간 여유 있으니 비딩까지
@@ -541,6 +661,38 @@ async def _resolve_filter_thresholds(client: httpx.AsyncClient) -> tuple[float, 
     except Exception as e:
         log.warning(f"UserData auto_filter_thresholds 조회 실패 (env 폴백): {e}")
     return FILTER_COMPETITION_MAX, FILTER_KR_RATIO_MIN, FILTER_VOLUME_MIN
+
+
+async def _diagnose_filter_zero(client: httpx.AsyncClient, target_date: date) -> str:
+    """STEP 4 가 0개일 때 — 임계값 문제인지 메타데이터 누락인지 진단.
+
+    같은 endpoint 를 매우 느슨한 임계값으로 다시 호출 → total_candidates 비교.
+    - loose 도 0 → 메타데이터 (search_volume / competition_intensity) 가 모두 0 — STEP 3 메타 채움 누락
+    - loose 만 양수 → 임계값이 너무 빡빡 — 사장님 settings 점검
+    """
+    try:
+        resp = await client.post(
+            f"{BACKEND}/api/keywords/auto-filter",
+            json={
+                "competition_max": 999.0,
+                "kr_ratio_min": 0.0,
+                "search_volume_min": 0,
+                "date": str(target_date),
+                "brand_filter": "all",
+            },
+            timeout=httpx.Timeout(30.0),
+        )
+        loose = resp.json().get("total_candidates", 0)
+    except Exception as e:
+        return f"진단 실패: {e}"
+
+    if loose == 0:
+        return (
+            f"메타데이터 누락 추정 — loose 임계값에서도 0개. "
+            f"키워드의 search_volume/competition_intensity 가 모두 0 으로 보임. "
+            f"STEP 3 트렌드 수집을 다시 (특히 fill_total_products=True, collect_bids=True) 실행해야 함."
+        )
+    return f"임계값 과다 — loose 에서는 {loose}개 통과. 사장님 settings 임계값 완화 필요."
 
 
 async def step_auto_filter(client: httpx.AsyncClient, target_date: date) -> list[dict]:
@@ -715,6 +867,52 @@ async def step_extract_set_counts(
     except Exception as e:
         log.warning(f"set_count 추출 실패 (best-effort): {e}")
         return {"error": str(e), "candidates": candidates}
+
+
+async def step_collect_related_keywords(
+    client: httpx.AsyncClient, candidates: list[dict]
+) -> dict:
+    """STEP 4.5 (R-5) — 자동 필터 통과 키워드 → M05 유사/연관 → expanded_keywords.
+
+    트렌드 페이지 상위 670 키워드는 누적 랭킹이라 매일 거의 고정. M05 가 큐텐 ADPlus
+    의 "유사" / "연관" 탭에서 키워드당 ~5+10 추출 → expanded_keywords 적재. 그 후
+    STEP 5.8 expanded_search 가 한국 검색 → STEP 5.95 매칭까지 자연 흐름.
+
+    best-effort. 실패해도 다음 단계 진행.
+    """
+    log.info("=== STEP 4.5: M05 유사/연관 키워드 (R-5) ===")
+    if not ENABLE_RELATED_KEYWORDS:
+        log.info("ENABLE_RELATED_KEYWORDS=0 — 스킵")
+        return {"skipped": True}
+
+    keywords_jp = [c["keyword_jp"] for c in candidates if c.get("keyword_jp")]
+    if not keywords_jp:
+        log.info("대상 키워드 0개 — 스킵")
+        return {"candidates": 0}
+
+    body = {
+        "keywords_jp": keywords_jp,
+        "max_per_parent": RELATED_KEYWORDS_MAX_PER_PARENT,
+    }
+    try:
+        result = await _post(client, "/api/keywords/expand-related", body)
+    except Exception as e:
+        log.warning(f"M05 expand-related 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    candidates_n = result.get("candidates", 0)
+    if not task_id:
+        log.info("M05 대상 0개")
+        return {"candidates": 0}
+
+    log.info(f"M05 expand-related task_id={task_id} (대상 {candidates_n}개 부모 키워드)")
+    try:
+        await wait_task(client, task_id, label="M05 유사/연관")
+        return {"task_id": task_id, "candidates": candidates_n}
+    except Exception as e:
+        log.warning(f"M05 wait 실패 (best-effort): {e}")
+        return {"error": str(e), "candidates": candidates_n}
 
 
 async def step_brand_expand(
@@ -1237,8 +1435,10 @@ async def main_async() -> int:
             candidates = await step_auto_filter(client, target_date)
 
             if not candidates:
+                # R-4 2단계 검증: 필터 0개 원인 진단 — 임계값 vs 메타데이터 누락 구분
+                diag = await _diagnose_filter_zero(client, target_date)
                 msg = (
-                    f"자동 필터 통과 키워드 0개. 임계값 점검 필요\n"
+                    f"자동 필터 통과 키워드 0개. {diag}\n"
                     f"(competition_max={FILTER_COMPETITION_MAX}, "
                     f"kr_ratio_min={FILTER_KR_RATIO_MIN}, "
                     f"volume_min={FILTER_VOLUME_MIN})"
@@ -1247,6 +1447,26 @@ async def main_async() -> int:
                 await notify.send(msg, level="warn")
                 return 0
 
+            # R-5 STEP 4.5 — M05 유사/연관 키워드 → expanded_keywords (best-effort)
+            related_result = await step_collect_related_keywords(client, candidates)
+
+            # R-6 — 자동화 범위 제어. 사장님 결정: 매칭/이미지/auto-build 불안정으로 홀드.
+            # 기본 mode "keyword_only" 면 여기서 종료. STEP 5+ 는 사장님이 수동으로 진행.
+            if AUTOMATION_MODE == "keyword_only":
+                ended = datetime.now()
+                elapsed_str = str(ended - started).split(".", 1)[0]
+                related_n = (related_result or {}).get("candidates", 0)
+                summary = (
+                    f"야간 자동화 완료 ({elapsed_str}) — keyword_only 모드\n"
+                    f"📊 트렌드 {trend_status} / 분류 {classify_result.get('candidates', 0)} / "
+                    f"필터 통과 {len(candidates)} / M05 부모 {related_n}\n"
+                    f"📋 키워드 RD 완료 — 사장님 KeywordPage 에서 시트 추가"
+                )
+                await notify.send(summary, level="ok")
+                log.info(f"=== 야간 자동화 완료 (keyword_only, {elapsed_str}) ===")
+                return 0
+
+            # full 모드 (레거시) — STEP 5+ 진행
             domestic_kw_count = await step_collect_domestic(client, candidates)
             # MMM-1: 큐텐 상품명 jp→ko 번역 (시트 "큐텐→한글" 컬럼 채움)
             await step_translate_qoo10_names(client, target_date)

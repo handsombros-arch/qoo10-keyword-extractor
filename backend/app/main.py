@@ -17,7 +17,7 @@ from app.db.connection import engine
 from app.db.models import Base
 from app.services.auto_login import auto_login_on_startup
 
-from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data, automation
+from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data, automation, extension
 
 # 프론트엔드 빌드 경로
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -136,6 +136,7 @@ app.include_router(margin.router)
 app.include_router(recommendations.router)
 app.include_router(user_data.router)
 app.include_router(automation.router)
+app.include_router(extension.router)
 
 # 이미지 폴더 정적 서빙 — 패널이 한국 SKU extras 보여주기 위해 (WWW-1)
 _IMAGE_ROOT = Path(__file__).resolve().parent.parent.parent / "image"

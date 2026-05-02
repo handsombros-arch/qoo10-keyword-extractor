@@ -20,14 +20,20 @@ param(
     [string]$Time = "03:00",
     [switch]$Force,
     [switch]$DryRun,
-    [switch]$IncludeChromeDebug
+    [switch]$IncludeChromeDebug,
+    [switch]$UseLegacyWorkflow  # R-4: 래퍼 미사용, daily_workflow 직접 호출
 )
 
 $ErrorActionPreference = "Stop"
 
 $TaskName = "Qoo10DailyWorkflow"
 $ProjectRoot = "C:\Users\Admin\qoo10-keyword-extractor"
-$ScriptPath = Join-Path $ProjectRoot "automation\daily_workflow.py"
+# R-4 (2026-05-01): daily_workflow → run_nightly 래퍼 (자동 검증 + 회복 포함).
+if ($UseLegacyWorkflow) {
+    $ScriptPath = Join-Path $ProjectRoot "automation\daily_workflow.py"
+} else {
+    $ScriptPath = Join-Path $ProjectRoot "automation\run_nightly.py"
+}
 
 # Python 실행 파일 — pythonw 우선 (창 안 뜸)
 $PythonExe = "pythonw.exe"

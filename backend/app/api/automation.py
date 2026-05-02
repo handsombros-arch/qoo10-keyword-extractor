@@ -945,6 +945,21 @@ async def send_to_sheet(target_date: str, req: SendToSheetRequest):
     if not selected:
         return {"added": 0, "skipped": 0, "message": "후보에 매칭되는 키워드 없음"}
 
+    # R-7: 카테고리 lookup — keyword_jp → category_inferred (LLM 6분류)
+    selected_kws = [c.get("keyword_jp") for c in selected if c.get("keyword_jp")]
+    cat_map: dict[str, str] = {}
+    if selected_kws:
+        async with async_session() as session:
+            from app.db.models import Keyword as _K
+            res = await session.execute(
+                select(_K.keyword_jp, _K.category_inferred, _K.category)
+                .where(_K.keyword_jp.in_(selected_kws))
+            )
+            for row in res.all():
+                jp = row[0]
+                if jp and jp not in cat_map:
+                    cat_map[jp] = (row[1] or row[2] or "")
+
     # 2. 기존 시트 읽기
     async with async_session() as session:
         r = await session.execute(
@@ -1016,6 +1031,7 @@ async def send_to_sheet(target_date: str, req: SendToSheetRequest):
         new_rows.append({
             "id": str(uuid.uuid4()),
             "product_name": product_name,
+            "category": cat_map.get(kw_jp, ""),  # R-7 시트 카테고리 컬럼 자동 채움
             "product_name_ko": _u("product_name_ko", "") or (c.get("keyword_kr") or ""),
             "product_url": _u("product_url", "") or (ch.get("product_url") or ""),
             "cover_image_url": _u("cover_image_url", "") or (ch.get("cover_image_url") or ""),
@@ -1064,4 +1080,91 @@ async def send_to_sheet(target_date: str, req: SendToSheetRequest):
             f"{len(new_rows)}개 추가, {skipped}개 스킵 — 총 시트 {len(merged)}행. "
             f"/recommend-products 페이지 새로고침하면 반영됨."
         ),
+    }
+
+
+# ─── R-7 시트 카테고리 백필 ───────────────────────────────
+
+
+@router.post("/api/sheet/backfill-categories")
+async def backfill_sheet_categories():
+    """기존 product_sheet 행 중 category 비어있는 것 → keyword_jp 매핑으로 LLM 분류 가져와 채움.
+
+    1) UserData product_sheet 로드
+    2) category 비어있고 keyword_jp 있는 행만 추출
+    3) keyword DB 에서 category_inferred (LLM 6분류) 또는 category (raw) lookup
+    4) 시트 update + 저장
+    5) 결과 반환
+    """
+    from app.db.models import Keyword as _K
+
+    async with async_session() as session:
+        r = await session.execute(
+            select(UserData).where(UserData.key == "product_sheet")
+        )
+        row = r.scalar_one_or_none()
+    if not row:
+        return {"error": "product_sheet 없음"}
+
+    try:
+        sheet = jsonlib.loads(row.data)
+    except Exception:
+        return {"error": "product_sheet JSON 파싱 실패"}
+    if not isinstance(sheet, list):
+        return {"error": "product_sheet 형식 오류 (list 아님)"}
+
+    # 비어있는 행만
+    targets = [r for r in sheet if isinstance(r, dict) and not (r.get("category") or "").strip() and (r.get("keyword_jp") or "").strip()]
+    if not targets:
+        return {"updated": 0, "skipped": len(sheet), "message": "백필할 행 없음 (모두 카테고리 채워짐)"}
+
+    kws = list({t.get("keyword_jp") for t in targets if t.get("keyword_jp")})
+    cat_map: dict[str, str] = {}
+    async with async_session() as session:
+        res = await session.execute(
+            select(_K.keyword_jp, _K.category_inferred, _K.category)
+            .where(_K.keyword_jp.in_(kws))
+        )
+        for kw_jp, c_inf, c_raw in res.all():
+            if kw_jp and kw_jp not in cat_map:
+                v = (c_inf or c_raw or "").strip()
+                if v:
+                    cat_map[kw_jp] = v
+
+    updated = 0
+    for r in targets:
+        kw = r.get("keyword_jp")
+        cat = cat_map.get(kw)
+        if cat:
+            r["category"] = cat
+            updated += 1
+
+    if updated == 0:
+        return {
+            "updated": 0,
+            "skipped": len(sheet),
+            "candidates": len(targets),
+            "matched_in_db": len(cat_map),
+            "message": f"{len(targets)}개 행에 keyword_jp 가 있지만 keywords DB 매칭 카테고리 0개",
+        }
+
+    # 저장
+    payload_str = jsonlib.dumps(sheet, ensure_ascii=False)
+    now = datetime.utcnow()
+    async with async_session() as session:
+        r = await session.execute(
+            select(UserData).where(UserData.key == "product_sheet")
+        )
+        target = r.scalar_one_or_none()
+        if target:
+            target.data = payload_str
+            target.updated_at = now
+            await session.commit()
+
+    return {
+        "updated": updated,
+        "skipped": len(sheet) - updated,
+        "candidates": len(targets),
+        "matched_in_db": len(cat_map),
+        "message": f"{updated}개 행 카테고리 백필 완료. /recommend-products 새로고침하면 반영됨.",
     }

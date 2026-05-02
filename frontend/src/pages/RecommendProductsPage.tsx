@@ -29,7 +29,6 @@ import {
   calculateMargin, marginVerdict,
   calculateRecommendScore,
   targetSellJpyForMargin,
-  PRICE_SWEETSPOT_MIN_JPY, PRICE_SWEETSPOT_MAX_JPY,
 } from '../lib/marginCalc';
 
 const TARGET_MARGIN_NORMAL = 0.20;
@@ -59,104 +58,7 @@ const verdictColor: Record<string, string> = {
   손실: { color: '#b91c1c', backgroundColor: '#fee2e2' } as any,
 };
 
-// ─── 가격 분포 히스토그램 ────────────────────────────
-function PriceHistogram({ rows }: { rows: SheetRow[] }) {
-  const prices = rows.map(r => r.sell_price_jpy).filter(p => p > 0);
-  if (prices.length === 0) {
-    return (
-      <div className="bg-white rounded-lg shadow p-5 mb-5 text-center text-sm text-gray-400">
-        시트에 판매가가 있는 상품이 없습니다.
-      </div>
-    );
-  }
-
-  // 버킷: 0~1k, 1~2k, 2~3k, 3~5k, 5~10k, 10k+
-  const buckets = [
-    { label: '~1k', min: 0, max: 1000 },
-    { label: '1~2k', min: 1000, max: 2000 },
-    { label: '2~3k', min: 2000, max: 3000 },
-    { label: '3~5k', min: 3000, max: 5000 },
-    { label: '5~10k', min: 5000, max: 10000 },
-    { label: '10k+', min: 10000, max: Infinity },
-  ];
-
-  const counts = buckets.map(b => ({
-    ...b,
-    count: prices.filter(p => p >= b.min && p < b.max).length,
-    sweetSpot: b.min >= PRICE_SWEETSPOT_MIN_JPY && b.max <= PRICE_SWEETSPOT_MAX_JPY + 1,
-  }));
-
-  const maxCount = Math.max(...counts.map(c => c.count), 1);
-
-  const avg = prices.reduce((s, p) => s + p, 0) / prices.length;
-  const sorted = [...prices].sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)];
-  const min = sorted[0];
-  const max = sorted[sorted.length - 1];
-  const inSweet = prices.filter(p => p >= PRICE_SWEETSPOT_MIN_JPY && p <= PRICE_SWEETSPOT_MAX_JPY).length;
-
-  return (
-    <div className="bg-white rounded-lg shadow p-5 mb-5">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="font-semibold">📊 가격 분포 ({prices.length}개 상품)</h3>
-        <div className="text-xs text-gray-500">
-          스윗스팟 ({PRICE_SWEETSPOT_MIN_JPY.toLocaleString()}~{PRICE_SWEETSPOT_MAX_JPY.toLocaleString()}엔)
-          <span className="ml-1 inline-block w-3 h-3 bg-green-200 border border-green-400 rounded-sm align-middle" />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-5 gap-3 mb-4 text-xs">
-        <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">최저</div>
-          <div className="font-mono font-bold">¥{min.toLocaleString()}</div>
-        </div>
-        <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">중앙값</div>
-          <div className="font-mono font-bold">¥{median.toLocaleString()}</div>
-        </div>
-        <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">평균</div>
-          <div className="font-mono font-bold">¥{Math.round(avg).toLocaleString()}</div>
-        </div>
-        <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-500">최고</div>
-          <div className="font-mono font-bold">¥{max.toLocaleString()}</div>
-        </div>
-        <div className="bg-emerald-50 rounded p-2">
-          <div className="text-emerald-700">스윗스팟</div>
-          <div className="font-mono font-bold text-emerald-700">{inSweet}개 ({((inSweet / prices.length) * 100).toFixed(0)}%)</div>
-        </div>
-      </div>
-
-      {/* 막대그래프 */}
-      <div className="flex items-end gap-2 h-40 border-b border-gray-200 relative">
-        {counts.map(b => {
-          const height = (b.count / maxCount) * 100;
-          return (
-            <div key={b.label} className="flex-1 flex flex-col items-center justify-end h-full">
-              <div className="text-[10px] text-gray-600 mb-1 font-semibold">{b.count}</div>
-              <div
-                className={`w-full rounded-t transition-all ${b.sweetSpot ? 'bg-emerald-500' : 'bg-blue-400'}`}
-                style={{ height: `${Math.max(height, 2)}%` }}
-                title={`${b.label}엔: ${b.count}개`}
-              />
-            </div>
-          );
-        })}
-      </div>
-      <div className="flex gap-2 mt-1">
-        {counts.map(b => (
-          <div key={b.label} className="flex-1 text-center text-[10px] text-gray-500">{b.label}</div>
-        ))}
-      </div>
-
-      <div className="mt-3 text-[11px] text-gray-500">
-        💡 추천점수의 <b>가격대 적합도(30%)</b>는 스윗스팟 구간에서 만점, 외부로 벗어나면 감소합니다.
-        리뷰 점수(10%)와 마진율(60%) 합산으로 정렬됩니다.
-      </div>
-    </div>
-  );
-}
+// 가격 분포 히스토그램 (PriceHistogram) 제거됨 — R-7 (2026-05-01) 사장님 요청.
 
 // ─── 이미지 확대 모달 ────────────────────────────────
 function ImageZoomModal({ src, onClose }: { src: string; onClose: () => void }) {
@@ -187,7 +89,7 @@ function ImageZoomModal({ src, onClose }: { src: string; onClose: () => void }) 
 
 // ─── 상품 시트 (엑셀식 편집) ───────────────────────────
 // v1 → v2: TT-1A 매칭/SEO 신규 컬럼 8개 추가 시 옛 state 자동 무효화 (default 적용)
-const COL_STATE_KEY = 'productSheet.colState.v2';
+const COL_STATE_KEY = 'productSheet.colState.v3';  // R-7 컬럼 set 변경 (등록상태/⊕/카테고리/경쟁배송/경쟁합계 추가, 매칭/평가/메가/리뷰 등 default hide)
 
 function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetRow[]) => void }) {
   const gridRef = useRef<AgGridReact>(null);
@@ -210,6 +112,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const [qoo10ExportRows, setQoo10ExportRows] = useState<SheetRow[]>([]);
   // 구성 편집 패널: 선택된 상품 id (null이면 패널 숨김)
   const [compositionRowId, setCompositionRowId] = useState<string | null>(null);
+  // R-7 복제 직후 임시 강조 (2초)
+  const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
   // TT-1B 우측 슬라이드 패널 — 키워드 클릭 시 SEO 콘텐츠/옵션/매칭 사유 한 번에
   const [detailRow, setDetailRow] = useState<SheetRow | null>(null);
   const onOpenDetailPanel = (row: SheetRow) => setDetailRow(row);
@@ -253,6 +157,27 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   // TT-3 source/decision 필터
   const [sourceFilter, setSourceFilter] = useState<string>('all');  // 'all' | 'auto' | 'shop' | 'trend' | 'manual'
   const [decisionFilter, setDecisionFilter] = useState<string>('all'); // 'all' | 'accepted' | 'cheapest' | 'manual' | 'rejected' | 'pending'
+  // R-7 등록상태 필터 — localStorage 저장 (사장님이 매번 켜는 상태 기억)
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    try { return localStorage.getItem('sheet.statusFilter') || 'all'; } catch { return 'all'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('sheet.statusFilter', statusFilter); } catch { /* ignore */ }
+  }, [statusFilter]);
+  // R-7 카테고리 필터 — 사장님이 특정 카테고리만 보거나 제외 (다중 제외)
+  //   '__all__' = 전체, '__undef__' = 미정만, '__exclude__:cat1,cat2' = 제외 모드
+  const [categoryFilter, setCategoryFilter] = useState<string>(() => {
+    try { return localStorage.getItem('sheet.categoryFilter') || '__all__'; } catch { return '__all__'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('sheet.categoryFilter', categoryFilter); } catch { /* ignore */ }
+  }, [categoryFilter]);
+  // 시트에 등장한 카테고리 list (UI dropdown 선택지)
+  const sheetCategories = useMemo(() => {
+    const s = new Set<string>();
+    rows.forEach(r => { if (r.category) s.add(r.category); });
+    return Array.from(s).sort();
+  }, [rows]);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -278,9 +203,29 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         const dec = r.match_decision || 'pending';
         if (dec !== decisionFilter) return false;
       }
+      // R-7 등록상태 필터
+      if (statusFilter !== 'all') {
+        const rs = r.registration_status || '미정';
+        if (statusFilter === 'active' && rs === 'completed') return false;  // 진행중만 (완료 숨김)
+        if (statusFilter !== 'active' && rs !== statusFilter) return false;
+      }
+      // R-7 카테고리 필터
+      if (categoryFilter !== '__all__') {
+        const cat = (r.category || '').trim();
+        if (categoryFilter === '__undef__') {
+          if (cat) return false;  // 미정만 보기
+        } else if (categoryFilter.startsWith('__exclude__:')) {
+          // 제외 모드: __exclude__:cat1,cat2,... 인 카테고리는 제외
+          const excludes = categoryFilter.slice('__exclude__:'.length).split(',').filter(Boolean);
+          if (excludes.includes(cat)) return false;
+        } else {
+          // 단일 카테고리만 (포함)
+          if (cat !== categoryFilter) return false;
+        }
+      }
       return true;
     });
-  }, [rows, dateMode, singleDate, fromDate, toDate, today, sourceFilter, decisionFilter]);
+  }, [rows, dateMode, singleDate, fromDate, toDate, today, sourceFilter, decisionFilter, statusFilter, categoryFilter]);
 
   // 선택된 행 바로 아래에 구성 편집 확장 행을 주입
   const rowsWithExpansion = useMemo(() => {
@@ -349,7 +294,110 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       checkboxSelection: true, headerCheckboxSelection: true,
     },
     {
-      field: 'created_at', headerName: '작성일 / 구성', width: 115, pinned: 'left',
+      headerName: '⊕', width: 45, pinned: 'left', sortable: false, filter: false,
+      headerTooltip: '행 복제 — 원본 직후에 새 ID 로 추가. 복사본은 다른 색으로 구분되며 원본을 따라 다님.',
+      cellRenderer: (p: any) => {
+        if (p.data?.__expansion) return null;
+        return (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              const orig: SheetRow = p.data;
+              const newId = (crypto as any).randomUUID?.() || String(Date.now() + Math.random());
+              // 복사본의 _parent_id 는 원본 id (또는 원본의 _parent_id 가 있으면 그 값 — 동일 그룹 유지)
+              const parentId = orig._parent_id || orig.id;
+              const copy: SheetRow = {
+                ...orig,
+                id: newId,
+                _parent_id: parentId,
+                created_at: new Date().toISOString().slice(0, 10),
+                registration_status: '미정',
+                registered_at: undefined,
+                qoo10_product_id: undefined,
+                compositions: [],
+              };
+              const idx = rows.findIndex(r => r.id === orig.id);
+              const next = [...rows.slice(0, idx + 1), copy, ...rows.slice(idx + 1)];
+              setRows(next);
+              saveSheet(next);
+              // 일시 강조 — 2초 동안 깜빡 (highlightedRowId 로 추적)
+              setHighlightedRowId(newId);
+              setTimeout(() => setHighlightedRowId(prev => prev === newId ? null : prev), 2000);
+            }}
+            className="w-full h-full flex items-center justify-center text-blue-600 hover:bg-blue-50 rounded text-sm font-bold"
+            title="이 행 아래에 복제"
+          >
+            ⊕
+          </button>
+        );
+      },
+    },
+    {
+      field: 'registration_status', headerName: '등록상태', width: 130, pinned: 'left',
+      editable: false,  // 직접 편집 X — 행 편집 시 자동 진행중, 버튼으로만 완료 토글
+      cellRenderer: (p: any) => {
+        const v = p.data?.registration_status || '미정';
+        const setStatus = (next: 'in_progress' | 'completed' | '미정') => {
+          if (!p.data) return;
+          p.data.registration_status = next;
+          if (next === 'completed' && !p.data.registered_at) {
+            p.data.registered_at = new Date().toISOString().slice(0, 10);
+          } else if (next !== 'completed') {
+            p.data.registered_at = undefined;
+          }
+          // grid + localStorage 갱신
+          const api = gridRef.current?.api as any;
+          if (api) {
+            const rows: SheetRow[] = [];
+            api.forEachNode((n: any) => { if (n.data && !n.data.__expansion) rows.push(n.data); });
+            setRows(rows);
+            saveSheet(rows);
+            api.refreshCells?.({ rowNodes: [p.node], force: true });
+          }
+        };
+        if (v === 'completed') {
+          return (
+            <div className="flex items-center gap-1 h-full">
+              <span className="text-[12px] text-green-700 font-bold">✅ 완료</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); setStatus('in_progress'); }}
+                className="ml-auto text-[10px] text-gray-500 hover:text-gray-700 underline"
+                title="등록완료 취소 → 진행중으로 되돌림"
+              >취소</button>
+            </div>
+          );
+        }
+        if (v === 'in_progress') {
+          return (
+            <div className="flex items-center gap-1 h-full">
+              <span className="text-[12px] text-yellow-700 font-bold">🟡 진행중</span>
+              <button
+                onClick={(e) => { e.stopPropagation(); setStatus('completed'); }}
+                className="ml-auto text-[10px] px-1.5 py-0.5 bg-green-600 text-white rounded hover:bg-green-700"
+                title="등록 완료 처리 (registered_at 자동 기록)"
+              >✓ 완료</button>
+            </div>
+          );
+        }
+        // 미정 — 셀 어디든 편집하면 자동 진행중. 별도 버튼 없음.
+        return (
+          <div className="flex items-center h-full">
+            <span className="text-[12px] text-gray-400" title="아무 셀이나 한 번 입력/편집하면 자동으로 🟡 진행중으로 변환됨">
+              ⚪ 미정
+            </span>
+          </div>
+        );
+      },
+      cellStyle: (p: any) => {
+        const v = p.data?.registration_status || '미정';
+        if (v === 'in_progress') return { backgroundColor: '#fefce8' } as any;
+        if (v === 'completed') return { backgroundColor: '#ecfdf5' } as any;
+        return {} as any;
+      },
+      headerTooltip: '등록 상태 — 어떤 셀이든 편집하면 자동 "진행중". [✓ 완료] 버튼 클릭 시 완료.',
+    },
+    {
+      field: 'created_at', headerName: '작성일 / 구성', width: 115,
       cellRenderer: (p: any) => {
         if (p.data?.__expansion) return null;
         const best = summarizeBestComposition(p.data);
@@ -378,7 +426,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       cellStyle: { padding: 2 },
     },
     {
-      field: 'folder_name', headerName: '폴더명', width: 160, pinned: 'left',
+      field: 'folder_name', headerName: '폴더명', width: 160, hide: true,
       cellRenderer: (p: any) => {
         const v = p.value || '';
         if (!v) return <span className="text-[10px] text-gray-300">-</span>;
@@ -386,23 +434,12 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
     },
     {
-      field: 'qoo10_url', headerName: '큐텐 URL', width: 80, pinned: 'left',
-      cellRenderer: (p: any) => {
-        // 큐텐 product URL 이 자주 깨지므로 keyword_jp 검색 URL 우선
-        const kwJp = p.data?.keyword_jp || '';
-        const url = kwJp
-          ? `https://www.qoo10.jp/s/?keyword=${encodeURIComponent(kwJp)}`
-          : (p.value || '');
-        if (!url) return <span className="text-[10px] text-gray-300">-</span>;
-        return (
-          <a href={url} target="_blank" rel="noreferrer"
-             className="text-[11px] text-orange-700 hover:underline"
-             title={url}>🛒 검색</a>
-        );
-      },
+      field: 'category', headerName: '카테고리', width: 130,
+      valueFormatter: (p: any) => p.value || '(미정)',
+      cellStyle: { color: '#374151' },
     },
     {
-      field: 'keyword_jp', headerName: '키워드(일본어)', width: 150, pinned: 'left',
+      field: 'keyword_jp', headerName: '키워드(일본어)', width: 150,
       cellRenderer: (p: any) => {
         const v = p.value || '';
         if (!v) return <span className="text-[10px] text-gray-300">-</span>;
@@ -416,7 +453,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
     },
     {
-      field: 'keyword_kr', headerName: '키워드(한국어)', width: 150, pinned: 'left',
+      field: 'keyword_kr', headerName: '키워드(한국어)', width: 150,
       cellRenderer: (p: any) => {
         const v = p.value || '';
         if (!v) return <span className="text-[10px] text-gray-300">-</span>;
@@ -430,32 +467,11 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
     },
     {
-      field: 'source', headerName: '출처', width: 120, pinned: 'left',
-      cellRenderer: (p: any) => {
-        const v = p.value || '';
-        const rank = p.data.shop_rank ? ` #${p.data.shop_rank}` : '';
-        return <span className="text-xs text-gray-600">{v}{rank}</span>;
-      },
-    },
-    {
       field: 'product_name', headerName: '한국 SKU 명', width: 360, pinned: 'left', autoHeight: false,
       cellRenderer: (p: any) => {
         if (p.data?.__expansion) return null;
-        const qImg = p.data.qoo10_cover_image_url;
-        const krImg = p.data.cover_image_url;
         const name = p.value || '';
-        const renderImg = (src: string | undefined, label: string) => src ? (
-          <img
-            src={src}
-            alt={label}
-            className="w-14 h-14 object-cover rounded border border-gray-200 flex-shrink-0 cursor-zoom-in hover:ring-2 hover:ring-blue-400 transition"
-            onClick={(e) => { e.stopPropagation(); setZoomImg(src); }}
-            title={`${label} — 클릭 확대`}
-          />
-        ) : (
-          <div className="w-14 h-14 rounded bg-gray-100 flex-shrink-0 flex items-center justify-center text-[8px] text-gray-400">{label}</div>
-        );
-        const text = (
+        return (
           <span
             onClick={(e) => { e.stopPropagation(); onOpenDetailPanel?.(p.data); }}
             className="text-blue-700 hover:underline line-clamp-2 leading-tight cursor-pointer"
@@ -464,43 +480,35 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             {name}
           </span>
         );
-        return (
-          <div className="flex items-center gap-1 overflow-hidden h-full">
-            {renderImg(qImg, '큐텐')}
-            {renderImg(krImg, '한국')}
-            <div className="flex-1 overflow-hidden ml-1">{text}</div>
-          </div>
-        );
       },
-    },
-    {
-      field: 'product_name_ko', headerName: '큐텐 → 한글', width: 220, pinned: 'left', editable: true,
-      cellStyle: { backgroundColor: '#fefce8' },
-      valueFormatter: (p: any) => p.value || '(LLM 번역 필요)',
     },
 
     // ─ 원가 섹션 (엑셀 L, M 근처) ─
-    { field: 'weight_g', headerName: '무게(g)', width: 80, editable: true, type: 'numericColumn',
-      cellStyle: { backgroundColor: '#fefce8' } },
-    { field: 'item_price_krw', headerName: '구매가', width: 90, editable: true, type: 'numericColumn',
+    { field: 'weight_g', headerName: '무게(g)', width: 80, type: 'numericColumn' },
+    { field: 'item_price_krw', headerName: '구매가', width: 90, type: 'numericColumn',
+      valueFormatter: (p: any) => fmt.krw(p.value) },
+    { field: 'domestic_shipping_krw', headerName: '구매배송', width: 85, type: 'numericColumn',
       valueFormatter: (p: any) => fmt.krw(p.value),
-      cellStyle: { backgroundColor: '#fefce8' } },
-    { field: 'domestic_shipping_krw', headerName: '국내배송', width: 85, editable: true, type: 'numericColumn',
-      valueFormatter: (p: any) => fmt.krw(p.value),
-      cellStyle: { backgroundColor: '#fefce8' } },
+      headerTooltip: '구매처 → 사장님 사무실 배송비 (마진 계산 input)' },
     { headerName: '합계', width: 90, type: 'numericColumn',
       valueGetter: (p: any) => totalPurchaseKrw(p.data),
       valueFormatter: (p: any) => fmt.krw(p.value),
       cellStyle: { color: '#374151', fontStyle: 'italic' } },
-    { field: 'shipping_packaging_krw', headerName: '포장+KSE', width: 90, editable: true, type: 'numericColumn',
-      valueFormatter: (p: any) => fmt.krw(p.value),
-      cellStyle: { backgroundColor: '#fefce8' } },
+    { field: 'shipping_packaging_krw', headerName: '포장+KSE', width: 90, type: 'numericColumn',
+      valueFormatter: (p: any) => fmt.krw(p.value) },
 
     // ─ 판매가 섹션 (엑셀 Y, AD 근처) ─
     { field: 'competitor_price_jpy', headerName: '경쟁가(¥)', width: 95, type: 'numericColumn',
       valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
-      cellStyle: { color: '#6b7280', fontStyle: 'italic' },
-      headerTooltip: '스크래핑된 경쟁 상품 가격 (참고용, 수정 불가)' },
+      headerTooltip: '경쟁사 상품가 (배송비 제외) — 우측 패널에서 입력' },
+    { field: 'competitor_shipping_jpy', headerName: '경쟁배송(¥)', width: 100, type: 'numericColumn',
+      valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
+      headerTooltip: '경쟁사 배송비 (¥) — 합계 계산용' },
+    { headerName: '경쟁합계(¥)', width: 100, type: 'numericColumn',
+      valueGetter: (p: any) => (p.data?.competitor_price_jpy || 0) + (p.data?.competitor_shipping_jpy || 0),
+      valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
+      cellStyle: { color: '#6b7280', fontWeight: 'bold' },
+      headerTooltip: '경쟁가 + 경쟁배송 합계 (자동 계산)' },
     { headerName: '예상판매가(¥)', width: 110, type: 'numericColumn',
       valueGetter: (p: any) => {
         const rate = p.data.exchange_rate ?? 9.5;
@@ -510,14 +518,15 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
       cellStyle: { color: '#1d4ed8', fontStyle: 'italic' },
       headerTooltip: '수식 기반 권장가: (구매가+포장) × 1.3 ÷ 환율 → 30% 마진 확보선' },
-    { headerName: '차이', width: 70, type: 'numericColumn',
+    { headerName: '차이', width: 70, type: 'numericColumn', hide: true,
       valueGetter: (p: any) => {
-        const comp = p.data.competitor_price_jpy || 0;
+        // R-7: 경쟁합계 (상품가 + 배송) 기준으로 비교 (사장님 의도)
+        const compTotal = (p.data?.competitor_price_jpy || 0) + (p.data?.competitor_shipping_jpy || 0);
         const rate = p.data.exchange_rate ?? 9.5;
         const rec = computeRow(p.data).recommended_price_krw_30pct;
         const expected = rate > 0 ? rec / rate : 0;
-        if (!comp || !expected) return 0;
-        return ((expected - comp) / comp) * 100;
+        if (!compTotal || !expected) return 0;
+        return ((expected - compTotal) / compTotal) * 100;
       },
       valueFormatter: (p: any) => {
         if (!p.value) return '-';
@@ -527,13 +536,13 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
       cellStyle: (p: any) => {
         if (!p.value) return {};
-        // 예상 > 경쟁 = 내 예상가가 더 비쌈 → 경쟁력 떨어짐 (빨강)
-        // 예상 < 경쟁 = 내 예상가가 더 저렴 → 경쟁력 있음 (녹색)
+        // 예상 > 경쟁합계 = 내 예상가가 더 비쌈 → 경쟁력 떨어짐 (빨강)
+        // 예상 < 경쟁합계 = 내 예상가가 더 저렴 → 경쟁력 있음 (녹색)
         return p.value > 0
           ? { color: '#b91c1c' } as any
           : { color: '#15803d', fontWeight: 'bold' } as any;
       },
-      headerTooltip: '(예상판매가 - 경쟁가) / 경쟁가. 음수일수록 내 예상가가 저렴 = 경쟁력' },
+      headerTooltip: '(예상판매가 - 경쟁합계) / 경쟁합계. 음수일수록 내 예상가가 저렴 = 경쟁력' },
     { headerName: '권장가(20%)', width: 105, type: 'numericColumn',
       valueGetter: (p: any) => Math.round(computeTargetJpy(p.data, TARGET_MARGIN_NORMAL)),
       valueFormatter: (p: any) => p.value > 0 ? `¥${fmt.jpy(p.value)}` : '-',
@@ -546,11 +555,11 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           : { color: '#c2410c', fontWeight: 'bold' } as any;
       },
       headerTooltip: '일반마진 20%를 달성하려면 필요한 엔화 판매가. 수수료·배송 모드 반영 정밀 역산. 내 판매가가 이 값 이상이면 녹색.' },
-    { field: 'sell_price_jpy', headerName: '내 판매가(¥)', width: 110, editable: true, type: 'numericColumn',
+    { field: 'sell_price_jpy', headerName: '내 판매가(¥)', width: 110, type: 'numericColumn',
       valueFormatter: (p: any) => `¥${fmt.jpy(p.value)}`,
-      cellStyle: { backgroundColor: '#fefce8', fontWeight: 'bold' },
+      cellStyle: { fontWeight: 'bold' },
       headerTooltip: '내가 큐텐에 등록할 판매가 (마진 계산 기준). 경쟁가·예상판매가 참고하여 수동 입력' },
-    { headerName: '메가가(¥)', width: 95, type: 'numericColumn',
+    { headerName: '메가가(¥)', width: 95, type: 'numericColumn', hide: true,
       valueGetter: (p: any) => Math.round((p.data.sell_price_jpy || 0) * 0.9),
       valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
       cellStyle: { color: '#b45309', fontStyle: 'italic' },
@@ -558,7 +567,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
 
     // ─ 일반 수익 섹션 (엑셀 AB, AC 근처) ─
     {
-      field: 'shipping_mode', headerName: '배송', width: 110, editable: true,
+      field: 'shipping_mode', headerName: '배송', width: 110,
       cellEditor: 'agSelectCellEditor',
       cellEditorParams: { values: ['auto', 'free', 'paid'] },
       valueGetter: (p: any) => p.data?.shipping_mode || 'auto',
@@ -578,7 +587,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
       headerTooltip: '자동: 원화 판매가 ≥ 20,000원이면 무료(KSE), 미만이면 유료. 수동으로 무료/유료 고정 가능.',
     },
-    { headerName: '배송비', width: 85, type: 'numericColumn',
+    { headerName: '판매배송', width: 85, type: 'numericColumn',
+      headerTooltip: '큐텐 등록 시 발생 배송비 (자동 — 무료/유료 모드 + 판매가에 따라)',
       valueGetter: (p: any) => computeRow(p.data).shipping_cost_krw,
       valueFormatter: (p: any) => fmt.krw(p.value) },
     { headerName: '수수료(¥)', width: 90, type: 'numericColumn',
@@ -608,26 +618,26 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       } as any) },
 
     // ─ 메가와리 섹션 (엑셀 AD, AE 근처) ─
-    { headerName: '메가이익', width: 95, type: 'numericColumn',
+    { headerName: '메가이익', width: 95, type: 'numericColumn', hide: true,
       valueGetter: (p: any) => computeRowMega(p.data).profit_krw,
       valueFormatter: (p: any) => fmt.krw(p.value),
       cellStyle: (p: any) => ({
         fontWeight: 'bold',
         color: p.value >= 0 ? '#b45309' : '#b91c1c',
       } as any) },
-    { headerName: '메가마진', width: 85, type: 'numericColumn',
+    { headerName: '메가마진', width: 85, type: 'numericColumn', hide: true,
       valueGetter: (p: any) => computeRowMega(p.data).margin_rate,
       valueFormatter: (p: any) => fmt.pct(p.value),
       cellStyle: (p: any) => ({ color: p.value >= 0 ? '#b45309' : '#b91c1c' } as any) },
 
     // ─ 평가·리뷰·점수 ─
-    { headerName: '평가', width: 75,
+    { headerName: '평가', width: 75, hide: true,
       valueGetter: (p: any) => marginVerdict(computeRow(p.data).margin_rate),
       cellStyle: (p: any) => verdictColor[p.value] || {} },
-    { field: 'review_count', headerName: '리뷰수', width: 75, type: 'numericColumn',
+    { field: 'review_count', headerName: '리뷰수', width: 75, type: 'numericColumn', hide: true,
       valueFormatter: (p: any) => p.value ? p.value.toLocaleString() : '-' },
     {
-      headerName: '🏆점수', width: 80, type: 'numericColumn',
+      headerName: '🏆점수', width: 80, type: 'numericColumn', hide: true,
       valueGetter: (p: any) => computeScore(p.data).total,
       valueFormatter: (p: any) => p.value.toFixed(1),
       cellStyle: (p: any) => {
@@ -642,10 +652,10 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         return `가격대 ${s.price_component.toFixed(1)}/40 | 마진 ${s.margin_component.toFixed(1)}/40 | 리뷰 ${s.review_component.toFixed(1)}/20`;
       },
     },
-    { field: 'notes', headerName: '메모', width: 130, editable: true },
+    { field: 'notes', headerName: '메모', width: 130 },
 
     // ─ 매칭 메타 (TT-1A 신규, decision/마케팅포인트는 default visible) ─
-    { field: 'match_decision', headerName: '매칭', width: 110, hide: false,
+    { field: 'match_decision', headerName: '매칭', width: 110, hide: true,
       cellRenderer: (p: any) => {
         const v = p.value || 'pending';
         const cls = v === 'accepted' ? 'bg-emerald-100 text-emerald-800'
@@ -672,8 +682,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       cellStyle: { fontSize: '11px', color: '#6b7280' } as any },
 
     // ─ 큐텐 SEO 콘텐츠 (Phase 4-B 자동 생성, 인플레이스 편집) ─
-    { field: 'qoo10_title_jp', headerName: '큐텐 title', width: 220, hide: true, editable: true,
-      cellStyle: { backgroundColor: '#fefce8', fontSize: '12px' } as any },
+    { field: 'qoo10_title_jp', headerName: '큐텐 title', width: 220, hide: true,
+      cellStyle: { fontSize: '12px' } as any },
     { field: 'qoo10_tags', headerName: '큐텐 tags', width: 200, hide: true,
       cellRenderer: (p: any) => {
         const tags: string[] = Array.isArray(p.value) ? p.value : [];
@@ -688,7 +698,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         );
       },
     },
-    { field: 'qoo10_marketing', headerName: '마케팅포인트', width: 130, hide: false,
+    { field: 'qoo10_marketing', headerName: '마케팅포인트', width: 130, hide: true,
       cellRenderer: (p: any) => {
         const items: string[] = Array.isArray(p.value) ? p.value : [];
         if (!items.length) return <span className="text-gray-400 text-xs">-</span>;
@@ -703,23 +713,29 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         );
       },
     },
-    { field: 'qoo10_option_name', headerName: '큐텐 옵션', width: 130, hide: true, editable: true,
-      cellStyle: { backgroundColor: '#fefce8', fontSize: '12px' } as any },
+    { field: 'qoo10_option_name', headerName: '큐텐 옵션', width: 130, hide: true,
+      cellStyle: { fontSize: '12px' } as any },
   ] as ColDef[]), [compositionRowId, onOpenDetailPanel]);
 
   const defaultColDef: ColDef = useMemo(() => ({
     resizable: true, sortable: true, filter: false, suppressHeaderMenuButton: false,
   }), []);
 
-  const onCellValueChanged = (_e: any) => {
+  const onCellValueChanged = (e: any) => {
     const api = gridRef.current?.api as any;
     if (!api) return;
     try {
       api.applyColumnState?.({ defaultState: { sort: null } });
     } catch { /* ignore */ }
+    // R-7: 다른 필드 편집 시 미정 → 진행중 자동 (사장님 한 번이라도 손대면 진행중으로 간주)
+    if (e?.data && e?.colDef?.field !== 'registration_status') {
+      const cur = e.data.registration_status || '미정';
+      if (cur === '미정') {
+        e.data.registration_status = 'in_progress';
+      }
+    }
     const newRows: SheetRow[] = [];
     api.forEachNode((node: any) => {
-      // __expansion 행(합성 행)은 localStorage에 저장하지 않음
       if (node.data && !node.data.__expansion) newRows.push(node.data);
     });
     setRows(newRows);
@@ -751,6 +767,34 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   };
   const onColumnVisible = () => { saveColState(); setColListVersion(v => v + 1); };
   const onColumnMoved = (e: any) => { if (e.finished) saveColState(); };
+  // R-7: 컬럼 pin/unpin 변경 저장 (사장님이 우클릭 → Pin Left/No Pin 시 유지)
+  const onColumnPinned = () => { saveColState(); };
+
+  // R-7: 마우스 드래그 다중 선택 (mouse down + drag → hovering 행 모두 선택/해제 토글)
+  const dragSelectRef = useRef<{ mode: 'select' | 'deselect' } | null>(null);
+  const onCellMouseDown = (e: any) => {
+    // 편집 가능 셀(노랑 배경) 또는 product_name(detail panel 열림) 은 drag select 비활성
+    const colId = e.column?.getColId?.();
+    const editableSkip = ['product_name', 'qoo10_marketing'];
+    if (e.colDef?.editable === true || editableSkip.includes(colId)) return;
+    const node = e.node;
+    if (!node || node.data?.__expansion) return;
+    const wasSelected = node.isSelected();
+    node.setSelected(!wasSelected);
+    dragSelectRef.current = { mode: wasSelected ? 'deselect' : 'select' };
+  };
+  const onCellMouseOver = (e: any) => {
+    if (!dragSelectRef.current) return;
+    const node = e.node;
+    if (!node || node.data?.__expansion) return;
+    if (dragSelectRef.current.mode === 'select') node.setSelected(true);
+    else node.setSelected(false);
+  };
+  useEffect(() => {
+    const onUp = () => { dragSelectRef.current = null; };
+    window.addEventListener('mouseup', onUp);
+    return () => window.removeEventListener('mouseup', onUp);
+  }, []);
   const onGridReady = () => { restoreColState(); };
 
   const toggleColumn = (colId: string) => {
@@ -785,8 +829,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     const headers = [
       '작성일', '출처', '한국 SKU 명', '큐텐→한글', '상품URL',
       '경쟁가(¥)', '예상판매가(¥)', '차이%', '내판매가(¥)', '메가가(¥)',
-      '무게(g)', '구매가(원)', '국내배송(원)', '합계(원)', '포장+KSE(원)',
-      '배송모드', '배송비(원)', '수수료(¥)', '매출(원)', '총원가(원)',
+      '무게(g)', '구매가(원)', '구매배송(원)', '합계(원)', '포장+KSE(원)',
+      '배송모드', '판매배송(원)', '수수료(¥)', '매출(원)', '총원가(원)',
       '일반이익(원)', '일반마진율', '메가이익(원)', '메가마진율',
       '평가', '리뷰수', '추천점수', '메모',
     ];
@@ -1054,6 +1098,101 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             <option value="pending">pending</option>
             <option value="rejected">rejected</option>
           </select>
+          {/* R-7 등록상태 필터 */}
+          <span className="text-gray-600 font-semibold ml-1">등록:</span>
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            className="border rounded px-2 py-0.5">
+            <option value="all">전체</option>
+            <option value="active">진행중 (완료 숨김)</option>
+            <option value="미정">⚪ 미정</option>
+            <option value="in_progress">🟡 등록중</option>
+            <option value="completed">✅ 등록완료</option>
+          </select>
+          {/* R-7 카테고리 필터 (포함 + 제외 모드) */}
+          <span className="text-gray-600 font-semibold ml-1">카테고리:</span>
+          <select value={categoryFilter.startsWith('__exclude__:') ? '__exclude__' : categoryFilter}
+            onChange={e => {
+              const v = e.target.value;
+              if (v === '__exclude_input__') {
+                // 제외 모드 — 체크박스 prompt
+                const opts = sheetCategories.length > 0
+                  ? sheetCategories
+                  : ['미정', '03.뷰티&화장품', '07.식품', '12.서플리먼트&다이어트',
+                     '02.여성패션', '04.남성&스포츠', '06.홈&생활', '09.베이비&키즈',
+                     '11.펫 푸드&용품', '01.종합', '기타'];
+                const cur = categoryFilter.startsWith('__exclude__:')
+                  ? categoryFilter.slice('__exclude__:'.length).split(',').filter(Boolean)
+                  : [];
+                const promptStr =
+                  '제외할 카테고리 (콤마구분, 빈 값이면 전체 보기):\n\n' +
+                  '예: ' + opts.slice(0, 3).join(', ') + '\n\n' +
+                  '사용 가능: ' + opts.join(', ');
+                const ans = window.prompt(promptStr, cur.join(', '));
+                if (ans === null) return;  // 취소
+                const list = ans.split(',').map(s => s.trim()).filter(Boolean);
+                if (list.length === 0) {
+                  setCategoryFilter('__all__');
+                } else {
+                  setCategoryFilter('__exclude__:' + list.join(','));
+                }
+              } else {
+                setCategoryFilter(v);
+              }
+            }}
+            className="border rounded px-2 py-0.5"
+            title="전체 / 미정만 / 특정 카테고리만 / 다중 제외">
+            <option value="__all__">전체</option>
+            <option value="__undef__">⚪ 미정만</option>
+            {sheetCategories.length > 0 && <option disabled>──────</option>}
+            {sheetCategories.map(c => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+            {sheetCategories.length > 0 && <option disabled>──────</option>}
+            <option value="__exclude_input__">✂ 카테고리 제외...</option>
+            {categoryFilter.startsWith('__exclude__:') && (
+              <option value="__exclude__" disabled>✂ 제외 중 (위에서 변경)</option>
+            )}
+          </select>
+          {categoryFilter.startsWith('__exclude__:') && (
+            <span className="text-[10px] text-orange-700 bg-orange-50 px-1.5 py-0.5 rounded border border-orange-200"
+                  title={`제외 중: ${categoryFilter.slice('__exclude__:'.length)}`}>
+              ✂ 제외 {categoryFilter.slice('__exclude__:'.length).split(',').filter(Boolean).length}개
+            </span>
+          )}
+          {/* R-7 PIN 분리선 ◀▶ — 좌측 고정 영역 한 컬럼씩 이동 */}
+          <span className="text-gray-300 mx-1">|</span>
+          <span className="text-gray-600 font-semibold">📌 고정선:</span>
+          <button
+            onClick={() => {
+              const api = gridRef.current?.api as any;
+              if (!api) return;
+              const cols = api.getAllDisplayedColumns?.() || api.getColumns?.() || [];
+              // 가장 우측 left-pinned 컬럼 unpin
+              const lastLeft = [...cols].reverse().find((c: any) => c.getPinned?.() === 'left');
+              if (lastLeft) {
+                api.applyColumnState?.({ state: [{ colId: lastLeft.getColId(), pinned: null }] });
+                saveColState();
+              }
+            }}
+            className="px-2 py-0.5 rounded bg-white border border-gray-300 hover:bg-gray-50"
+            title="좌측 고정 컬럼 한 칸 줄이기 (가장 우측 pinned 컬럼 해제)"
+          >◀</button>
+          <button
+            onClick={() => {
+              const api = gridRef.current?.api as any;
+              if (!api) return;
+              const cols = api.getAllDisplayedColumns?.() || api.getColumns?.() || [];
+              // 첫 번째 unpinned 컬럼 left pin
+              const firstUnpinned = cols.find((c: any) => c.getPinned?.() == null);
+              if (firstUnpinned) {
+                api.applyColumnState?.({ state: [{ colId: firstUnpinned.getColId(), pinned: 'left' }] });
+                saveColState();
+              }
+            }}
+            className="px-2 py-0.5 rounded bg-white border border-gray-300 hover:bg-gray-50"
+            title="좌측 고정 컬럼 한 칸 늘리기 (첫 번째 unpinned 컬럼 고정)"
+          >▶</button>
+          <span className="text-[10px] text-gray-500" title="컬럼 헤더 우클릭 → Pin Left/Right/None 으로 개별 변경 가능">(헤더 우클릭도 OK)</span>
         </div>
         <div className="ml-auto flex gap-2">
           <button
@@ -1092,15 +1231,62 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           columnDefs={columnDefs}
           defaultColDef={defaultColDef}
           rowSelection="multiple"
-          suppressRowClickSelection={true}
+          suppressRowClickSelection={false}
+          rowMultiSelectWithClick={true}
           stopEditingWhenCellsLoseFocus={true}
           onCellValueChanged={onCellValueChanged}
           onColumnResized={onColumnResized}
           onColumnMoved={onColumnMoved}
           onColumnVisible={onColumnVisible}
+          onColumnPinned={onColumnPinned}
+          onCellMouseDown={onCellMouseDown}
+          onCellMouseOver={onCellMouseOver}
           onGridReady={onGridReady}
           animateRows={false}
           getRowId={(p: any) => String(p.data.id)}
+          postSortRows={(params: any) => {
+            // R-7: 정렬 후 후처리 — 복사본 (_parent_id) 은 원본 직후로 stick
+            const nodes = params.nodes;
+            const idToNode = new Map<string, any>();
+            nodes.forEach((n: any) => { if (n.data?.id) idToNode.set(n.data.id, n); });
+            const placed = new Set<string>();
+            const result: any[] = [];
+            for (const n of nodes) {
+              const id = n.data?.id;
+              if (!id || placed.has(id)) continue;
+              if (n.data?._parent_id && idToNode.has(n.data._parent_id)) continue; // 자식은 부모 차례에 따라 들어감
+              // 본인 (또는 group root)
+              result.push(n);
+              placed.add(id);
+              // 같은 부모를 가진 자식들 직후에 삽입 (입력 순서 유지)
+              for (const c of nodes) {
+                const cid = c.data?.id;
+                if (!cid || placed.has(cid)) continue;
+                if (c.data?._parent_id === id) {
+                  result.push(c);
+                  placed.add(cid);
+                }
+              }
+            }
+            // 고아 자식 (parent 가 필터로 빠진 경우) — 마지막에 추가
+            for (const n of nodes) {
+              const id = n.data?.id;
+              if (id && !placed.has(id)) result.push(n);
+            }
+            // in-place mutation (AG Grid 시그니처 요구)
+            params.nodes.length = 0;
+            result.forEach((n: any) => params.nodes.push(n));
+          }}
+          getRowStyle={(p: any) => {
+            if (!p.data) return undefined;
+            if (highlightedRowId && p.data.id === highlightedRowId) {
+              return { backgroundColor: '#fde68a', transition: 'background 0.6s' } as any;
+            }
+            if (p.data._parent_id) {
+              return { backgroundColor: '#eff6ff', borderLeft: '3px solid #60a5fa' } as any;
+            }
+            return undefined;
+          }}
           isFullWidthRow={(p: any) => !!p.rowNode?.data?.__expansion}
           fullWidthCellRenderer={(p: any) => {
             const parent = rows.find(r => r.id === p.data?.__parentId);
@@ -2114,7 +2300,7 @@ export default function RecommendProductsPage() {
         interestKeywords={getInterestKeywords().map(i => i.keyword_jp)}
       />
       <InterestKeywordBlock onAddRows={addRows} />
-      <PriceHistogram rows={rows} />
+      {/* PriceHistogram 제거 (R-7) */}
       <ProductSheet rows={rows} setRows={setRows} />
     </div>
   );

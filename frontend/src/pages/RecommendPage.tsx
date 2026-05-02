@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import { themeQuartz } from 'ag-grid-community';
-import { addInterestKeywords, getInterestKeywords, removeInterestKeyword, clearInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
+import { getInterestKeywords, removeInterestKeyword, clearInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
 import { mergeKeywordsToSheet } from '../store/keywordToSheet';
+import { loadSheet, saveSheet } from '../store/productSheet';
+import { pushCloud } from '../store/cloudSync';
 
 const myTheme = themeQuartz.withParams({
   fontSize: 12,
@@ -225,6 +227,14 @@ export default function RecommendPage() {
   // YYY-1: 디폴트 카테고리 3개 (raw 큐텐 기준 — 종합/뷰티/식품 사장님 사업 영역)
   const DEFAULT_CATS = ['01.종합', '03.뷰티&화장품', '07.식품'];
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(() => new Set(DEFAULT_CATS));
+  // R-7: "종합" 키워드 중 selected 외 카테고리에도 동시 분류된 것 제외
+  //   (예: 종합∩디지털 으로 분류된 키워드는 디지털 키워드로 간주 → 제외)
+  const [excludeOverlap, setExcludeOverlap] = useState<boolean>(() => {
+    try { return localStorage.getItem('recommend.excludeOverlap') !== '0'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('recommend.excludeOverlap', excludeOverlap ? '1' : '0'); } catch { /* */ }
+  }, [excludeOverlap]);
 
   useEffect(() => {
     Promise.all([getKeywords().then(r => setKeywords(r.data)).catch(() => {}),
@@ -248,6 +258,18 @@ export default function RecommendPage() {
   };
 
   const isBrand = (jp?: string) => !!jp && /^[a-zA-Z0-9\s\-_.&'+]+$/.test(jp);
+
+  // R-7: keyword_jp → 모든 raw 카테고리 set (excludeOverlap 필터에 사용)
+  const keywordAllCategoriesMap = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    for (const k of keywords) {
+      const jp = k.keyword_jp;
+      if (!jp) continue;
+      if (!m.has(jp)) m.set(jp, new Set());
+      if (k.category) m.get(jp)!.add(k.category);
+    }
+    return m;
+  }, [keywords]);
 
   // 가공: kr_ratio, recommend_score 계산 + 기간/임계값 필터
   const enriched: (KeywordWithScore & { categories?: string[] })[] = useMemo(() => {
@@ -283,9 +305,20 @@ export default function RecommendPage() {
         if (brandFilter === 'general' && isBrand(kw.keyword_jp)) return false;
         if (brandFilter === 'brand' && !isBrand(kw.keyword_jp)) return false;
         // YYY-1: raw 큐텐 카테고리로 필터 (사장님 디폴트 종합/뷰티/식품 = raw)
-        // LLM 분류는 표시 컬럼만 사용
         const rawCat = kw.category || '';
-        if (selectedCategories.size > 0 && !selectedCategories.has(rawCat)) return false;
+        if (selectedCategories.size > 0) {
+          if (!selectedCategories.has(rawCat)) return false;
+          // R-7: excludeOverlap — 키워드의 모든 raw 카테고리가 selected 안에 있어야 통과.
+          // 종합∩디지털 키워드는 종합으로도 row 가 있지만 디지털 분류도 있으니 제외.
+          if (excludeOverlap) {
+            const allCats = keywordAllCategoriesMap.get(kw.keyword_jp);
+            if (allCats) {
+              for (const cat of allCats) {
+                if (!selectedCategories.has(cat)) return false;
+              }
+            }
+          }
+        }
         return true;
       });
 
@@ -322,7 +355,7 @@ export default function RecommendPage() {
     }
 
     return rows.sort((a, b) => b.recommend_score - a.recommend_score);
-  }, [keywords, mode, singleDate, fromDate, toDate, minSearch, minKrRatio, compMin, compMax, dedupe, brandFilter, selectedCategories]);
+  }, [keywords, mode, singleDate, fromDate, toDate, minSearch, minKrRatio, compMin, compMax, dedupe, brandFilter, selectedCategories, excludeOverlap, keywordAllCategoriesMap]);
 
   // YYY-1: raw 큐텐 카테고리 목록 (필터 버튼용)
   const availableCats = useMemo(() => {
@@ -467,34 +500,6 @@ export default function RecommendPage() {
     }
   };
 
-  const rowToInterest = (r: any): InterestKeyword => ({
-    keyword_jp: r.keyword_jp,
-    keyword_kr: r.keyword_kr,
-    category: r.category,
-    search_volume_weekly: r.search_volume_weekly,
-    search_volume_daily: r.search_volume_daily,
-    competition_intensity: r.competition_intensity,
-    total_products: r.total_products,
-    products_jp: r.products_jp,
-    products_kr: r.products_kr,
-    products_cn: r.products_cn,
-    products_other: r.products_other,
-  });
-
-  const addSelectedToInterest = () => {
-    const api = gridRef.current?.api as any;
-    if (!api) return;
-    const selected: any[] = api.getSelectedRows?.() || [];
-    if (selected.length === 0) {
-      alert('키워드를 체크해주세요.');
-      return;
-    }
-    const items = selected.map(rowToInterest);
-    const merged = addInterestKeywords(items);
-    setInterestList(merged);
-    alert(`${items.length}개 추가 완료. 총 ${merged.length}개가 관심 키워드에 있습니다.`);
-  };
-
   // VV-3 추천 테이블 → 시트로 직접
   const sendSelectedToSheet = async () => {
     const api = gridRef.current?.api as any;
@@ -506,12 +511,110 @@ export default function RecommendPage() {
       selected.map(r => ({
         keyword_jp: r.keyword_jp,
         keyword_kr: r.keyword_kr,
-        category: r.category,
+        // R-7: LLM category_inferred 우선 (시트의 6분류 dropdown 과 매칭)
+        category: (r as any).category_inferred || r.category,
         search_volume_weekly: r.search_volume_weekly,
       })),
       `keyword:${today}`,
     );
     alert(`✓ ${added}건 시트에 추가 (${selected.length} 중 중복 제외).\n/recommend-products 에서 한국 셀러 URL/원가 입력하세요.`);
+  };
+
+  // R-7: 체크된 키워드를 시트에서 삭제 (keyword_jp 매칭)
+  const deleteSelectedFromSheet = async () => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const selected: any[] = api.getSelectedRows?.() || [];
+    if (selected.length === 0) { alert('키워드를 체크해주세요.'); return; }
+    const targetKws = new Set(selected.map(r => r.keyword_jp).filter(Boolean));
+    if (targetKws.size === 0) { alert('체크한 키워드에 keyword_jp 가 없습니다.'); return; }
+    const sheet = loadSheet();
+    const matched = sheet.filter(r => r.keyword_jp && targetKws.has(r.keyword_jp));
+    if (matched.length === 0) {
+      alert('체크한 키워드와 매칭되는 시트 행이 없습니다.');
+      return;
+    }
+    const ok = window.confirm(
+      `체크한 ${targetKws.size}개 키워드와 매칭되는 시트 행 ${matched.length}개를 삭제합니다.\n\n` +
+      `진행하시겠습니까? (이 작업은 되돌릴 수 없습니다)`
+    );
+    if (!ok) return;
+    const next = sheet.filter(r => !(r.keyword_jp && targetKws.has(r.keyword_jp)));
+    saveSheet(next);
+    try { await pushCloud('product_sheet', next); } catch { /* */ }
+    alert(`✓ ${matched.length}개 행 시트에서 삭제. 남은 시트 ${next.length}행.`);
+  };
+
+  // R-7: 일자별 추천 키워드 → 시트 추가
+  //   1) 일자 입력 (prompt; default 페이지 상단 singleDate 또는 오늘)
+  //   2) 그 일자 keywords 만 + 현재 카테고리/임계값 필터 적용
+  //   3) 시트에 추가 (덮어쓰기 X — mergeKeywordsToSheet 가 keyword_jp 중복 제외)
+  const fetchByDateAndAddToSheet = async () => {
+    const defaultDate = singleDate || new Date().toISOString().slice(0, 10);
+    const dateStr = window.prompt(
+      `어떤 일자의 추천을 가져올까요? (YYYY-MM-DD)\n\n` +
+      `현재 카테고리 필터: ${selectedCategories.size > 0 ? Array.from(selectedCategories).join(', ') : '전체'}\n` +
+      `임계값: 검색량 ≥${minSearch}, 한국비율 ≥${minKrRatio}%, 경쟁 ${compMin}~${compMax}`,
+      defaultDate,
+    );
+    if (!dateStr) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      alert('일자 형식 잘못됨 (YYYY-MM-DD).');
+      return;
+    }
+    // 그 일자 + 현재 필터 통과 키워드 추출
+    // enriched 는 페이지 상단 일자 mode 따라가니 일관성 위해 keywords 원천에서 직접 필터
+    const filtered = keywords.filter(k => {
+      if (k.lookup_date !== dateStr) return false;
+      if ((k.search_volume_weekly || 0) < minSearch) return false;
+      const total = k.total_products || 0;
+      const kr = k.products_kr || 0;
+      const krRatio = total > 0 ? (kr / total) * 100 : 0;
+      if (krRatio < minKrRatio) return false;
+      const c = k.competition_intensity || 0;
+      if (c < compMin || c > compMax) return false;
+      const rawCat = k.category || '';
+      if (selectedCategories.size > 0) {
+        if (!selectedCategories.has(rawCat)) return false;
+        if (excludeOverlap) {
+          const allCats = keywordAllCategoriesMap.get(k.keyword_jp);
+          if (allCats) {
+            for (const cat of allCats) {
+              if (!selectedCategories.has(cat)) return false;
+            }
+          }
+        }
+      }
+      return true;
+    });
+    // dedup keyword_jp (같은 키워드 다른 카테고리 row 가 통과한 경우)
+    const seen = new Set<string>();
+    const unique = filtered.filter(k => {
+      if (seen.has(k.keyword_jp)) return false;
+      seen.add(k.keyword_jp);
+      return true;
+    });
+    if (unique.length === 0) {
+      alert(`${dateStr} 의 필터 통과 키워드 0개. 카테고리/임계값 또는 일자 확인 후 재시도.`);
+      return;
+    }
+    const ok = window.confirm(
+      `${dateStr}\n` +
+      `필터 통과 ${unique.length}개 키워드를 시트에 추가합니다.\n\n` +
+      `(중복은 자동 제외 — 시트는 비우지 않음)\n\n` +
+      `진행?`
+    );
+    if (!ok) return;
+    const added = await mergeKeywordsToSheet(
+      unique.map(k => ({
+        keyword_jp: k.keyword_jp,
+        keyword_kr: k.keyword_kr,
+        category: (k as any).category_inferred || k.category,
+        search_volume_weekly: k.search_volume_weekly,
+      })),
+      `keyword:${dateStr}`,
+    );
+    alert(`✓ ${dateStr} 추천 ${added}건 시트 추가 (${unique.length} 중 중복 제외).`);
   };
 
   // VV-3 관심 풀 → 시트로 직접 (전체 또는 선택)
@@ -524,7 +627,7 @@ export default function RecommendPage() {
       items.map(k => ({
         keyword_jp: k.keyword_jp,
         keyword_kr: k.keyword_kr,
-        category: k.category,
+        category: (k as any).category_inferred || k.category,
         search_volume_weekly: k.search_volume_weekly,
       })),
       `interest:${today}`,
@@ -551,30 +654,6 @@ export default function RecommendPage() {
     setSelectedInterests(new Set());
   };
 
-  const sourceSelectedKeywords = () => {
-    const api = gridRef.current?.api as any;
-    if (!api) return;
-    const selected: any[] = api.getSelectedRows?.() || [];
-    if (selected.length === 0) {
-      alert('키워드를 체크해주세요.');
-      return;
-    }
-    const items = selected.map(rowToInterest);
-    const merged = addInterestKeywords(items);
-    setInterestList(merged);
-    // 자동 소싱 파라미터를 interest 모드로 프리셋
-    try {
-      const raw = localStorage.getItem(AUTO_SOURCING_KEY);
-      const cur = raw ? JSON.parse(raw) : {};
-      localStorage.setItem(AUTO_SOURCING_KEY, JSON.stringify({
-        ...cur,
-        mode: 'interest',
-        keywords_limit: Math.max(cur.keywords_limit || 20, items.length),
-      }));
-    } catch { /* ignore */ }
-    navigate('/recommend-products');
-  };
-
   const removeInterest = (jp: string) => {
     const next = removeInterestKeyword(jp);
     setInterestList(next);
@@ -583,21 +662,6 @@ export default function RecommendPage() {
     if (!confirm('관심 키워드를 모두 삭제할까요?')) return;
     clearInterestKeywords();
     setInterestList([]);
-  };
-  // YYY-1: AG-Grid 선택 row → 관심 풀에서 제거
-  const removeSelectedFromInterest = () => {
-    const api = gridRef.current?.api as any;
-    if (!api) return;
-    const selected: any[] = api.getSelectedRows?.() || [];
-    if (selected.length === 0) { alert('체크된 row 가 없습니다.'); return; }
-    const jpsInPool = selected.filter(r => interestSet.has(r.keyword_jp)).map(r => r.keyword_jp);
-    if (!jpsInPool.length) { alert('선택된 row 중 관심 풀에 있는 항목이 없습니다.'); return; }
-    if (!confirm(`${jpsInPool.length}건을 관심 풀에서 제거합니다.`)) return;
-    let next = interestList;
-    for (const jp of jpsInPool) {
-      next = removeInterestKeyword(jp);
-    }
-    setInterestList(next);
   };
   const sourceInterestList = () => {
     if (interestList.length === 0) {
@@ -881,8 +945,15 @@ export default function RecommendPage() {
             })}
           </div>
           {selectedCategories.size > 0 && (
-            <div className="mt-1 text-[11px] text-gray-500">
-              선택: {selectedCategories.size}개 (나머지 카테고리 제외)
+            <div className="mt-1 text-[11px] text-gray-500 flex items-center gap-3 flex-wrap">
+              <span>선택: {selectedCategories.size}개 (나머지 카테고리 제외)</span>
+              <label className="flex items-center gap-1 cursor-pointer hover:text-gray-700"
+                title="키워드의 카테고리 set 중 선택 외 카테고리가 하나라도 있으면 제외. 예: 종합∩디지털 키워드 → 디지털도 분류됐으니 제외.">
+                <input type="checkbox" checked={excludeOverlap}
+                  onChange={e => setExcludeOverlap(e.target.checked)}
+                  className="cursor-pointer" />
+                <span>겹침 제외 (종합 ∩ 다른 카테고리 키워드 빼기)</span>
+              </label>
             </div>
           )}
         </div>
@@ -1030,38 +1101,23 @@ export default function RecommendPage() {
             <button
               onClick={sendSelectedToSheet}
               className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700"
-              title="체크한 키워드를 상품 시트로 (URL/원가는 직접 입력)"
+              title="체크한 키워드를 상품 시트로 추가 (중복 제외)"
             >
-              📋 선택을 시트로
+              📋 선택 → 시트
             </button>
             <button
-              onClick={addSelectedToInterest}
-              className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded hover:bg-emerald-700"
-              title="체크한 키워드를 관심으로 표시 (구분 컬럼 = '관심')"
+              onClick={deleteSelectedFromSheet}
+              className="text-xs px-3 py-1.5 bg-red-500 text-white rounded hover:bg-red-600"
+              title="체크한 키워드와 매칭되는 시트 행만 삭제 (keyword_jp 기준)"
             >
-              ⭐ 관심으로 표시
+              🗑 선택 시트 삭제
             </button>
             <button
-              onClick={removeSelectedFromInterest}
-              className="text-xs px-3 py-1.5 bg-amber-100 text-amber-800 rounded hover:bg-amber-200"
-              title="체크한 키워드 중 관심 표시 해제"
+              onClick={fetchByDateAndAddToSheet}
+              className="text-xs px-3 py-1.5 bg-rose-600 text-white rounded hover:bg-rose-700"
+              title="특정 일자의 추천 키워드 (현 카테고리/임계값 필터 적용) 시트로 일괄 추가"
             >
-              ↺ 관심 해제
-            </button>
-            <button
-              onClick={sourceSelectedKeywords}
-              className="text-xs px-3 py-1.5 bg-purple-600 text-white rounded hover:bg-purple-700"
-              title="체크한 키워드 자동 소싱 페이지 이동 (이동만, 자동 시작 X)"
-            >
-              ⚡ 자동 소싱 페이지로
-            </button>
-            <button
-              onClick={clearAllInterest}
-              disabled={interestCount === 0}
-              className="text-xs px-3 py-1.5 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-40"
-              title="모든 관심 표시 해제"
-            >
-              관심 전체 해제
+              📅 일자별 추천 가져오기
             </button>
             <Link
               to="/recommend-products"

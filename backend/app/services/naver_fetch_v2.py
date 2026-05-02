@@ -256,10 +256,19 @@ def _naver_profile_dir() -> Path:
 async def fetch_naver_url_v2(url: str, *, headless: bool = True, save_cookies: bool = True) -> dict:
     """URL → product info.
 
-    우선순위:
+    R-8 (2026-05-02): 기본은 크롬 확장 (qoo10-helper-extension) 경유.
+    환경변수 `EXT_USE_EXTENSION=false` 시 레거시 Playwright 흐름:
       1. 메인 Chrome 9222 attach (CDP) — 사장님 메인 Chrome 에 새 탭. 모든 로그인 활용.
       2. fallback: persistent context (별도 naver-browser-profile)
+
+    레거시는 5/2 검증에서 5/5 모두 Naver 로그인 redirect 로 fail — 디스크 검사와
+    실제 fetch 가 다른 프로필 보던 모순. R-8 확장은 메인 Chrome 1개 사용.
     """
+    import os
+    if os.getenv("EXT_USE_EXTENSION", "true").lower() == "true":
+        from app.services.ext_client import fetch_one
+        return await fetch_one(url)
+
     parsed = parse_naver_url(url)
     if not parsed:
         return {"error": "Naver smartstore/brand URL 아님"}

@@ -2,6 +2,10 @@
 
 > Qoo10 Japan 공식 가이드 기준. 상품명·검색 키워드 작성 시 본 문서의 규칙을 따른다.
 > 출처: [Qoo10 University 공식 상품등록 가이드](https://article-university.qoo10.jp/entry/40)
+>
+> **상세페이지 본문 카피 (마케팅 포인트, POINT 1~3, 추천 대상)** 는 별도 문서:
+> → `qoo10-jp-detail-master.md` v1.1 (인트로 6블록 + POINT 시리즈 + 약사법 회피)
+> 본 문서는 검색 노출용 **상품명·태그** 영역만 다룸.
 
 ---
 

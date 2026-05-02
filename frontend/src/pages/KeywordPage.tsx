@@ -300,7 +300,8 @@ export default function KeywordPage() {
       selected.map(r => ({
         keyword_jp: r.keyword_jp,
         keyword_kr: r.keyword_kr,
-        category: r.category,
+        // R-7: LLM 분류 결과(category_inferred) 우선 — 시트 카테고리 컬럼이 6분류
+        category: r.category_inferred || r.category,
         search_volume_weekly: r.search_volume_weekly,
       })),
       `keyword:${today}`,

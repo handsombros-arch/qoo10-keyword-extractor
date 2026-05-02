@@ -15,13 +15,7 @@ const mainItems = [
 const moreItems = [
   { path: '/keywords', label: '키워드 추출 (RD)', icon: '🔬' },
   { path: '/insights', label: '시계열 인사이트 (RD)', icon: '📈' },
-  { path: '/competition', label: '경쟁강도 (RD)', icon: '📈' },
-  { path: '/bid', label: '경매 결과 (RD)', icon: '💰' },
   { path: '/related-bulk', label: '연관 키워드 (RD)', icon: '🔗' },
-  { path: '/price-compare', label: '가격비교', icon: '💱' },
-  { path: '/products', label: '상품 검색', icon: '🛒' },
-  { path: '/tracking', label: '순위 추적', icon: '📍' },
-  { path: '/bestsellers', label: '인기상품', icon: '🏆' },
   { path: '/settings', label: 'AI 설정', icon: '⚙️' },
 ];
 
