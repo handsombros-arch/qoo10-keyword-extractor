@@ -26,7 +26,8 @@ backend/data/
 automation/diagnostics/
 automation/data/
 backend/scripts/bid_test.json
-data/                    # naver-browser-profile + 사적 cookies (R-8 후 미사용)
+# naver-browser-profile + 사적 cookies (R-8 후 미사용)
+data/
 
 # DB (로컬 SQLite — Supabase 이전 후 불필요)
 backend/data/qoo10.db
