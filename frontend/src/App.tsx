@@ -12,6 +12,7 @@ import RecommendProductsPage from './pages/RecommendProductsPage';
 import ReviewPage from './pages/ReviewPage';
 import ShopBenchmarkPage from './pages/ShopBenchmarkPage';
 import SettingsPage from './pages/SettingsPage';
+import BlacklistPage from './pages/BlacklistPage';
 
 const queryClient = new QueryClient();
 
@@ -32,6 +33,7 @@ function App() {
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/review/:date" element={<ReviewPage />} />
             <Route path="/shop-benchmark" element={<ShopBenchmarkPage />} />
+            <Route path="/blacklist" element={<BlacklistPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>
