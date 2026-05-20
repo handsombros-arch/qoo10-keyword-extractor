@@ -7,7 +7,7 @@ const ALARM_NAME = "qoo10-helper-poll";
 const POLL_PERIOD_MIN = 1;              // chrome.alarms minPeriod (production)
 const KEEPALIVE_INTERVAL_MS = 25_000;   // SW 30s 자동 종료 회피
 const PAGE_LOAD_TIMEOUT_MS = 30_000;
-const EXTRACTION_TIMEOUT_MS = 40_000;     // page world polling 16s + content.js scroll/parse
+const EXTRACTION_TIMEOUT_MS = 60_000;     // page world polling 16s + content.js scroll/parse — Coupang 긴 페이지 대응
 const PAGE_DUMP_TIMEOUT_MS = 25_000;      // page world dump (polling 포함) 단독 한도
 const DEFAULT_DELAY_MIN_MS = 3_000;
 const DEFAULT_DELAY_MAX_MS = 5_000;
@@ -154,23 +154,35 @@ async function processNext() {
     const extraSettleMs = cfg.settle_ms_extra ?? 0;
     if (extraSettleMs > 0) await sleep(extraSettleMs);
 
-    // 1) page world 에서 JSON-LD + __PRELOADED_STATE__ 직접 dump (isolated world 우회)
+    // 사이트별 dispatch — naver = page world dump + naver-smartstore.js,
+    //                    coupang = DOM-only (PRELOADED_STATE 없음) + coupang.js
+    const site = detectSite(item.url);
+
     let pageDump = null;
-    try {
-      const [exec] = await chrome.scripting.executeScript({
-        target: { tabId },
-        world: "MAIN",
-        func: pageWorldDump,
-      });
-      pageDump = exec?.result || null;
-    } catch (e) {
-      console.warn("[Qoo10 Helper] page world dump fail:", e.message);
+    if (site === "naver") {
+      // 1) page world 에서 JSON-LD + __PRELOADED_STATE__ 직접 dump
+      try {
+        const [exec] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          func: pageWorldDump,
+        });
+        pageDump = exec?.result || null;
+      } catch (e) {
+        console.warn("[Qoo10 Helper] page world dump fail:", e.message);
+      }
+    } else if (site === "coupang") {
+      // Coupang 은 hydration 이 빠른 SSR. 약간 wait + 스크롤 트리거
+      await sleep(1500);
     }
 
-    // 2) content.js 주입 (isolated world) — DOM detail 이미지 + scroll
+    // 2) content.js 주입 (isolated world) — site 별 다른 스크립트
+    const contentFiles = site === "coupang"
+      ? ["content-scripts/common.js", "content-scripts/coupang.js"]
+      : ["content-scripts/common.js", "content-scripts/naver-smartstore.js"];
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content-scripts/common.js", "content-scripts/naver-smartstore.js"],
+      files: contentFiles,
     });
     result = await sendMessageToTab(
       tabId,
@@ -181,6 +193,7 @@ async function processNext() {
           max_detail_images: cfg.max_detail_images ?? 20,
         },
         page_dump: pageDump,
+        site,
       },
       EXTRACTION_TIMEOUT_MS,
     );
@@ -329,6 +342,15 @@ async function fetchWithRetry(url, options, maxRetries = 3) {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// URL → 사이트 식별. 새 사이트 추가 시 여기 + content-scripts/{site}.js + manifest 권한.
+function detectSite(url) {
+  if (!url) return "naver";
+  const u = String(url).toLowerCase();
+  if (u.includes("coupang.com")) return "coupang";
+  if (u.includes("naver.com")) return "naver";
+  return "naver"; // default fallback
 }
 
 function updateBadge(state) {

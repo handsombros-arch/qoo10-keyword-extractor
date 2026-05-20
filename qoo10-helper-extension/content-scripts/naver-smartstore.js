@@ -89,8 +89,17 @@
       }
     }
 
-    // 4) DOM 상세 이미지 — 스크롤 후 모든 img 큰 사이즈 필터
+    // 4) DOM 상세 이미지 — "상세 정보 펼치기" 클릭 → 스크롤 → 큰 img 필터
     if (config.extract_detail_images && out.detail_image_urls.length === 0) {
+      // (4-a) Naver smartstore "상세 정보 펼치기" / "상품 정보 더보기" 버튼 클릭
+      // 상세 영역이 collapsed 상태면 이미지 lazy-load 가 안 됨.
+      try {
+        const expandClicked = await tryExpandDetailSection();
+        if (expandClicked) {
+          out.sources.push("detail-expanded");
+          await QooHelper.sleep(600);
+        }
+      } catch (_) {}
       try {
         await QooHelper.scrollToBottom(800, 200);
         await QooHelper.sleep(700);
@@ -390,5 +399,44 @@
       if (result.length >= maxCount) break;
     }
     return result;
+  }
+
+  // Naver smartstore "상세 정보 펼치기" 버튼 클릭 — collapsed 영역 expand.
+  // 이거 없으면 detail 이미지가 lazy-load 안 됨.
+  // 다양한 라벨 패턴 + 클래스 패턴 시도. 클릭 성공 시 true.
+  async function tryExpandDetailSection() {
+    // 1) 텍스트 기반 — 모든 button 순회하며 "펼치기"/"더보기" 매치
+    const candidates = [];
+    for (const btn of document.querySelectorAll("button, a[role='button']")) {
+      const txt = (btn.innerText || btn.textContent || "").trim();
+      if (!txt || txt.length > 30) continue;
+      if (/(상세\s*정보\s*펼치기|상품\s*정보\s*더보기|상세\s*펼치기|상세\s*더보기|펼치기|더\s*보기)/.test(txt)) {
+        candidates.push(btn);
+      }
+    }
+    // 2) 클래스 기반 — Naver SPA 내부 버튼
+    for (const sel of [
+      "button[class*='_unfold_btn']",
+      "button[class*='unfoldBtn']",
+      "button[class*='ExpandButton']",
+      "button[class*='_more_button']",
+      "[class*='detail_unfold'] button",
+    ]) {
+      for (const el of document.querySelectorAll(sel)) {
+        if (!candidates.includes(el)) candidates.push(el);
+      }
+    }
+    let clickedAny = false;
+    for (const btn of candidates.slice(0, 3)) {
+      try {
+        // 화면에 보이도록 scroll
+        btn.scrollIntoView({ behavior: "instant", block: "center" });
+        await QooHelper.sleep(150);
+        btn.click();
+        clickedAny = true;
+        await QooHelper.sleep(300);
+      } catch (_) {}
+    }
+    return clickedAny;
   }
 })();

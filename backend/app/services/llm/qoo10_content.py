@@ -42,6 +42,7 @@ def _empty() -> dict:
         "tags": [],
         "option_name": "",
         "marketing_points": [],
+        "marketing_points_ko": [],   # H (5/3): 사장님 검수용 한글 번역 (parallel array)
         "ok": False,
     }
 
@@ -161,12 +162,26 @@ async def generate_qoo10_content_async(
     option_name = _truncate_title(parsed.get("option_name") or option_name_kr, 100)
     marketing = _normalize_marketing(parsed.get("marketing_points") or [])
 
+    # H (5/3): 한글 번역 parallel array — marketing 길이에 맞춰 padding/truncate
+    marketing_ko_raw = parsed.get("marketing_points_ko") or []
+    marketing_ko: list[str] = []
+    if isinstance(marketing_ko_raw, list):
+        for k in marketing_ko_raw:
+            if isinstance(k, str):
+                marketing_ko.append(k.strip()[:60])
+    # marketing 와 길이 일치 (부족하면 빈 문자열로 padding, 넘치면 자름)
+    if len(marketing_ko) < len(marketing):
+        marketing_ko += [""] * (len(marketing) - len(marketing_ko))
+    elif len(marketing_ko) > len(marketing):
+        marketing_ko = marketing_ko[: len(marketing)]
+
     ok = bool(title and tags and marketing)  # 핵심 3개 다 있으면 OK
     return {
         "title_jp": title,
         "tags": tags,
         "option_name": option_name,
         "marketing_points": marketing,
+        "marketing_points_ko": marketing_ko,
         "ok": ok,
     }
 

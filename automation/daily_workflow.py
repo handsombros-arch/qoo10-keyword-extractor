@@ -107,6 +107,18 @@ ENABLE_AUTO_LEARNING = _env("ENABLE_AUTO_LEARNING", "1") == "1"
 ENABLE_RELATED_KEYWORDS = _env("ENABLE_RELATED_KEYWORDS", "1") == "1"
 RELATED_KEYWORDS_MAX_PER_PARENT = int(_env("RELATED_KEYWORDS_MAX_PER_PARENT", "15"))
 
+# C (2026-05-03) — STEP 4.7 야간 URL 일괄 재생성. 시트의 "URL 있고 데이터 미수집" 행
+# 자동 처리. Naver=확장 (메인 Chrome 켜져있어야), Coupang=백엔드 Scrapling.
+# keyword_only / full 둘 다에서 동작 (모드 무관 — 시트 따로 흐름).
+ENABLE_URL_BATCH_REGENERATE = _env("ENABLE_URL_BATCH_REGENERATE", "1") == "1"
+URL_BATCH_LIMIT = int(_env("URL_BATCH_LIMIT", "30"))
+URL_BATCH_INCLUDE_JP_DETAIL = _env("URL_BATCH_INCLUDE_JP_DETAIL", "0") == "1"
+
+# U (2026-05-03) — STEP 4.8 샵 벤치마크 자동 동기화. 등록된 샵들에서 fetch + 신규 상품 표시.
+ENABLE_SHOP_BENCHMARK_SYNC = _env("ENABLE_SHOP_BENCHMARK_SYNC", "1") == "1"
+SHOP_BENCHMARK_LIMIT = int(_env("SHOP_BENCHMARK_LIMIT", "50"))
+SHOP_BENCHMARK_SORT = _env("SHOP_BENCHMARK_SORT", "review")
+
 # R-6 (2026-05-01) — 자동화 범위 제어. 사장님 결정: 매칭/이미지/auto-build 흐름 불안정 → 홀드.
 # 키워드 RD (수집 + 분류 + 필터 + M05 다양성) 까지만 야간 자동화. 이후 단계는 수동 진행.
 #   - "keyword_only" (기본): STEP 1~4.5 (트렌드 수집 → 분류 → 필터 → M05) 까지만 실행
@@ -120,6 +132,7 @@ AUTO_FILTER_CATEGORIES_ENV = _env("AUTO_FILTER_CATEGORIES", "")
 
 
 DRY_RUN = False
+TARGET_DATE_OVERRIDE: Optional[date] = None
 log: logging.Logger = logging.getLogger("automation")
 
 
@@ -487,18 +500,23 @@ async def step_login_status(client: httpx.AsyncClient) -> None:
     # 4) Naver smartstore 세션 (naver-browser-profile 쿠키)
     naver_sess_ok, naver_sess_msg, naver_days_left = await _check_naver_smartstore_session(client)
 
+    # keyword_only 모드는 STEP 5+ (smartstore detail fetch) 를 안 돔 → 세션 ✗ 여도 abort 안 함
+    naver_sess_required = AUTOMATION_MODE == "full"
+
     # 모두 통과
     log.info(f"큐텐: {'✓' if qoo10_ok else '✗'} {qoo10_msg}")
     log.info(f"네이버 API: {'✓' if naver_ok else '✗'} {naver_msg}")
     log.info(f"디버그 Chrome: {'✓' if chrome_ok else '✗'} {chrome_msg}")
     log.info(f"Naver 세션: {'✓' if naver_sess_ok else '✗'} {naver_sess_msg}")
+    if not naver_sess_ok and not naver_sess_required:
+        log.warning(f"Naver 세션 ✗ — keyword_only 모드라 abort 하지 않음 (smartstore fetch 미사용)")
 
-    if qoo10_ok and naver_ok and naver_sess_ok:
+    if qoo10_ok and naver_ok and (naver_sess_ok or not naver_sess_required):
         # Chrome 은 critical 아님 (warning 만)
         if not chrome_ok:
             log.warning(f"디버그 Chrome 9222 비활성 — 한국 셀러 진입 차단 가능: {chrome_msg}")
-        # D-7 임박 알림 (alive 지만 만료 임박 — 자동화는 진행)
-        if naver_days_left is not None and naver_days_left <= 7:
+        # D-7 임박 알림 (alive 지만 만료 임박 — 자동화는 진행). keyword_only 면 어차피 안 쓰니 skip.
+        if naver_sess_required and naver_days_left is not None and naver_days_left <= 7:
             warn = (
                 f"📌 Naver 세션 만료 임박 — D-{naver_days_left}\n"
                 f"open_naver_login_chrome.bat 실행 → 재로그인 (로그인 유지 체크) → 창 닫기"
@@ -514,7 +532,8 @@ async def step_login_status(client: httpx.AsyncClient) -> None:
     failed = []
     if not qoo10_ok: failed.append(f"큐텐 ({qoo10_msg})")
     if not naver_ok: failed.append(f"네이버 API ({naver_msg})")
-    if not naver_sess_ok: failed.append(f"Naver 세션 ({naver_sess_msg}) → open_naver_login_chrome.bat 실행")
+    if not naver_sess_ok and naver_sess_required:
+        failed.append(f"Naver 세션 ({naver_sess_msg}) → open_naver_login_chrome.bat 실행")
     if not chrome_ok: failed.append(f"Chrome9222 ({chrome_msg})")
 
     msg_lines = "\n".join(f"  - {f}" for f in failed)
@@ -913,6 +932,81 @@ async def step_collect_related_keywords(
     except Exception as e:
         log.warning(f"M05 wait 실패 (best-effort): {e}")
         return {"error": str(e), "candidates": candidates_n}
+
+
+async def step_shop_benchmark_sync(client: httpx.AsyncClient) -> dict:
+    """STEP 4.8 (U) — 등록된 큐텐 샵에서 자동 fetch + 신규 상품 표시.
+
+    UserData "shop_urls" 의 모든 샵 → m13 scraper → last_seen 비교 → is_new 플래그.
+    결과는 shop_cache UserData 갱신 → ShopBenchmarkPage 자동 로드.
+
+    best-effort. 실패해도 워크플로우 계속.
+    """
+    log.info("=== STEP 4.8: 샵 벤치마크 자동 동기화 (U) ===")
+    if not ENABLE_SHOP_BENCHMARK_SYNC:
+        log.info("ENABLE_SHOP_BENCHMARK_SYNC=0 — 스킵")
+        return {"skipped": True}
+
+    body = {
+        "shop_urls": [],  # 비우면 UserData "shop_urls" 사용
+        "limit_per_shop": SHOP_BENCHMARK_LIMIT,
+        "sort_type": SHOP_BENCHMARK_SORT,
+    }
+    try:
+        result = await _post(client, "/api/automation/shop-benchmark-sync", body)
+    except Exception as e:
+        log.warning(f"샵 벤치마크 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    if result.get("error"):
+        log.warning(f"샵 벤치마크 — {result['error']}")
+        return result
+    log.info(
+        f"샵 벤치마크 완료: 샵 {result.get('shops', 0)}개 / 신규 상품 {result.get('total_new', 0)}건"
+    )
+    return result
+
+
+async def step_url_batch_regenerate(client: httpx.AsyncClient) -> dict:
+    """STEP 4.7 (C) — 시트의 URL 있고 데이터 미수집 행 자동 처리.
+
+    URL 도메인별 라우팅 (백엔드 _do_regenerate):
+      - Naver: 크롬 확장 (메인 Chrome 켜져있어야)
+      - Coupang: 백엔드 Scrapling (Chrome 무관)
+
+    keyword_only / full 둘 다에서 동작 — 시트 따로 흐름이라 모드 영향 없음.
+    best-effort. 실패해도 워크플로우 계속.
+    """
+    log.info("=== STEP 4.7: URL 일괄 재생성 (시트 미수집 URL 자동 처리) ===")
+    if not ENABLE_URL_BATCH_REGENERATE:
+        log.info("ENABLE_URL_BATCH_REGENERATE=0 — 스킵")
+        return {"skipped": True}
+
+    body = {
+        "limit": URL_BATCH_LIMIT,
+        "include_jp_detail": URL_BATCH_INCLUDE_JP_DETAIL,
+        "skip_if_filled": True,
+    }
+    try:
+        result = await _post(client, "/api/automation/url-batch-regenerate", body)
+    except Exception as e:
+        log.warning(f"URL 일괄 시작 실패 (best-effort 스킵): {e}")
+        return {"error": str(e)}
+
+    task_id = result.get("task_id")
+    total = result.get("total", 0)
+    if not task_id:
+        log.info(f"URL 일괄 — 처리할 행 없음 ({result.get('message', '')})")
+        return {"total": 0}
+
+    log.info(f"URL 일괄 task_id={task_id} (대상 {total}건)")
+    try:
+        final = await wait_task(client, task_id, label="URL 일괄 재생성")
+        log.info(f"URL 일괄 완료: {final.get('message', '')}")
+        return {"task_id": task_id, "total": total, "result": final}
+    except Exception as e:
+        log.warning(f"URL 일괄 wait 실패 (best-effort): {e}")
+        return {"error": str(e), "total": total}
 
 
 async def step_brand_expand(
@@ -1401,7 +1495,7 @@ def _format_summary(
 
 async def main_async() -> int:
     started = datetime.now()
-    target_date = date.today()
+    target_date = TARGET_DATE_OVERRIDE or date.today()
     setup_logging(target_date.strftime("%Y%m%d"))
 
     mode_label = "DRY RUN" if DRY_RUN else "실제 실행"
@@ -1450,17 +1544,29 @@ async def main_async() -> int:
             # R-5 STEP 4.5 — M05 유사/연관 키워드 → expanded_keywords (best-effort)
             related_result = await step_collect_related_keywords(client, candidates)
 
+            # U STEP 4.8 — 샵 벤치마크 자동 동기화 (best-effort)
+            shop_sync_result = await step_shop_benchmark_sync(client)
+
+            # C STEP 4.7 — 시트 URL 일괄 재생성 (Naver 확장 / Coupang 백엔드, best-effort)
+            url_batch_result = await step_url_batch_regenerate(client)
+
             # R-6 — 자동화 범위 제어. 사장님 결정: 매칭/이미지/auto-build 불안정으로 홀드.
             # 기본 mode "keyword_only" 면 여기서 종료. STEP 5+ 는 사장님이 수동으로 진행.
             if AUTOMATION_MODE == "keyword_only":
                 ended = datetime.now()
                 elapsed_str = str(ended - started).split(".", 1)[0]
                 related_n = (related_result or {}).get("candidates", 0)
+                url_batch_total = (url_batch_result or {}).get("total", 0)
+                url_batch_msg = ((url_batch_result or {}).get("result") or {}).get("message", "")
+                shop_new = (shop_sync_result or {}).get("total_new", 0)
+                shop_n = (shop_sync_result or {}).get("shops", 0)
                 summary = (
                     f"야간 자동화 완료 ({elapsed_str}) — keyword_only 모드\n"
-                    f"📊 트렌드 {trend_status} / 분류 {classify_result.get('candidates', 0)} / "
+                    f"트렌드 {trend_status} / 분류 {classify_result.get('candidates', 0)} / "
                     f"필터 통과 {len(candidates)} / M05 부모 {related_n}\n"
-                    f"📋 키워드 RD 완료 — 사장님 KeywordPage 에서 시트 추가"
+                    f"샵 벤치마크: {shop_n}개 샵 / 신규 {shop_new}\n"
+                    f"URL 일괄: {url_batch_msg or f'{url_batch_total}건 처리'}\n"
+                    f"키워드 RD 완료"
                 )
                 await notify.send(summary, level="ok")
                 log.info(f"=== 야간 자동화 완료 (keyword_only, {elapsed_str}) ===")
@@ -1539,12 +1645,18 @@ async def main_async() -> int:
 
 
 def main() -> int:
-    global DRY_RUN
+    global DRY_RUN, TARGET_DATE_OVERRIDE
     parser = argparse.ArgumentParser(description="Qoo10 야간 자동화")
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="POST 호출은 모킹만 하고 GET·로깅·알림 흐름 통합 테스트",
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="대상 날짜 (YYYY-MM-DD). 미지정 시 오늘. 누락된 일자 보충 실행에 사용.",
     )
     args = parser.parse_args()
 
@@ -1552,6 +1664,8 @@ def main() -> int:
     if DRY_RUN:
         # notify.py 가 [DRY RUN] 프리픽스 붙이도록 환경변수 세팅
         os.environ["AUTOMATION_DRY_RUN"] = "1"
+    if args.date:
+        TARGET_DATE_OVERRIDE = datetime.strptime(args.date, "%Y-%m-%d").date()
 
     return asyncio.run(main_async())
 

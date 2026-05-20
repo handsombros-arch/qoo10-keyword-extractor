@@ -17,7 +17,7 @@ from app.db.connection import engine
 from app.db.models import Base
 from app.services.auto_login import auto_login_on_startup
 
-from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data, automation, extension
+from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data, automation, extension, blacklist, qoo10_categories
 
 # 프론트엔드 빌드 경로
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -39,10 +39,43 @@ async def lifespan(app: FastAPI):
         pass
 
     # 자동 로그인 시도 (백그라운드) — 쿠키 만료 시 자격정보로 재로그인
-    asyncio.create_task(auto_login_on_startup())
+    # default OFF: 시작 시 큐텐 창 미리 띄우지 않음. browser_manager.get_page() 가
+    # 첫 호출 시 lazy 하게 띄움. 이전 동작 원하면 .env 에 AUTO_LOGIN_ON_STARTUP=1
+    import os as _os
+    if _os.getenv("AUTO_LOGIN_ON_STARTUP", "0").strip() == "1":
+        asyncio.create_task(auto_login_on_startup())
+
+    # 확장 큐 영속 복원 + stale cleanup task
+    from app.api.extension import initialize_queue, cleanup_stale_jobs_loop
+    await initialize_queue()
+    _ext_cleanup_task = asyncio.create_task(cleanup_stale_jobs_loop())
+
+    # K (5/3) 큐텐 cookies 주기 저장 — Stop-Process -Force 시에도 cookies 보존
+    # 사장님이 captcha 풀고 로그인하면 5분 안에 자동 백업됨 → 다음 재시작 시 자동 로그인 통과
+    async def _periodic_save_qoo10_session():
+        import logging as _lg
+        _logger = _lg.getLogger("browser.session")
+        while True:
+            try:
+                await asyncio.sleep(300)  # 5분
+                if browser_manager._is_alive() and browser_manager.is_logged_in:
+                    await browser_manager.save_session()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                _logger.warning(f"periodic save_session 실패: {e}")
+    _qoo10_save_task = asyncio.create_task(_periodic_save_qoo10_session())
 
     yield
     # Shutdown: 브라우저 종료 (명시적 종료, 로그인 플래그 리셋)
+    _ext_cleanup_task.cancel()
+    _qoo10_save_task.cancel()
+    # 마지막 한 번 더 save (graceful shutdown 시)
+    try:
+        if browser_manager._is_alive():
+            await browser_manager.save_session()
+    except Exception:
+        pass
     await browser_manager.close()
 
 
@@ -137,6 +170,8 @@ app.include_router(recommendations.router)
 app.include_router(user_data.router)
 app.include_router(automation.router)
 app.include_router(extension.router)
+app.include_router(blacklist.router)
+app.include_router(qoo10_categories.router)
 
 # 이미지 폴더 정적 서빙 — 패널이 한국 SKU extras 보여주기 위해 (WWW-1)
 _IMAGE_ROOT = Path(__file__).resolve().parent.parent.parent / "image"

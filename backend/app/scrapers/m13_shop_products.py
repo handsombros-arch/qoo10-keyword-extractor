@@ -126,11 +126,19 @@ class Qoo10ShopScraper(BaseScraper):
 
             products = await self._extract_products(page, shop_id, limit)
 
+            # 5/3: 샵 메타 (팔로우/리뷰/상품수/평점)
+            shop_meta: dict = {}
+            try:
+                shop_meta = await self._extract_shop_meta(page)
+            except Exception as _e:
+                debug["shop_meta_error"] = str(_e)[:200]
+
             self.tasks.complete_task(task_id, f"{len(products)}개 상품 수집")
             return {
                 "task_id": task_id, "shop_id": shop_id, "shop_url": full_url,
                 "sort_type": sort_type, "sort_label": sort_label,
                 "products": products, "debug": debug,
+                "shop_meta": shop_meta,
             }
 
         except Exception as e:
@@ -188,9 +196,25 @@ class Qoo10ShopScraper(BaseScraper):
                 else:
                     product["price_jpy"] = 0
 
-                # 배송비: .etc .ship 또는 .ship
+                # 배송비: .etc .ship 또는 .ship — text + parsed yen
                 ship_el = await item.query_selector(".etc .ship, .ship, [class*='shipping']")
-                product["shipping_fee"] = (await ship_el.inner_text()).strip() if ship_el else ""
+                ship_text = (await ship_el.inner_text()).strip() if ship_el else ""
+                product["shipping_fee"] = ship_text
+                # 5/3: 파싱된 숫자 (送料無料 → 0, "300円" / "300円 ~" → 300)
+                ship_jpy = None
+                if ship_text:
+                    if any(k in ship_text for k in ("無料", "送料無料", "free", "FREE")):
+                        ship_jpy = 0
+                    else:
+                        m = re.search(r"([\d,]+)\s*(?:円|엔)", ship_text)
+                        if m:
+                            try:
+                                v = int(m.group(1).replace(",", ""))
+                                if 50 <= v <= 50_000:
+                                    ship_jpy = v
+                            except ValueError:
+                                pass
+                product["shipping_jpy"] = ship_jpy
 
                 # 출하지 (큐텐 샵은 대부분 출하지 명시 안 함)
                 origin_el = await item.query_selector(".national, [class*='origin'], [class*='country']")
@@ -254,3 +278,69 @@ class Qoo10ShopScraper(BaseScraper):
                 continue
 
         return products
+
+    async def _extract_shop_meta(self, page) -> dict:
+        """샵 페이지 상단 메타 — 팔로우 수 / 총 리뷰수 / 상품 수 / 평점.
+
+        큐텐 일본 샵 페이지 typical layout:
+          - 팔로우: "フォロー X,XXX" / "ファン X,XXX" / "follower"
+          - 리뷰: "レビュー X,XXX件"
+          - 상품: "商品 X,XXX件" / "出品中 X,XXX"
+          - 평점: "★ 4.5" / "rating 4.5"
+
+        다양한 페이지 버전에 대비해 JS evaluate 로 텍스트 패턴 매칭.
+        """
+        return await page.evaluate(r"""
+        () => {
+          const out = { followers: null, total_reviews: null, product_count: null, rating: null, raw: [] };
+          const num = (s) => {
+            const m = (s || '').match(/([\d,]+\.?\d*)/);
+            if (!m) return null;
+            const n = parseFloat(m[1].replace(/,/g, ''));
+            return isNaN(n) ? null : n;
+          };
+          // 페이지 모든 텍스트 노드 (작은 element 만)
+          for (const el of document.querySelectorAll('body *')) {
+            if (el.children.length > 3) continue;
+            const t = (el.innerText || '').trim();
+            if (!t || t.length > 200) continue;
+
+            // 팔로우 / ファン / フォロワー / Follower
+            if (out.followers == null && /(フォロー|ファン|follower|フォロワー|팔로우|팔로워)/i.test(t)) {
+              const v = num(t);
+              if (v != null && v >= 0 && v < 100_000_000) {
+                out.followers = Math.round(v);
+                out.raw.push({ k: 'followers', t: t.slice(0, 100) });
+              }
+            }
+            // 리뷰
+            if (out.total_reviews == null && /(レビュー|リヴュー|review|리뷰|평가)/i.test(t)) {
+              const v = num(t);
+              if (v != null && v >= 0 && v < 100_000_000) {
+                out.total_reviews = Math.round(v);
+                out.raw.push({ k: 'total_reviews', t: t.slice(0, 100) });
+              }
+            }
+            // 상품 수 (出品中 / 商品 / item / 상품)
+            if (out.product_count == null && /(出品中|商品数|商品\s*\d|item\s|product\s|상품수|상품\s*\d)/i.test(t)) {
+              const v = num(t);
+              if (v != null && v >= 0 && v < 1_000_000) {
+                out.product_count = Math.round(v);
+                out.raw.push({ k: 'product_count', t: t.slice(0, 100) });
+              }
+            }
+            // 평점 (★ X.X / rating X.X) — 5점 만점 가정
+            if (out.rating == null) {
+              const m = t.match(/(?:★|⭐|rating|評価|평점)\s*([\d.]+)/i);
+              if (m) {
+                const v = parseFloat(m[1]);
+                if (!isNaN(v) && v >= 0 && v <= 5) {
+                  out.rating = v;
+                  out.raw.push({ k: 'rating', t: t.slice(0, 100) });
+                }
+              }
+            }
+          }
+          return out;
+        }
+        """)

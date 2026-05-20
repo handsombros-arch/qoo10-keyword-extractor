@@ -121,7 +121,11 @@ class BrowserManager:
             self._page = await self._context.new_page()
 
     async def verify_login(self) -> bool:
-        """실제로 QSM에 접속해 로그인 페이지로 리디렉션되는지 확인. 실패 시 is_logged_in=False."""
+        """실제로 QSM에 접속해 로그인 페이지로 리디렉션되는지 확인. 실패 시 is_logged_in=False.
+
+        K (5/3): 성공 시 save_session() 즉시 호출 — 사장님이 수동으로 captcha 풀어
+        로그인 직후 verify 가 호출되면 그 시점 cookies 가 영속 파일에 즉시 백업됨.
+        """
         try:
             page = await self.get_page()
             await page.goto(settings.QSM_URL, wait_until="domcontentloaded", timeout=20000)
@@ -129,6 +133,11 @@ class BrowserManager:
             url = page.url
             ok = "qsm.qoo10.jp" in url and "/Login" not in url and "/login" not in url
             self._logged_in = ok
+            if ok:
+                try:
+                    await self.save_session()
+                except Exception:
+                    pass
             return ok
         except Exception:
             return self._logged_in

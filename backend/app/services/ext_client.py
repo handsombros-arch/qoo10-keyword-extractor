@@ -107,18 +107,22 @@ def _to_naver_fetch_schema(ext_data: dict) -> dict:
       product_name, price_krw, cover_image_url, options[],
       shipping_text, extra_image_urls[], weight_g, category_path, description
     """
+    cover_imgs = list(ext_data.get("cover_images") or [])
     out = {
         "product_name": ext_data.get("product_name") or "",
         "price_krw": int(ext_data.get("price_krw") or 0),
         "cover_image_url": ext_data.get("cover_image_url") or "",
+        "cover_images": cover_imgs,             # I (5/3): 썸네일 전체 — 다운로드 source
         "options": ext_data.get("options") or [],
         "shipping_text": "",
-        "extra_image_urls": list(ext_data.get("cover_images") or []),
+        "extra_image_urls": list(cover_imgs),    # 하위 호환 — 이미 cover_images 와 동일
         "weight_g": None,
         "category_path": ext_data.get("category_path") or "",
         "description": ext_data.get("description") or "",
         "_ext_source": ext_data.get("source"),
         "_ext_warnings": ext_data.get("_warnings") or [],
+        "_ext_debug": ext_data.get("_debug") or {},
+        "_ext_version": ext_data.get("extraction_version") or "",
     }
     # detail_image_urls 합침 (OCR/SEO 입력)
     for item in ext_data.get("detail_image_urls") or []:

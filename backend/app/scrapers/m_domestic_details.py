@@ -336,6 +336,7 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
     """
     out: dict[str, Any] = {
         "options": [], "shipping_text": "", "extra_image_urls": [],
+        "product_name": "", "cover_image_url": "", "price_krw": None,
     }
 
     # ① 사용자 디버그 Chrome attach 시도
@@ -409,6 +410,154 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
             logger.warning(f"[detail/coupang] 차단 (title={title!r})")
             return out
 
+        # 디버그 — DEBUG_COUPANG_DUMP=1 시 HTML/스크린샷/요약 저장 (셀렉터 튜닝용)
+        if os.getenv("DEBUG_COUPANG_DUMP") == "1":
+            try:
+                from datetime import datetime as _dt
+                from pathlib import Path as _P
+                _root = _P(__file__).resolve().parents[3]
+                dump_dir = _root / "logs" / "diag_coupang" / _dt.now().strftime("%Y%m%d_%H%M%S")
+                dump_dir.mkdir(parents=True, exist_ok=True)
+                html_dump = await page.content()
+                (dump_dir / "page.html").write_text(html_dump, encoding="utf-8")
+                await page.screenshot(path=str(dump_dir / "screenshot.png"), full_page=True)
+                summary_data = await page.evaluate("""
+                () => {
+                  const out = { images: [], options_candidates: [], reviews_candidates: [], price_candidates: [], h1_h2: [] };
+                  for (const img of document.querySelectorAll('img')) {
+                    const w = img.naturalWidth || img.width || 0;
+                    const h = img.naturalHeight || img.height || 0;
+                    const src = img.src || '';
+                    if (w >= 200 && h >= 200 && src.startsWith('http')) {
+                      out.images.push({ w, h, src,
+                        cls: img.className || '',
+                        parent_cls: (img.parentElement && img.parentElement.className) || '',
+                        grandparent_cls: (img.parentElement && img.parentElement.parentElement && img.parentElement.parentElement.className) || '' });
+                    }
+                  }
+                  out.images.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+                  out.images = out.images.slice(0, 15);
+                  for (const sel of ['li', 'select option', '[role=\"option\"]', '[role=\"listitem\"]']) {
+                    for (const el of document.querySelectorAll(sel)) {
+                      const cls = (el.className || '').toString();
+                      const parent_cls = (el.parentElement && el.parentElement.className || '').toString();
+                      const txt = (el.innerText || el.textContent || '').trim().slice(0, 80);
+                      if (!txt) continue;
+                      const blob = (cls + ' ' + parent_cls).toLowerCase();
+                      if (/option|variant|select|sku/.test(blob)) {
+                        out.options_candidates.push({ tag: el.tagName, cls, parent_cls, text: txt });
+                      } else if (/review|rating|star|rate|score/.test(blob)) {
+                        out.reviews_candidates.push({ tag: el.tagName, cls, parent_cls, text: txt });
+                      }
+                    }
+                  }
+                  out.options_candidates = out.options_candidates.slice(0, 30);
+                  out.reviews_candidates = out.reviews_candidates.slice(0, 30);
+                  for (const el of document.querySelectorAll('strong, span, em')) {
+                    const cls = (el.className || '').toString().toLowerCase();
+                    if (/price|sale|total/.test(cls)) {
+                      const txt = (el.innerText || '').trim().slice(0, 40);
+                      if (/\\d/.test(txt)) out.price_candidates.push({ tag: el.tagName, cls, text: txt });
+                    }
+                  }
+                  out.price_candidates = out.price_candidates.slice(0, 20);
+                  for (const el of document.querySelectorAll('h1, h2')) {
+                    const txt = (el.innerText || '').trim().slice(0, 100);
+                    if (txt) out.h1_h2.push({ tag: el.tagName, cls: el.className || '', text: txt });
+                  }
+                  return out;
+                }
+                """)
+                lines = [f"=== Coupang DOM 진단: {product_url} ===", f"page.title = {title}", ""]
+                lines.append("─── h1/h2 ───")
+                for c in summary_data["h1_h2"]:
+                    lines.append(f"  <{c['tag']} cls={c['cls'][:60]!r}> {c['text']!r}")
+                lines.append("\n─── 큰 이미지 (200x200+) TOP 15 ──")
+                for i, img in enumerate(summary_data["images"], 1):
+                    lines.append(f"  {i:2d}. {img['w']}x{img['h']}  cls={img['cls'][:60]!r}\n      parent={img['parent_cls'][:60]!r}\n      grandparent={img['grandparent_cls'][:60]!r}\n      src={img['src'][:120]}")
+                lines.append("\n─── 옵션 후보 ──")
+                for c in summary_data["options_candidates"]:
+                    lines.append(f"  <{c['tag']} cls={c['cls'][:50]!r} parent={c['parent_cls'][:50]!r}> {c['text']!r}")
+                lines.append("\n─── 리뷰 후보 ──")
+                for c in summary_data["reviews_candidates"]:
+                    lines.append(f"  <{c['tag']} cls={c['cls'][:50]!r} parent={c['parent_cls'][:50]!r}> {c['text']!r}")
+                lines.append("\n─── 가격 후보 ──")
+                for c in summary_data["price_candidates"]:
+                    lines.append(f"  <{c['tag']} cls={c['cls'][:50]!r}> {c['text']!r}")
+                (dump_dir / "summary.txt").write_text("\n".join(lines), encoding="utf-8")
+                logger.info(f"[detail/coupang/DEBUG] DOM dump → {dump_dir}")
+            except Exception as e:
+                logger.warning(f"[detail/coupang/DEBUG] dump 실패: {e}")
+
+        # 상품명 — page.title 가공 또는 DOM
+        try:
+            prod_name = re.sub(r"\s*[-\|]\s*쿠팡!?\s*$", "", title).strip()
+            if not prod_name or len(prod_name) < 3:
+                for sel in [".prod-buy-header__title", "h1.prod-buy-header__title", "h2.prod-name"]:
+                    try:
+                        el = page.locator(sel).first
+                        if await el.count():
+                            t = (await el.inner_text(timeout=1500)).strip()
+                            if t and len(t) >= 3:
+                                prod_name = t
+                                break
+                    except Exception:
+                        continue
+            if prod_name:
+                out["product_name"] = prod_name[:200]
+        except Exception:
+            pass
+
+        # 커버 이미지 — JS 평가로 큰 product 이미지 + 정적자원 제외
+        # (셀렉터만으론 search icon 등 아이콘 PNG 가 잡힘)
+        def _is_product_image(src: str) -> bool:
+            if not src or not src.startswith("http"):
+                return False
+            slow = src.lower()
+            # 정적 자원 / 아이콘 / front-web 자산 제외
+            if "_next/static/" in slow or "/assets/icons" in slow:
+                return False
+            if "front-web-next" in slow or "front-web/" in slow:
+                return False
+            if slow.startswith("data:"):
+                return False
+            return True
+
+        try:
+            cover_candidate = await page.evaluate("""
+            () => {
+              const cands = [];
+              for (const img of document.querySelectorAll('img')) {
+                const w = img.naturalWidth || img.width || 0;
+                const h = img.naturalHeight || img.height || 0;
+                const src = img.src || '';
+                if (w >= 300 && h >= 300 && src.startsWith('http')) {
+                  cands.push({ w, h, src });
+                }
+              }
+              cands.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+              return cands;
+            }
+            """)
+            for c in cover_candidate or []:
+                if _is_product_image(c.get("src", "")):
+                    out["cover_image_url"] = c["src"]
+                    break
+        except Exception as e:
+            logger.debug(f"[detail/coupang] cover JS 평가 실패: {e}")
+        # 셀렉터 폴백 (JS 평가 실패 시)
+        if not out["cover_image_url"]:
+            for sel in [".prod-image__detail img", ".prod-image img:first-child", "img[class*='ProductImage']"]:
+                try:
+                    el = page.locator(sel).first
+                    if await el.count():
+                        src = await el.get_attribute("src", timeout=1500)
+                        if _is_product_image(src or ""):
+                            out["cover_image_url"] = src
+                            break
+                except Exception:
+                    continue
+
         # 가격 — selector + HTML 정규식 + OCR 폴백
         price_main = None
         for sel in [
@@ -450,6 +599,7 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
             except Exception as e:
                 logger.warning(f"[detail/coupang] OCR 폴백 실패: {e}")
         if price_main:
+            out["price_krw"] = price_main
             out["options"].append({"name": "default", "price_krw": price_main, "in_stock": True})
 
         # 옵션 — 1) 드롭다운 트리거 클릭 2) selector 확장 + 가격 없는 옵션도 폴백
@@ -472,14 +622,22 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
         except Exception:
             pass
 
+        # review/평점 키워드 — 옵션과 모양이 비슷해서 자주 잘못 잡힘
+        _REVIEW_KEYWORDS = re.compile(
+            r"(별점|평점|리뷰|후기|평가|만족도|등급|stars?|rating|review|score|총점"
+            r"|모든\s*별점|좋아요|보통|별로|나쁨|최고|최악)",
+            re.IGNORECASE,
+        )
+        # 명확한 옵션 영역만 — '[class*=Option] li' 같은 너무 느슨한 건 제거
         seen_opt_names: set[str] = set()
         try:
             for sel in [
-                "ul[class*='prod-option'] li", "[class*='Option'] li",
+                "ul[class*='prod-option'] li",
                 "select[class*='option'] option",
+                "[class*='ProductOption'] li", "[class*='product-option'] li",
+                "[class*='OptionSelect'] li", "[class*='option-select'] li",
+                "[class*='SelectBox'] li",
                 "[role='listbox'] [role='option']",
-                "[class*='SelectBox'] li", "[class*='OptionList'] li",
-                "[class*='dropdown'] li",
             ]:
                 els = page.locator(sel)
                 cnt = await els.count()
@@ -492,10 +650,18 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
                         t = re.sub(r"\s+", " ", t)
                         if not t or len(t) > 80:
                             continue
+                        # 리뷰 분포 행 차단 (예: "모든 별점 149", "최고 108")
+                        if _REVIEW_KEYWORDS.search(t):
+                            continue
                         price = _parse_int_krw(t)
                         name = re.sub(r"\d{1,3}(?:,\d{3})+\s*원?", "", t)
                         name = re.sub(r"수량\s*(증가|감소)|판매가|배송비|품절|sold\s*out", "", name, flags=re.I).strip()[:60]
-                        if not name or len(name) < 2:
+                        # 가격/단위 제거 후에도 review 패턴 다시 검사
+                        if _REVIEW_KEYWORDS.search(name):
+                            continue
+                        # 순수 숫자거나 너무 짧으면 노이즈
+                        name_no_space = re.sub(r"\s+", "", name)
+                        if not name_no_space or len(name_no_space) < 2 or name_no_space.isdigit():
                             continue
                         if name.lower() in {"옵션", "선택", "필수", "default", "옵션 선택", "옵션선택"}:
                             continue
@@ -534,17 +700,17 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
                 continue
         out["shipping_text"] = ship_text.strip()
 
-        # 추가 이미지
+        # 추가 이미지 — _is_product_image 필터로 정적자원/아이콘 제외
         try:
             img_locs = page.locator(
                 ".prod-image img, [class*='ProductImage'] img, img[src*='coupangcdn.com']"
             )
             cnt = await img_locs.count()
             seen: set[str] = set()
-            for i in range(min(cnt, 10)):
+            for i in range(min(cnt, 20)):
                 try:
                     src = await img_locs.nth(i).get_attribute("src")
-                    if src and src.startswith("http") and src not in seen:
+                    if src and _is_product_image(src) and src not in seen:
                         seen.add(src)
                         out["extra_image_urls"].append(src)
                     if len(out["extra_image_urls"]) >= 6:
@@ -553,6 +719,10 @@ async def _fetch_coupang_via_browser_manager(product_url: str, product_name: str
                     pass
         except Exception:
             pass
+
+        # Cover fallback — 전용 selector 못 찾았으면 첫 extra image
+        if not out["cover_image_url"] and out["extra_image_urls"]:
+            out["cover_image_url"] = out["extra_image_urls"][0]
 
     finally:
         if page is not None:

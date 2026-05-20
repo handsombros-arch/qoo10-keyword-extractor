@@ -316,6 +316,62 @@ class TrendKeywordScraper(BaseScraper):
                 f"[M02] category {category} ({category_name}) 변화 없음: {before!r} == {after!r}"
             )
 
+    async def _page_ready(self, page) -> tuple[bool, str]:
+        """ADPlus 페이지가 정상 로드됐는지 검증.
+        #GROUP_CODE_PopAdplus select 존재 + #tbody_popular_list 행 ≥ 1.
+        """
+        info = await page.evaluate(
+            "() => ({"
+            "  has_select: !!document.getElementById('GROUP_CODE_PopAdplus'),"
+            "  row_total: document.querySelectorAll('#tbody_popular_list tr').length,"
+            "  ally_total: document.querySelectorAll('#tbody_popular_list tr[all_yn=\"Y\"]').length,"
+            "  url: location.href"
+            "})"
+        )
+        ok = bool(info.get("has_select")) and int(info.get("row_total") or 0) > 0
+        return ok, str(info)
+
+    async def _goto_with_warmup(self, page, url: str, task_id) -> None:
+        """page.goto + 데이터 로드 검증 + 실패 시 QSM 메인 warmup 후 1회 재시도.
+
+        5/15·5/16 자동화 실패 분석: 첫 진입 시 select/tbody 가 비어 있는 경우 있음
+        (페이지 로드 race condition / 큐텐 인증 warmup 필요). reload 한 번이면 풀린다.
+        """
+        attempt_max = 3
+        for attempt in range(1, attempt_max + 1):
+            await page.goto(url, wait_until="networkidle", timeout=60000)
+            await page.wait_for_timeout(3000)
+            try:
+                await page.wait_for_selector(
+                    "#tbody_popular_list tr", state="attached", timeout=15000
+                )
+            except Exception:
+                await page.wait_for_timeout(5000)
+
+            ok, info = await self._page_ready(page)
+            _m02_log(f"[M02][DEBUG] attempt={attempt} page_ready={ok} {info}")
+            if ok:
+                if attempt > 1:
+                    self.tasks.update_progress(
+                        task_id, 0, f"[DEBUG] ADPlus 페이지 attempt {attempt} 회복 성공"
+                    )
+                return
+
+            self.tasks.update_progress(
+                task_id, 0, f"[DEBUG] ADPlus 빈 페이지 감지 (attempt {attempt}/{attempt_max}) — warmup 후 재시도"
+            )
+            if attempt < attempt_max:
+                # QSM 메인 페이지로 warmup → 세션/쿠키 refresh
+                try:
+                    await page.goto(settings.QSM_URL, wait_until="domcontentloaded", timeout=20000)
+                    await page.wait_for_timeout(2000)
+                except Exception as e_w:
+                    _m02_log(f"[M02][DEBUG] warmup 실패: {e_w}")
+
+        raise RuntimeError(
+            f"[M02] ADPlus 페이지 {attempt_max}회 재시도 후에도 빈 상태: {info}"
+        )
+
     async def run(self, category: int = 1, types: list[str] = None, **params) -> dict:
         if types is None:
             types = ["popular", "daily", "weekly"]
@@ -336,16 +392,7 @@ class TrendKeywordScraper(BaseScraper):
 
         try:
             print(f"[M02] 트렌드 페이지 이동: {url}")
-            await page.goto(url, wait_until="networkidle", timeout=60000)
-            await page.wait_for_timeout(3000)
-
-            # AJAX 데이터 로드 대기
-            try:
-                await page.wait_for_selector(
-                    "#tbody_popular_list tr", state="attached", timeout=15000
-                )
-            except Exception:
-                await page.wait_for_timeout(5000)
+            await self._goto_with_warmup(page, url, task_id)
 
             # 카테고리 분리: 큐텐 페이지는 전체 데이터(3500+행)를 한 번 로드하고
             # `group_code` 속성 + `p.rank.group` 클래스로 클라이언트 사이드 필터링을 함.

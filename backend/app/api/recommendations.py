@@ -302,6 +302,7 @@ async def from_shop(req: ShopBenchmarkRequest):
             "products": products,
             "error": res.get("error"),
             "debug": res.get("debug"),
+            "shop_meta": res.get("shop_meta") or {},   # 5/3 — 팔로우/리뷰/상품수/평점
         })
     return {"results": results}
 

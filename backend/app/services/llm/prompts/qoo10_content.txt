@@ -88,5 +88,11 @@
 【관련 인기 검색어 — 검색량 순】 (없으면 무시)
 {related_popular_keywords}
 
+【★ 한글 번역 동시 출력 — marketing_points_ko】
+- `marketing_points_ko` 배열에 `marketing_points` 와 1:1 동일 순서/개수의 한국어 번역 출력
+- 사장님 검수용 — 자연스러운 한국어로 (직역 X, 의역/마케팅 톤 유지)
+- 예: `marketing_points` = ["ぴたっと密着シート", "送料無料 正規品"]
+       → `marketing_points_ko` = ["탄탄히 밀착하는 시트", "무료배송 정품 안심"]
+
 응답: JSON 한 줄. 머리말/접미사 금지. 반드시 { 로 시작.
-{"title_jp": "...", "tags": ["...", ...], "option_name": "...", "marketing_points": ["...", ...]}
+{"title_jp": "...", "tags": ["...", ...], "option_name": "...", "marketing_points": ["...", ...], "marketing_points_ko": ["...", ...]}

@@ -1468,11 +1468,15 @@ async def regenerate_content_from_url(body: dict | None = None):
         return {"error": "url 필수"}
     include_jp_detail = bool(body.get("include_jp_detail", True))
     async_mode = bool(body.get("async", True))
+    product_name_hint = (body.get("product_name") or "").strip() or None
+    category_hint = (body.get("category") or "").strip() or None
+    qoo10_url_hint = (body.get("qoo10_url") or "").strip() or None    # R (5/3)
 
     # 비동기: 즉시 task_id 반환
     if async_mode:
-        # 총 단계 5: fetch / SEO / OCR / JP detail / save
-        total = 5 if include_jp_detail else 2
+        # 단계: fetch / SEO / image_download / (옵션) OCR / (옵션) JP detail / 완료
+        # E (5/3): image_download 단계 추가됨 → 기본 4, JP detail 포함 시 6
+        total = 6 if include_jp_detail else 4
         task_id = task_manager.create_task(
             name=f"URL 콘텐츠 재생성", total=total,
         )
@@ -1482,6 +1486,9 @@ async def regenerate_content_from_url(body: dict | None = None):
             try:
                 result_json = await _do_regenerate(
                     url, include_jp_detail, task_id=task_id,
+                    product_name_hint=product_name_hint,
+                    category_hint=category_hint,
+                    qoo10_url_hint=qoo10_url_hint,
                 )
                 if result_json.get("error"):
                     task_manager.fail_task(task_id, message=result_json["error"])
@@ -1499,7 +1506,39 @@ async def regenerate_content_from_url(body: dict | None = None):
         return {"task_id": task_id, "status": "running", "total": total}
 
     # 동기 (옛 방식)
-    return await _do_regenerate(url, include_jp_detail)
+    return await _do_regenerate(
+        url, include_jp_detail,
+        product_name_hint=product_name_hint, category_hint=category_hint,
+        qoo10_url_hint=qoo10_url_hint,
+    )
+
+
+async def _download_image_to_path(url: str, dest) -> bool:
+    """이미지 다운로드 → JPEG 로 저장. 성공 시 True. (E, 5/3)"""
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(
+            timeout=15.0,
+            headers={"User-Agent": "Mozilla/5.0"},
+            follow_redirects=True,
+        ) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.content
+        if not data or len(data) < 200:
+            return False
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(data))
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        img.save(dest, "JPEG", quality=88, optimize=True)
+        return True
+    except Exception as e:
+        logger.warning(f"[image_dl] {url[:60]} → {dest} 실패: {type(e).__name__}: {e}")
+        return False
 
 
 async def _do_regenerate(
@@ -1507,11 +1546,17 @@ async def _do_regenerate(
     include_jp_detail: bool,
     *,
     task_id: str | None = None,
+    product_name_hint: str | None = None,
+    category_hint: str | None = None,
+    qoo10_url_hint: str | None = None,    # R (5/3): 큐텐 일본 단품 URL — 경쟁가/배송 fetch
 ) -> dict:
     """실제 작업 — task_id 있으면 update_progress 호출.
 
     R-8 (2026-05-02): `fetch_naver_url_v2` 가 자체적으로 `EXT_USE_EXTENSION` 환경변수
-    분기 → 기본값 true 시 크롬 확장 (qoo10-helper-extension) 경유. 호출 측 변경 0.
+    분기 → 기본값 true 시 크롬 확장 (qoo10-helper-extension) 경유.
+
+    URL 라우팅: coupang.com → 백엔드 Scrapling (검색→클릭 우회). naver → 확장.
+    Coupang 은 AKAMAI 차단 회피 위해 product_name_hint 필요 (없으면 직접 진입 시도, 보통 실패).
     """
     from app.services.naver_fetch_v2 import fetch_naver_url_v2
     from app.services.llm.qoo10_content import generate_qoo10_content_async
@@ -1521,11 +1566,46 @@ async def _do_regenerate(
         if task_id:
             task_manager.update_progress(task_id, increment=1, message=msg)
 
-    # 1/5. Naver fetch (크롬 확장 또는 레거시 — env 분기)
-    _progress("Naver 페이지 fetch 중 (popup [즉시 폴링] 권장)...")
-    info = await fetch_naver_url_v2(url, headless=True)
-    if "error" in info:
-        return {"error": f"fetch 실패: {info['error']}"}
+    url_lower = (url or "").lower()
+    # 한국 URL 이 네이버/쿠팡이 아닌 다른 사이트 (다음쇼핑/오늘의집 등) 면 무시하고 큐텐만 처리
+    is_supported_kr = bool(url) and ("naver.com" in url_lower or "coupang.com" in url_lower)
+    if url and not is_supported_kr:
+        url = ""
+        url_lower = ""
+    is_coupang = "coupang.com" in url_lower
+
+    # 한국 URL 없고 큐텐 URL 만 있는 경우 — 경쟁가/배송/옵션/커버만 fetch 후 즉시 반환
+    if not url and qoo10_url_hint and "qoo10.jp" in qoo10_url_hint.lower():
+        _progress("큐텐 페이지 fetch 중 (경쟁가/배송/옵션/커버)...")
+        from app.services.qoo10_product_fetch import fetch_qoo10_product_url
+        qinfo = await fetch_qoo10_product_url(qoo10_url_hint)
+        if qinfo.get("error"):
+            return {"error": f"큐텐 fetch 실패: {qinfo['error']}"}
+        return {
+            "competitor_price_jpy": qinfo.get("price_jpy") or 0,
+            "competitor_shipping_jpy": qinfo.get("shipping_jpy") or 0,
+            "qoo10_options_raw": qinfo.get("options") or [],
+            "qoo10_cover_image_url": qinfo.get("cover_image_url") or "",
+            "qoo10_url": qoo10_url_hint,
+            "_source": {"qoo10_only": True, "qoo10_fetch": qinfo.get("source")},
+        }
+
+    # 1/5. URL 도메인별 fetch — 둘 다 크롬 확장 (메인 Chrome) 경유
+    #   Naver: fetch_naver_url_v2 → ext_client.fetch_one (EXT_USE_EXTENSION=true 기본)
+    #   Coupang: ext_client.fetch_one 직접 호출 (확장의 site dispatch 가 coupang.js 로 라우팅)
+    # 사장님 메인 Chrome 의 누적 trust 가 AKAMAI 차단 회피의 핵심.
+    if is_coupang:
+        _progress("쿠팡 페이지 fetch 중 (메인 Chrome 확장 경유)...")
+        from app.services.ext_client import fetch_one as ext_fetch_one
+        info = await ext_fetch_one(url, timeout_seconds=180)
+        if "error" in info:
+            return {"error": f"쿠팡 fetch 실패: {info['error']}"}
+        info.setdefault("_source", "coupang_extension")
+    else:
+        _progress("Naver 페이지 fetch 중 (popup [즉시 폴링] 권장)...")
+        info = await fetch_naver_url_v2(url, headless=True)
+        if "error" in info:
+            return {"error": f"fetch 실패: {info['error']}"}
 
     name = info.get("product_name") or ""
     if not name:
@@ -1536,9 +1616,26 @@ async def _do_regenerate(
     options_kr = [o.get("name", "") for o in info.get("options") or [] if o.get("name")]
     option_input = " | ".join(options_kr[:10]) if options_kr else "default"
 
+    # G (5/3) 카테고리 해석 (3단 우선순위):
+    #   1) 사장님 시트 category_hint
+    #   2) 페이지 추출 category_path (Naver JSON-LD breadcrumb)
+    #   3) LLM 6분류 (category.py classify_category_async) — product_name 입력
+    resolved_category = (category_hint or "").strip() or (info.get("category_path") or "").strip()
+    category_auto = False
+    if not resolved_category:
+        try:
+            from app.services.llm.category import classify_category_async
+            resolved_category = await classify_category_async(name)
+            category_auto = True
+            log_msg = f"[regenerate] LLM 카테고리 분류: '{name[:30]}' → '{resolved_category}'"
+            logger.info(log_msg)
+        except Exception as e:
+            logger.warning(f"[regenerate] 카테고리 LLM 분류 실패: {e}")
+            resolved_category = "기타"
+
     seo = await generate_qoo10_content_async(
         product_name_kr=name,
-        category=info.get("category_path") or "기타",
+        category=resolved_category,
         price_krw=info.get("price_krw") or None,
         option_name_kr=option_input,
     )
@@ -1550,19 +1647,75 @@ async def _do_regenerate(
         "item_price_krw": info.get("price_krw") or 0,
         "domestic_shipping_krw": info.get("shipping_krw"),  # HHHH-1: 배송비 자동
         "options": info.get("options") or [],
+        "domestic_options": info.get("options") or [],  # S (5/3) 시트 raw 보관용 — alias
         "category_path": info.get("category_path") or "",
         "shipping_text": info.get("shipping_text") or "",
         "qoo10_title_jp": seo.get("title_jp") or "",
         "qoo10_tags": seo.get("tags") or [],
         "qoo10_marketing": seo.get("marketing_points") or [],
+        "qoo10_marketing_ko": seo.get("marketing_points_ko") or [],   # H (5/3): 한글 번역
         "qoo10_option_name": seo.get("option_name") or "",
         "match_decision": "manual",
+        "category": resolved_category,    # G (5/3): 시트 row.category 자동 채움
         "_source": {
             "naver_url": url,
             "naver_source": info.get("_source"),
             "seo_ok": seo.get("ok"),
+            "category_auto_classified": category_auto,
+            "ext_version": info.get("_ext_version"),
+            "ext_debug": info.get("_ext_debug"),
         },
     }
+
+    # 2.5/5. 이미지 다운로드 + 폴더링 (I, 5/3 갱신)
+    # **썸네일 전체** (cover_images 배열, 4-6개) 다운로드. detail content 마케팅 이미지 제외.
+    # 저장: image/{today}/{kr_safe_name}/{cover.jpg, thumbnail_2.jpg, thumbnail_3.jpg, ...}
+    # /image 경로로 정적 서빙 — 브라우저 표시 가능 (http://localhost:8000/image/...)
+    _progress("썸네일 다운로드 중...")
+    try:
+        from datetime import date as _date
+        from app.services.domestic_image_pipeline import IMAGE_ROOT, _safe_folder_name
+        today_iso = _date.today().isoformat()
+        folder = _safe_folder_name(name)
+        target_dir = IMAGE_ROOT / today_iso / folder
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        # cover_images 배열을 썸네일 source 로 사용 (cover_image_url 도 보통 cover_images[0])
+        cover_url = info.get("cover_image_url") or ""
+        cover_images = info.get("cover_images") or []
+        # 정규화: list[str] (Naver/Coupang 모두 string)
+        thumbs: list[str] = []
+        if cover_url:
+            thumbs.append(cover_url)
+        for ci in cover_images:
+            src = ci if isinstance(ci, str) else (ci.get("url") if isinstance(ci, dict) else None)
+            if src and src not in thumbs:
+                thumbs.append(src)
+
+        # 1) 첫 썸네일 = cover.jpg
+        cover_local = None
+        thumb_locals: list[str] = []
+        for idx, src in enumerate(thumbs):
+            if idx == 0:
+                fname = "cover.jpg"
+            else:
+                fname = f"thumbnail_{idx + 1}.jpg"   # 2, 3, 4, ...
+            if await _download_image_to_path(src, target_dir / fname):
+                rel = f"image/{today_iso}/{folder}/{fname}"
+                if idx == 0:
+                    cover_local = rel
+                else:
+                    thumb_locals.append(rel)
+
+        result["cover_local_path"] = cover_local
+        # 하위 호환: detail_local_paths 필드명 유지 (frontend SheetRow 가 그 이름 사용)
+        result["detail_local_paths"] = thumb_locals
+        result["image_folder"] = f"image/{today_iso}/{folder}"
+        logger.info(f"[regenerate] 썸네일 {1 + len(thumb_locals)}장 다운로드 → {target_dir}")
+    except Exception as e:
+        logger.warning(f"[regenerate] 이미지 다운로드 실패 (best-effort): {e}")
+        result["cover_local_path"] = None
+        result["detail_local_paths"] = []
 
     # 3/5, 4/5. (옵션) JP 상세 카피 + 한글 번역
     if include_jp_detail:
@@ -1575,7 +1728,7 @@ async def _do_regenerate(
         try:
             jp_detail = await generate_jp_detail(
                 korean_name=name,
-                category=info.get("category_path") or "",
+                category=resolved_category,
                 key_features=[],
                 ocr_texts=ocr_texts,
             )
@@ -1584,6 +1737,27 @@ async def _do_regenerate(
             result["_source"]["jp_detail_error"] = jp_detail.get("error")
         except Exception as e:
             result["_source"]["jp_detail_error"] = str(e)
+
+    # R (5/3) 큐텐 일본 URL → 경쟁가 + 경쟁배송 + 커버 자동 채움 (best-effort)
+    if qoo10_url_hint and "qoo10.jp" in qoo10_url_hint.lower():
+        _progress("큐텐 페이지 fetch 중 (경쟁가/커버)...")
+        try:
+            from app.services.qoo10_product_fetch import fetch_qoo10_product_url
+            qinfo = await fetch_qoo10_product_url(qoo10_url_hint)
+            if qinfo.get("error"):
+                logger.warning(f"[regenerate] qoo10 fetch 실패: {qinfo['error']}")
+                result["_source"]["qoo10_fetch_error"] = qinfo["error"]
+            else:
+                result["competitor_price_jpy"] = qinfo.get("price_jpy") or 0
+                result["competitor_shipping_jpy"] = qinfo.get("shipping_jpy") or 0
+                result["qoo10_options_raw"] = qinfo.get("options") or []   # S (5/3)
+                if qinfo.get("cover_image_url"):
+                    result["qoo10_cover_image_url"] = qinfo["cover_image_url"]
+                result["qoo10_url"] = qoo10_url_hint
+                result["_source"]["qoo10_fetch"] = qinfo.get("source")
+        except Exception as e:
+            logger.warning(f"[regenerate] qoo10 fetch 예외: {e}")
+            result["_source"]["qoo10_fetch_error"] = str(e)
 
     # 5/5. 완료
     _progress("완료")

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Qoo10 Helper",
-  "version": "0.1.0",
-  "description": "Qoo10 자동화 도우미 — 네이버 상세 수집 (백엔드 큐 폴링)",
+  "version": "0.2.0",
+  "description": "Qoo10 자동화 도우미 — Naver/Coupang 상세 수집 (백엔드 큐 폴링)",
 
   "permissions": [
     "tabs",
@@ -16,6 +16,9 @@
     "https://brand.naver.com/*",
     "https://shopping.naver.com/*",
     "https://search.shopping.naver.com/*",
+    "https://www.coupang.com/*",
+    "https://coupang.com/*",
+    "https://link.coupang.com/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*"
   ],

@@ -20,11 +20,14 @@
 from __future__ import annotations
 
 import json as jsonlib
+import logging
 import math
 import os
 import uuid
 from datetime import date as date_cls, datetime
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter
 # HTML 뷰 (auto-collected) 폐기됨 — /review/{date} React + /recommend-products 시트가 흡수.
@@ -1019,6 +1022,12 @@ async def send_to_sheet(target_date: str, req: SendToSheetRequest):
             skipped += 1
             continue
 
+        # K (5/3) 블랙리스트 사전 차단 — keyword_jp 또는 product_name 매칭 시 시트 추가 안 함
+        from app.api.blacklist import is_blacklisted as _is_blk
+        if await _is_blk(keyword_jp=kw_jp, product_name=product_name):
+            skipped += 1
+            continue
+
         margin = c.get("margin") or {}
         margin_rate_pct = (margin.get("margin_rate") or 0) * 100
 
@@ -1168,3 +1177,362 @@ async def backfill_sheet_categories():
         "matched_in_db": len(cat_map),
         "message": f"{updated}개 행 카테고리 백필 완료. /recommend-products 새로고침하면 반영됨.",
     }
+
+
+# ─── U. 샵 벤치마크 자동 동기화 (5/3) ───────────────────────────
+
+
+class ShopBenchSyncRequest(BaseModel):
+    shop_urls: list[str] = Field(default_factory=list)  # 비어있으면 UserData "shop_urls" 사용
+    limit_per_shop: int = 50
+    sort_type: str = "review"
+
+
+@router.post("/api/automation/shop-benchmark-sync")
+async def shop_benchmark_sync(req: ShopBenchSyncRequest):
+    """야간 자동화 — 등록된 샵들에서 fetch + 신규 상품 표시.
+
+    last_seen_set (UserData "shop_last_seen:{shop_id}") 와 비교해 is_new 플래그.
+    결과는 shop_cache (UserData) 에 저장 — ShopBenchmarkPage 가 자동 로드.
+    """
+    from app.scrapers.m13_shop_products import Qoo10ShopScraper
+    from app.browser.manager import browser_manager
+    from app.services.task_manager import task_manager as _tm
+
+    # 1) 샵 URL 목록 결정
+    urls = list(req.shop_urls)
+    if not urls:
+        async with async_session() as s:
+            r = await s.execute(select(UserData).where(UserData.key == "shop_urls"))
+            row = r.scalar_one_or_none()
+        if row:
+            try:
+                arr = jsonlib.loads(row.data)
+                if isinstance(arr, list):
+                    urls = [e.get("url") for e in arr if isinstance(e, dict) and e.get("url")]
+            except Exception:
+                urls = []
+    if not urls:
+        return {"error": "샵 URL 없음 — ShopBenchmarkPage 에서 추가하세요"}
+
+    # 2) 브라우저 준비
+    try:
+        await browser_manager.get_page()
+    except Exception as e:
+        return {"error": f"browser_manager 준비 실패: {e}"}
+
+    # 3) 각 샵 scraper 호출 + last_seen 비교
+    summary = []
+    cache_results: list[dict] = []
+
+    async def _load_last_seen(shop_id: str) -> set[str]:
+        async with async_session() as s:
+            r = await s.execute(select(UserData).where(UserData.key == f"shop_last_seen:{shop_id}"))
+            row = r.scalar_one_or_none()
+        if not row:
+            return set()
+        try:
+            arr = jsonlib.loads(row.data)
+            return set(arr) if isinstance(arr, list) else set()
+        except Exception:
+            return set()
+
+    async def _save_last_seen(shop_id: str, urls_set: set[str]):
+        payload = jsonlib.dumps(sorted(urls_set), ensure_ascii=False)
+        now = datetime.utcnow()
+        async with async_session() as s:
+            r = await s.execute(select(UserData).where(UserData.key == f"shop_last_seen:{shop_id}"))
+            row = r.scalar_one_or_none()
+            if row:
+                row.data = payload
+                row.updated_at = now
+            else:
+                s.add(UserData(key=f"shop_last_seen:{shop_id}", data=payload, updated_at=now))
+            await s.commit()
+
+    for shop_url in urls:
+        try:
+            scraper = Qoo10ShopScraper(browser_manager, _tm)
+            res = await scraper.run(
+                shop_url=shop_url,
+                limit=req.limit_per_shop,
+                sort_type=req.sort_type,
+            )
+            shop_id = res.get("shop_id") or shop_url.rstrip("/").rsplit("/", 1)[-1]
+            products = res.get("products") or []
+            for p in products:
+                ld = p.get("lookup_date")
+                if ld is not None and not isinstance(ld, str):
+                    p["lookup_date"] = str(ld)
+
+            # last_seen 비교 → is_new 플래그
+            last_seen = await _load_last_seen(shop_id)
+            new_count = 0
+            current_set: set[str] = set()
+            for p in products:
+                u = p.get("product_url") or ""
+                if u:
+                    current_set.add(u)
+                    p["is_new"] = u not in last_seen
+                    if p["is_new"]:
+                        new_count += 1
+
+            # last_seen 갱신 — 첫 fetch 라면 모두 NEW 표시 후 baseline
+            await _save_last_seen(shop_id, current_set)
+
+            cache_results.append({
+                "shop_id": shop_id,
+                "shop_url": res.get("shop_url") or shop_url,
+                "products": products,
+                "shop_meta": res.get("shop_meta") or {},
+                "fetched_at": datetime.utcnow().isoformat(),
+                "sort_type": req.sort_type,
+            })
+            summary.append({
+                "shop_id": shop_id,
+                "total": len(products),
+                "new": new_count,
+                "first_run": len(last_seen) == 0,
+            })
+        except Exception as e:
+            logger.warning(f"[shop_sync] {shop_url} 실패: {e}")
+            summary.append({"shop_id": shop_url, "error": str(e)[:200]})
+
+    # 4) shop_cache UserData 갱신 (프론트가 자동 로드)
+    payload = jsonlib.dumps(cache_results, ensure_ascii=False)
+    now = datetime.utcnow()
+    async with async_session() as s:
+        r = await s.execute(select(UserData).where(UserData.key == "shop_cache"))
+        row = r.scalar_one_or_none()
+        if row:
+            row.data = payload
+            row.updated_at = now
+        else:
+            s.add(UserData(key="shop_cache", data=payload, updated_at=now))
+        await s.commit()
+
+    total_new = sum(s.get("new", 0) for s in summary)
+    return {
+        "shops": len(urls),
+        "total_new": total_new,
+        "summary": summary,
+    }
+
+
+# ─── C. 야간 URL 일괄 재생성 (시트의 미수집 URL 자동 처리) ──────
+
+
+class UrlBatchRegenerateRequest(BaseModel):
+    limit: int = 30                       # 한 번에 처리할 최대 행 수
+    include_jp_detail: bool = False       # JP 상세 카피도 생성?
+    skip_if_filled: bool = True           # 이미 채워진 행 스킵
+    row_ids: Optional[list[str]] = None   # N (5/3) — 지정 시 그 ID 행만 처리 (사장님 선택 multi-select)
+
+
+@router.post("/api/automation/url-batch-regenerate")
+async def url_batch_regenerate(req: UrlBatchRegenerateRequest):
+    """야간 자동화용 — 시트의 URL 있고 데이터 미수집 행을 자동 fetch+SEO 처리.
+
+    URL 도메인별 라우팅 (_do_regenerate 안에서 분기):
+      - Naver smartstore/brand: 크롬 확장 (메인 Chrome 켜져있어야)
+      - Coupang: 백엔드 Scrapling (Chrome 무관, PC 만 켜져있으면 됨)
+
+    background task — 즉시 task_id 반환, /api/tasks/{task_id} 폴링.
+    각 행 처리 후 시트 부분 저장 (오류 시 진행분 보존).
+    """
+    import asyncio as _asyncio
+    from app.api.products import _do_regenerate
+    from app.services.task_manager import task_manager
+
+    # 1) 시트 로드
+    async with async_session() as session:
+        r = await session.execute(select(UserData).where(UserData.key == "product_sheet"))
+        row = r.scalar_one_or_none()
+    if not row:
+        return {"error": "product_sheet 없음"}
+    try:
+        sheet = jsonlib.loads(row.data)
+    except Exception:
+        return {"error": "product_sheet JSON 파싱 실패"}
+    if not isinstance(sheet, list):
+        return {"error": "product_sheet 형식 오류 (list 아님)"}
+
+    # 2) 대상 필터
+    # N (5/3): row_ids 지정 시 그 행만 처리 (skip_if_filled 무시 — 사장님 명시 선택)
+    selected_id_set: set | None = None
+    if req.row_ids:
+        selected_id_set = {str(rid) for rid in req.row_ids if rid}
+
+    def _in_backoff(r: dict) -> bool:
+        """실패 backoff 체크 — 최근 실패 후 min(2^fail_count, 7) 일 내면 skip.
+
+        탬버린즈 무한 반복 (5/12·5/13 0/30) 같은 영구 실패 URL 격리.
+        사장님 수동 개입 없이 자동 회복 (성공 시 두 필드 모두 제거됨).
+        선택 모드(row_ids 명시)는 사장님 의도이므로 backoff 무시.
+        """
+        if selected_id_set is not None:
+            return False
+        fail_count = int(r.get("_url_batch_fail_count") or 0)
+        if fail_count <= 0:
+            return False
+        last_at = r.get("_url_batch_error_at")
+        if not last_at:
+            return False
+        try:
+            last_dt = datetime.fromisoformat(str(last_at).replace("Z", "+00:00"))
+            if last_dt.tzinfo is not None:
+                last_dt = last_dt.replace(tzinfo=None)
+        except Exception:
+            return False
+        backoff_days = min(2 ** (fail_count - 1), 7)  # 1, 2, 4, 7, 7, ...
+        elapsed = (datetime.utcnow() - last_dt).total_seconds() / 86400.0
+        return elapsed < backoff_days
+
+    def _needs_regen(r: dict) -> bool:
+        if not isinstance(r, dict):
+            return False
+        url = (r.get("product_url") or "").strip().lower()
+        qurl = (r.get("qoo10_url") or "").strip().lower()
+        has_kr = bool(url) and ("naver.com" in url or "coupang.com" in url)
+        has_qoo = "qoo10.jp" in qurl
+        # 선택 모드 — ID 매칭 + 둘 중 하나라도 있어야 함
+        if selected_id_set is not None:
+            if str(r.get("id") or "") not in selected_id_set:
+                return False
+            return has_kr or has_qoo
+        # 기본 모드 — 둘 중 하나라도 있고, 미수집이면 처리
+        if not (has_kr or has_qoo):
+            return False
+        # 실패 backoff — 최근 실패한 행은 일정 기간 skip (탬버린즈 30건 무한 반복 방지)
+        if _in_backoff(r):
+            return False
+        if not req.skip_if_filled:
+            return True
+        title_filled = bool((r.get("qoo10_title_jp") or "").strip())
+        cover_filled = bool((r.get("cover_image_url") or "").strip())
+        price_filled = (r.get("item_price_krw") or 0) > 0
+        return not (title_filled and cover_filled and price_filled)
+
+    # 선택 모드는 limit 무시 (사장님이 의도적으로 N개 골랐으면 그대로 처리)
+    if selected_id_set is not None:
+        targets = [r for r in sheet if _needs_regen(r)]
+    else:
+        targets = [r for r in sheet if _needs_regen(r)][: max(1, req.limit)]
+    total = len(targets)
+    if total == 0:
+        return {"task_id": None, "total": 0, "message": "처리할 행 없음 (모두 채워져 있거나 URL 없음)"}
+
+    task_id = task_manager.create_task(
+        name=f"URL 일괄 재생성 ({total}건)", total=total,
+    )
+
+    async def _run():
+        task_manager.start_task(task_id)
+        success = 0
+        failed = 0
+        for idx, target_row in enumerate(targets, 1):
+            # 사용자 중단 체크 — DELETE /api/tasks/{task_id} 시 fail_task 로 status='failed'
+            t_check = task_manager.get_task(task_id)
+            if t_check and t_check.status in ("failed", "cancelled"):
+                logger.info(f"[url_batch] task {task_id} 사용자 중단 — {idx-1}건 처리 후 종료")
+                return
+            url = (target_row.get("product_url") or "").strip()
+            name_hint = (target_row.get("product_name") or "").strip() or None
+            cat_hint = (target_row.get("category") or "").strip() or None
+            qoo10_url_hint = (target_row.get("qoo10_url") or "").strip() or None  # R (5/3)
+            try:
+                task_manager.update_progress(
+                    task_id, increment=0,
+                    message=f"[{idx}/{total}] {(name_hint or url)[:50]}",
+                )
+                result = await _do_regenerate(
+                    url, req.include_jp_detail,
+                    product_name_hint=name_hint,
+                    category_hint=cat_hint,
+                    qoo10_url_hint=qoo10_url_hint,
+                )
+                if result.get("error"):
+                    failed += 1
+                    target_row["_url_batch_error"] = result["error"][:200]
+                    target_row["_url_batch_error_at"] = datetime.utcnow().isoformat()
+                    target_row["_url_batch_fail_count"] = int(target_row.get("_url_batch_fail_count") or 0) + 1
+                else:
+                    def _merge(field: str, value):
+                        """SEO/이미지/카피 등 LLM·페이지 추출 결과 — 항상 갱신 (사장님이 [컨텐츠 제작] 누른 의도)"""
+                        if value not in (None, "", 0, []):
+                            target_row[field] = value
+                    def _merge_keep(field: str, value):
+                        """사장님 수기 입력 보호 — 기존이 truthy 면 안 덮음. 빈 행만 자동 채움."""
+                        if value in (None, "", 0, []):
+                            return
+                        cur = target_row.get(field)
+                        if cur not in (None, "", 0, []):
+                            return
+                        target_row[field] = value
+                    # 사장님 수기 입력 보호 — 가격/배송/SKU명/카테고리
+                    _merge_keep("product_name", result.get("product_name"))
+                    _merge_keep("item_price_krw", result.get("item_price_krw"))
+                    _merge_keep("domestic_shipping_krw", result.get("domestic_shipping_krw"))
+                    _merge_keep("category", result.get("category"))
+                    # SEO/이미지/카피 — 항상 갱신
+                    _merge("cover_image_url", result.get("cover_image_url"))
+                    _merge("qoo10_title_jp", result.get("qoo10_title_jp"))
+                    _merge("qoo10_tags", result.get("qoo10_tags"))
+                    _merge("qoo10_marketing", result.get("qoo10_marketing"))
+                    _merge("qoo10_marketing_ko", result.get("qoo10_marketing_ko"))
+                    _merge("qoo10_option_name", result.get("qoo10_option_name"))
+                    if result.get("qoo10_jp_detail"):
+                        target_row["qoo10_jp_detail"] = result["qoo10_jp_detail"]
+                    # 큐텐 경쟁가/배송 — 사장님 수기 입력 있으면 보호 (0 은 미입력으로 간주)
+                    if result.get("competitor_price_jpy") is not None and not target_row.get("competitor_price_jpy"):
+                        target_row["competitor_price_jpy"] = result["competitor_price_jpy"]
+                    if result.get("competitor_shipping_jpy") is not None and not target_row.get("competitor_shipping_jpy"):
+                        target_row["competitor_shipping_jpy"] = result["competitor_shipping_jpy"]
+                    _merge("qoo10_cover_image_url", result.get("qoo10_cover_image_url"))
+                    # raw 옵션 — 항상 갱신 (사장님 수기 편집 대상 X, 비교용)
+                    if result.get("domestic_options") is not None:
+                        target_row["domestic_options"] = result["domestic_options"]
+                    if result.get("qoo10_options_raw") is not None:
+                        target_row["qoo10_options_raw"] = result["qoo10_options_raw"]
+                    _merge("cover_local_path", result.get("cover_local_path"))
+                    _merge("detail_local_paths", result.get("detail_local_paths"))
+                    _merge("image_folder", result.get("image_folder"))
+                    target_row.pop("_url_batch_error", None)
+                    target_row.pop("_url_batch_error_at", None)
+                    target_row.pop("_url_batch_fail_count", None)
+                    success += 1
+            except Exception as e:
+                failed += 1
+                target_row["_url_batch_error"] = f"{type(e).__name__}: {e}"
+                target_row["_url_batch_error_at"] = datetime.utcnow().isoformat()
+                target_row["_url_batch_fail_count"] = int(target_row.get("_url_batch_fail_count") or 0) + 1
+                logger.warning(f"[url_batch] {url[:60]} 실패: {e}")
+
+            task_manager.update_progress(
+                task_id, increment=1,
+                message=f"[{idx}/{total}] 누적 성공 {success} / 실패 {failed}",
+            )
+
+            # 부분 저장 (각 행 후) — 오류 시 진행분 보존
+            try:
+                payload_str = jsonlib.dumps(sheet, ensure_ascii=False)
+                now = datetime.utcnow()
+                async with async_session() as session:
+                    rr = await session.execute(
+                        select(UserData).where(UserData.key == "product_sheet")
+                    )
+                    target = rr.scalar_one_or_none()
+                    if target:
+                        target.data = payload_str
+                        target.updated_at = now
+                        await session.commit()
+            except Exception as e:
+                logger.warning(f"[url_batch] 시트 저장 실패: {e}")
+
+        task_manager.complete_task(
+            task_id,
+            message=f"URL 일괄 재생성 완료: 성공 {success} / 실패 {failed} / 전체 {total}",
+        )
+
+    _asyncio.create_task(_run())
+    return {"task_id": task_id, "total": total, "status": "running"}

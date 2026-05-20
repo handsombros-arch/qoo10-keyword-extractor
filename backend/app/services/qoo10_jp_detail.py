@@ -89,6 +89,68 @@ def _strip_codefence(s: str) -> str:
     return s
 
 
+def _category_guidance(category: str) -> str:
+    """카테고리별 카피 가이던스 — 적합 키워드 + 금지 단어 + 패턴 예시.
+
+    프롬프트의 `{category_guidance}` 자리에 주입. 카테고리 매칭은 substring (포함) 기준.
+    매칭 안 되면 `기타` 가이던스. (R-7 6분류 기준 + 패션/식품/가전/생활 확장)
+    """
+    c = (category or "").lower()
+    # 매칭 우선순위 — 더 구체적인 카테고리 먼저
+    if any(k in c for k in ["뷰티", "화장품", "코스메", "스킨", "코스노", "cosme"]):
+        return _GUIDANCE_BEAUTY
+    if any(k in c for k in ["식품", "건강식품", "건강기능", "다이어트", "비타민", "프로틴", "food"]):
+        return _GUIDANCE_FOOD
+    if any(k in c for k in ["패션", "잡화", "가방", "백팩", "의류", "신발", "악세", "fashion"]):
+        return _GUIDANCE_FASHION
+    if any(k in c for k in ["가전", "디지털", "전자", "컴퓨터", "폰", "기기"]):
+        return _GUIDANCE_ELECTRONICS
+    if any(k in c for k in ["생활", "건강", "주방", "리빙", "유아", "반려"]):
+        return _GUIDANCE_LIVING
+    return _GUIDANCE_GENERIC
+
+
+_GUIDANCE_BEAUTY = """【카테고리: 뷰티/화장품 — 적합 표현】
+- pain points 예: 毛穴/くすみ/カサつき/メイク崩れ/敏感肌
+- 어필 키워드: 角質ケア/うるおい/ハリ/つや/くすみケア/さっぱり
+- 약사법 회피 (효능 단정 X): 効果がある→～な印象に* | シワがなくなる→ハリ印象* | 美白→メラニンの生成を抑える*
+- 의태어: しっとり/もっちり/ぴたっと/ぷるん/つるん"""
+
+_GUIDANCE_FASHION = """【카테고리: 패션/잡화 — 적합 표현】
+- pain points 예: デザインが平凡/サイズが合わない/重くて疲れる/収納が足りない/季節感がない
+- 어필 키워드: 軽量/コンパクト/シルエット/カラー/素材感/フィット感/コーデ/オン・オフ
+- 약사법 적용 X (footnotes 빈 배열)
+- 화장품 단어 (毛穴/肌/シワ/角質/メラニン) 절대 X
+- 의태어: ぴたっと/きゅっと/さらさら/つるん/ふんわり"""
+
+_GUIDANCE_FOOD = """【카테고리: 식품 — 적합 표현】
+- pain points 예: 味が濃すぎる/カロリーが気になる/手軽に食べたい/賞味期限が短い
+- 어필 키워드: 旨味/コク/食感/香り/素材/産地/手軽/低カロリー/ヘルシー
+- 약사법/건강식품 표현 단정 X (효능 단정 시 * 면책)
+- 의태어: ふっくら/もっちり/さくさく/とろん/しゃきしゃき"""
+
+_GUIDANCE_ELECTRONICS = """【카테고리: 가전/디지털 — 적합 표현】
+- pain points 예: 操作が複雑/サイズが大きい/電池がすぐ切れる/騒音が気になる
+- 어필 키워드: 高性能/操作簡単/省エネ/コンパクト/軽量/長持ちバッテリー/静音
+- 약사법 적용 X
+- 화장품/식품 단어 절대 X
+- 의태어 신중히 사용 (제품 특성 맞을 때만)"""
+
+_GUIDANCE_LIVING = """【카테고리: 생활/건강/주방 — 적합 표현】
+- pain points 예: 収納が足りない/掃除が大変/サイズが合わない/壊れやすい
+- 어필 키워드: 便利/丈夫/軽量/コンパクト/お手入れ簡単/省スペース/清潔
+- 약사법 일반적으로 적용 X (건강용품은 일부 적용)
+- 화장품/식품 단어 절대 X
+- 의태어: しっかり/すっきり/さらさら/ふんわり"""
+
+_GUIDANCE_GENERIC = """【카테고리: 일반/기타 — 적합 표현】
+- 상품명/OCR 텍스트로부터 카테고리 추정 후 그에 맞춰 작성
+- 화장품 전용 단어 (毛穴/肌/シワ/角質/メラニン) 사용 금지
+- 식품 전용 단어 (旨味/コク/賞味期限) 사용 금지
+- 가전 전용 단어 (高性能/省エネ) 사용 금지
+- 상품명에서 명백히 도출되는 어필 포인트만 사용"""
+
+
 async def generate_jp_detail(
     korean_name: str,
     *,
@@ -127,6 +189,7 @@ async def generate_jp_detail(
         .replace("{category}", category or "(미상)")
         .replace("{key_features}", features_block)
         .replace("{ocr_text}", ocr_block[:8000])
+        .replace("{category_guidance}", _category_guidance(category or ""))
     )
 
     try:
