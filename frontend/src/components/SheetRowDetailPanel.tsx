@@ -49,11 +49,14 @@ type Props = {
   onClose: () => void;
   onSave: (updated: Partial<SheetRow>) => void;
   onReject?: () => void;
+  onBlacklist?: () => void;   // K (5/3): 블랙리스트 추가 + 행 삭제 (부모에서 구현)
 };
+
+export type SheetRowDetailPanelProps = Props;
 
 type AltSku = NonNullable<RowMeta['alt_skus']>[number];
 
-export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: Props) {
+export default function SheetRowDetailPanel({ row, onClose, onSave, onReject, onBlacklist }: Props) {
   const [meta, setMeta] = useState<RowMeta | null>(null);
   const [loading, setLoading] = useState(false);
   const [edit, setEdit] = useState<Partial<SheetRow>>({
@@ -92,6 +95,37 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
       .finally(() => setLoading(false));
   }, [row.id]);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // H (5/3): row 변경 시 edit 상태 리셋 — 패널 열린 채 다른 행 클릭 시 새 행 데이터 표시
+  useEffect(() => {
+    setEdit({
+      qoo10_title_jp: row.qoo10_title_jp || '',
+      qoo10_tags: row.qoo10_tags || [],
+      qoo10_marketing: row.qoo10_marketing || [],
+      qoo10_marketing_ko: row.qoo10_marketing_ko || [],
+      qoo10_option_name: row.qoo10_option_name || '',
+      product_url: row.product_url || '',
+      qoo10_url: row.qoo10_url || '',
+      item_price_krw: row.item_price_krw || 0,
+      domestic_shipping_krw: row.domestic_shipping_krw || 0,
+      weight_g: row.weight_g || 0,
+      product_name: row.product_name || '',
+      category: row.category || '',
+      cover_image_url: row.cover_image_url || '',
+      cover_local_path: row.cover_local_path,
+      detail_local_paths: row.detail_local_paths,
+      image_folder: row.image_folder,
+      // S (5/3) 옵션 비교
+      domestic_options: row.domestic_options,
+      qoo10_options_raw: row.qoo10_options_raw,
+      competitor_price_jpy: row.competitor_price_jpy,
+      competitor_shipping_jpy: row.competitor_shipping_jpy,
+    });
+    setNewTag('');
+    setNewPoint('');
+    setRegenMsg('');
+    setNeedsNaverLogin(false);
+  }, [row.id]);  // eslint-disable-line react-hooks/exhaustive-deps
+
   function patch(p: Partial<SheetRow>) {
     setEdit(prev => ({ ...prev, ...p }));
   }
@@ -117,13 +151,24 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
   }
 
   function removePoint(i: number) {
-    patch({ qoo10_marketing: (edit.qoo10_marketing || []).filter((_, idx) => idx !== i) });
+    patch({
+      qoo10_marketing: (edit.qoo10_marketing || []).filter((_, idx) => idx !== i),
+      qoo10_marketing_ko: (edit.qoo10_marketing_ko || []).filter((_, idx) => idx !== i),
+    });
   }
 
   function updatePoint(i: number, v: string) {
     const arr = [...(edit.qoo10_marketing || [])];
     arr[i] = v;
     patch({ qoo10_marketing: arr });
+  }
+
+  // H (5/3) marketing 한글 번역 인플레이스 편집
+  function updatePointKo(i: number, v: string) {
+    const arr = [...(edit.qoo10_marketing_ko || [])];
+    while (arr.length <= i) arr.push('');
+    arr[i] = v;
+    patch({ qoo10_marketing_ko: arr });
   }
 
   // DDDD-1 + HHHH-1: URL 기반 SEO 콘텐츠 자동 재생성 (background task + 진행률)
@@ -164,16 +209,24 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
   async function regenerateFromUrl() {
     const url = (edit.product_url || '').trim();
     if (!url) { setRegenMsg('URL 먼저 입력하세요'); return; }
-    if (!/naver\.com\/.+\/products\//.test(url)) {
-      setRegenMsg('네이버 smartstore/brand URL 만 지원');
+    const isNaver = /naver\.com\/.+\/products\//.test(url);
+    const isCoupang = /coupang\.com\//.test(url);
+    if (!isNaver && !isCoupang) {
+      setRegenMsg('네이버 smartstore/brand 또는 쿠팡 URL 만 지원');
       return;
     }
+    const productNameHint = (edit.product_name || '').trim();
+    // Coupang 도 메인 Chrome 확장 경유 (AKAMAI 우회) — product_name 강제 입력 불필요
     setRegenerating(true);
     setRegenMsg('백엔드 task 시작...');
     setRegenProgress({cur:0, total:5, msg:''});
     try {
-      // 1. 즉시 task_id 받기
-      const start = await api.post<any>('/products/regenerate-content-from-url', { url, async: true });
+      // 1. 즉시 task_id 받기 — category + qoo10_url (R, 5/3) 도 전달
+      const start = await api.post<any>('/products/regenerate-content-from-url', {
+        url, async: true, product_name: productNameHint,
+        category: (edit.category || '').trim() || undefined,
+        qoo10_url: (edit.qoo10_url || '').trim() || undefined,
+      });
       const taskId = start.data.task_id;
       const total = start.data.total || 5;
       if (!taskId) {
@@ -187,9 +240,13 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
         return r.data;
       };
 
-      let lastStatus = '';
       let result: any = null;
+      const pollDeadline = Date.now() + 5 * 60_000; // 안전망: 5분 hard timeout
       while (true) {
+        if (Date.now() > pollDeadline) {
+          setRegenMsg('✗ 폴링 타임아웃 (5분)');
+          return;
+        }
         await new Promise(r => setTimeout(r, 1500));
         let t;
         try { t = await pollOnce(); }
@@ -208,8 +265,9 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
           setRegenMsg(`✗ ${msg}`);
           return;
         }
-        if (status === lastStatus && cur === total) break;
-        lastStatus = status;
+        // 주의: cur === total 만으로는 break 하지 않음 — 백엔드 total 과 _progress 호출
+        // 횟수가 어긋나면 (E 단계 추가 등) status='running' 인데 break 되어 "결과 파싱 실패" 발생.
+        // status 가 명시적으로 completed/failed 가 될 때까지만 continue.
       }
 
       if (!result) {
@@ -235,17 +293,34 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
         qoo10_title_jp: result.qoo10_title_jp,
         qoo10_tags: result.qoo10_tags,
         qoo10_marketing: result.qoo10_marketing,
+        qoo10_marketing_ko: result.qoo10_marketing_ko ?? undefined,   // H (5/3) 한글 번역
         qoo10_option_name: result.qoo10_option_name,
+        // R (5/3) 큐텐 경쟁가/배송 — qoo10_url 채워졌을 때만 응답에 포함
+        competitor_price_jpy: result.competitor_price_jpy ?? edit.competitor_price_jpy,
+        competitor_shipping_jpy: result.competitor_shipping_jpy ?? edit.competitor_shipping_jpy,
+        // S (5/3) raw 옵션 — 빈 배열 도 의미있어 ?? 안 씀, 응답 우선
+        domestic_options: result.domestic_options !== undefined ? result.domestic_options : edit.domestic_options,
+        qoo10_options_raw: result.qoo10_options_raw !== undefined ? result.qoo10_options_raw : edit.qoo10_options_raw,
         qoo10_jp_detail: result.qoo10_jp_detail,
         match_decision: 'manual',
+        // E (5/3): 다운로드된 로컬 이미지 경로 — /image 정적 서빙 (브라우저에서 표시 가능)
+        cover_local_path: result.cover_local_path ?? undefined,
+        detail_local_paths: result.detail_local_paths ?? undefined,
+        image_folder: result.image_folder ?? undefined,
+        // G (5/3): LLM 자동 분류 카테고리 — 시트 비어있던 경우만 채움
+        category: result.category && !edit.category ? result.category : edit.category,
       };
-      onSave(updates);
+      // H (5/3): 자동저장 — 사장님 직전 수동 편집 (edit) + 새 결과 (updates) 머지하여 한 번에 저장
+      // 패널 닫지 않고도 영구 보존됨 (saveSheet → localStorage + cloudSync push).
+      const merged = { ...edit, ...updates };
+      onSave(merged);
       patch(updates);
       const tags = result.qoo10_tags?.length || 0;
       const mkt = result.qoo10_marketing?.length || 0;
       const jpDetail = result.qoo10_jp_detail && !result.qoo10_jp_detail.error;
       const shipping = result.shipping_text || '';
-      setRegenMsg(`✓ 완료 (tags ${tags}, marketing ${mkt}${jpDetail ? ', JP 카피' : ''}${shipping ? `, 배송:${shipping}` : ''})`);
+      const imgs = (result.cover_local_path ? 1 : 0) + (result.detail_local_paths?.length || 0);
+      setRegenMsg(`✓ 자동 저장됨 (tags ${tags}, marketing ${mkt}${jpDetail ? ', JP 카피' : ''}${shipping ? `, 배송:${shipping}` : ''}${imgs ? `, 이미지 ${imgs}장` : ''})`);
     } catch (e: any) {
       setRegenMsg(`✗ ${e?.message || e}`);
     } finally {
@@ -470,6 +545,10 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
             <div className="grid grid-cols-4 gap-1">
               {meta.qoo10_samples.map(q => (
                 <a key={q.id} href={q.product_url} target="_blank" rel="noreferrer"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    window.open(q.product_url, '_blank', 'popup,width=1400,height=900,left=100,top=50');
+                  }}
                   className="border rounded p-1 hover:ring-2 hover:ring-blue-400"
                   title={q.cover_description ? `${q.product_name}\n👁 ${q.cover_description}` : q.product_name}>
                   <img src={q.cover_image_url} className="w-full h-20 object-contain bg-gray-50 rounded" />
@@ -689,17 +768,24 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
                 각 30자 이내 / 의태어+약사법회피 (qoo10-jp-detail-master 가이드)
               </span>
             </label>
-            <ul className="space-y-1.5 mb-1">
+            <ul className="space-y-2 mb-1">
               {(edit.qoo10_marketing || []).map((p, i) => {
                 const len = (p || '').length;
                 const lenColor = len > 30 ? 'text-red-600' : 'text-gray-400';
+                const ko = (edit.qoo10_marketing_ko || [])[i] || '';
                 return (
                   <li key={i} className="flex gap-1 items-start">
                     <span className="text-purple-700 font-bold text-[10px] mt-1 w-8 shrink-0">P{i+1}</span>
-                    <textarea value={p} onChange={e => updatePoint(i, e.target.value)}
-                      rows={2}
-                      placeholder={`패턴 ${['A 효과/편의성','B 성분/기술','C 사용감/디자인','D 이벤트(送料無料 等)'][i] || ''} — 의태어 + 약사법 회피 (印象/サポート)`}
-                      className="flex-1 border rounded px-1.5 py-1 text-[11px] resize-y" />
+                    <div className="flex-1 flex flex-col gap-0.5">
+                      <textarea value={p} onChange={e => updatePoint(i, e.target.value)}
+                        rows={2}
+                        placeholder={`패턴 ${['A 효과/편의성','B 성분/기술','C 사용감/디자인','D 이벤트(送料無料 等)'][i] || ''} — 의태어 + 약사법 회피 (印象/サポート)`}
+                        className="border rounded px-1.5 py-1 text-[11px] resize-y" />
+                      {/* H (5/3) 한글 번역 — 사장님 검수용. 큐텐 등록 X. 인플레이스 편집 가능. */}
+                      <input type="text" value={ko} onChange={e => updatePointKo(i, e.target.value)}
+                        placeholder="(한글 번역 — 사장님 검수용)"
+                        className="border border-gray-200 rounded px-1.5 py-0.5 text-[10px] text-gray-600 bg-gray-50" />
+                    </div>
                     <div className="flex flex-col gap-0.5">
                       <span className={`text-[9px] ${lenColor}`}>{len}자</span>
                       <button onClick={() => removePoint(i)} className="text-gray-400 hover:text-red-500 text-xs">×</button>
@@ -737,6 +823,56 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
               className="w-full border rounded px-1 py-0.5"
               title="옵션 여러 개면 ' | ' separator. 한국 옵션을 일본어 친숙 표현으로 (UUU-1)" />
           </div>
+
+          {/* S (5/3) 옵션 비교 — 한국 셀러 raw + 큐텐 경쟁자 raw */}
+          {((edit.domestic_options?.length || 0) > 0 || (edit.qoo10_options_raw?.length || 0) > 0) && (
+            <div>
+              <div className="block text-gray-500 mb-1 mt-1.5 flex items-center gap-2">
+                <span>옵션 비교</span>
+                <span className="text-[9px] text-gray-400">참고용 raw 데이터 (큐텐 등록 옵션 결정 시 활용)</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="border rounded p-1.5 bg-gray-50">
+                  <div className="text-[10px] font-semibold text-gray-700 mb-1">
+                    한국 ({edit.domestic_options?.length || 0})
+                  </div>
+                  {(edit.domestic_options?.length || 0) === 0 ? (
+                    <div className="text-[10px] text-gray-400 italic">옵션 없음 (또는 미수집)</div>
+                  ) : (
+                    <ul className="text-[10px] max-h-28 overflow-y-auto space-y-0.5">
+                      {edit.domestic_options!.map((o, i) => (
+                        <li key={i} className="flex justify-between gap-1">
+                          <span className="truncate" title={o.name}>{o.name}</span>
+                          <span className="font-mono text-gray-500 shrink-0">
+                            {o.price_krw ? `${o.price_krw.toLocaleString()}원` : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div className="border rounded p-1.5 bg-gray-50">
+                  <div className="text-[10px] font-semibold text-gray-700 mb-1">
+                    큐텐 경쟁자 ({edit.qoo10_options_raw?.length || 0})
+                  </div>
+                  {(edit.qoo10_options_raw?.length || 0) === 0 ? (
+                    <div className="text-[10px] text-gray-400 italic">옵션 없음 (또는 미수집)</div>
+                  ) : (
+                    <ul className="text-[10px] max-h-28 overflow-y-auto space-y-0.5">
+                      {edit.qoo10_options_raw!.map((o, i) => (
+                        <li key={i} className="flex justify-between gap-1">
+                          <span className="truncate" title={o.name}>{o.name}</span>
+                          <span className="font-mono text-gray-500 shrink-0">
+                            {o.price_jpy ? `¥${o.price_jpy.toLocaleString()}` : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 옵션 풀세트 */}
@@ -912,6 +1048,15 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: 
           }}
             className="px-3 bg-gray-200 hover:bg-gray-300 py-1.5 rounded text-xs">
             거부
+          </button>
+        )}
+        {onBlacklist && (
+          <button
+            onClick={onBlacklist}
+            className="px-3 bg-red-50 text-red-700 border border-red-200 py-1.5 rounded text-xs hover:bg-red-100"
+            title="이 상품/키워드를 블랙리스트에 추가하고 시트에서 제거. 자동화에서 더 이상 추가 안 됨."
+          >
+            ⛔ 블랙리스트
           </button>
         )}
         <button onClick={onClose}

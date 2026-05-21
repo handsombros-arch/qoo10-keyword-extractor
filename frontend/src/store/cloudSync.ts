@@ -5,7 +5,7 @@
  */
 import api from '../api/client';
 
-type SyncKey = 'product_sheet' | 'interest_keywords' | 'shop_cache' | 'brand_auto_add_threshold' | 'auto_filter_categories' | 'auto_filter_thresholds' | 'quality_thresholds' | 'auto_filter_category_blacklist';
+type SyncKey = 'product_sheet' | 'interest_keywords' | 'shop_cache' | 'shop_urls' | 'brand_auto_add_threshold' | 'auto_filter_categories' | 'auto_filter_thresholds' | 'quality_thresholds' | 'auto_filter_category_blacklist';
 
 interface CloudEnvelope<T> {
   key: string;

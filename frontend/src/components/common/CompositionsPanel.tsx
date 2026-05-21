@@ -1,5 +1,13 @@
+/**
+ * 옵션 sub-row 패널 — 메인 시트와 동일한 양식·입력 처리.
+ * - 옵션명 / 옵션값 별도 입력 (큐텐 등록 형식)
+ * - parseNum 콤마 자동 strip
+ * - 무게 변경 시 lookupKseShipping 자동 계산 → 포장+KSE
+ * - 그룹 색 (내 원가 = 파랑 톤, 판매가 = 초록 톤) 메인 시트와 통일
+ */
 import { useMemo } from 'react';
-import { calculateMargin, marginVerdict } from '../../lib/marginCalc';
+import { Trash2 } from 'lucide-react';
+import { calculateMargin, lookupKseShipping, marginVerdict } from '../../lib/marginCalc';
 import {
   newCompositionOption,
   type CompositionOption,
@@ -18,12 +26,42 @@ const fmtPct = (n: number) => (n == null ? '-' : (n * 100).toFixed(1) + '%');
 
 const PRESETS = [1, 2, 3, 5];
 
+// 메인 시트 parseNum 과 동등 — 콤마/공백 strip + Number, NaN → 0
+const parseNum = (raw: string | number | null | undefined): number => {
+  const s = String(raw ?? '').replace(/[,\s]/g, '');
+  const n = Number(s);
+  return isFinite(n) ? n : 0;
+};
+
+// 메인 시트 그룹 색 (RecommendProductsPage 와 동일)
+const COST_BG = 'rgba(99, 102, 241, 0.06)';
+const SELL_BG = 'rgba(34, 197, 94, 0.07)';
+
+const inputBaseClass = 'w-full px-1.5 py-1 text-[12px] tracking-tight outline-none focus:bg-white';
+const numInputClass = `${inputBaseClass} text-right font-mono`;
+const textInputClass = `${inputBaseClass} text-left`;
+
 export default function CompositionsPanel({ row, onChange, onClose }: Props) {
   const compositions = row.compositions || [];
 
   const update = (id: string, patch: Partial<CompositionOption>) => {
     onChange(compositions.map(c => (c.id === id ? { ...c, ...patch } : c)));
   };
+
+  // 무게/수량 변경 시 shipping_packaging_krw 자동 계산
+  const updateWeight = (id: string, w: number) => {
+    const opt = compositions.find(c => c.id === id);
+    if (!opt) return;
+    const auto_pkg = lookupKseShipping(w * (opt.quantity || 1));
+    update(id, { weight_g: w, shipping_packaging_krw: auto_pkg });
+  };
+  const updateQuantity = (id: string, q: number) => {
+    const opt = compositions.find(c => c.id === id);
+    if (!opt) return;
+    const auto_pkg = lookupKseShipping((opt.weight_g || 0) * Math.max(1, q));
+    update(id, { quantity: Math.max(1, q), shipping_packaging_krw: auto_pkg });
+  };
+
   const remove = (id: string) => onChange(compositions.filter(c => c.id !== id));
   const add = (qty?: number) => {
     const opt = newCompositionOption(row, qty != null ? { quantity: qty } : {});
@@ -40,7 +78,7 @@ export default function CompositionsPanel({ row, onChange, onClose }: Props) {
         exchange_rate: row.exchange_rate ?? 9.5,
         shipping_mode: row.shipping_mode ?? 'auto',
         is_mega: c.is_mega ?? false,
-        quantity: 1, // 각 구성 자체가 이미 세트 기준이므로 1로 고정
+        quantity: 1,
       });
       return { opt: c, res };
     });
@@ -59,147 +97,178 @@ export default function CompositionsPanel({ row, onChange, onClose }: Props) {
   }, [results]);
 
   return (
-    <div className="bg-white rounded-lg shadow-lg border border-blue-200 p-4 mt-4">
+    <div className="bg-apple-bg-2 rounded-xl border" style={{ borderColor: 'var(--color-apple-border)', padding: 12 }}>
       <div className="flex items-center justify-between mb-3">
         <div>
-          <h3 className="font-semibold text-sm">
-            📦 구성 옵션 편집 <span className="text-gray-500 font-normal">— {row.product_name_ko || row.product_name}</span>
+          <h3 className="apple-title-3 text-[14px]">
+            옵션 편집 <span className="text-apple-text-3 font-normal text-[12px] ml-1">— {row.product_name_ko || row.product_name || '(상품명 없음)'}</span>
           </h3>
-          <div className="text-[11px] text-gray-500 mt-0.5">
-            메인 행 단품값 (무게 {row.weight_g}g · 단가 {fmtKrw(row.item_price_krw)} · 판매가 {fmtJpy(row.sell_price_jpy)}) 기준으로 자동 채워집니다. 세트별로 자유 수정 가능.
+          <div className="text-[11px] text-apple-text-3 mt-0.5 tracking-tight">
+            메인 행 단품값 (무게 {row.weight_g}g · 단가 {fmtKrw(row.item_price_krw)} · 판매가 {fmtJpy(row.sell_price_jpy)}) 기준 자동 채움. 무게 변경 시 포장+KSE 자동 재계산.
           </div>
         </div>
         {onClose && (
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 text-sm px-2">✕ 닫기</button>
+          <button onClick={onClose} className="apple-btn apple-btn-ghost apple-btn-sm" style={{ padding: '4px 8px' }}>닫기</button>
         )}
       </div>
 
-      <div className="flex gap-1 mb-3 items-center flex-wrap">
-        <span className="text-xs text-gray-600 mr-1">빠른 추가:</span>
+      <div className="flex gap-1.5 mb-3 items-center flex-wrap">
+        <span className="text-[11px] text-apple-text-3 mr-1">빠른 추가:</span>
         {PRESETS.map(n => (
           <button
             key={n}
             onClick={() => add(n)}
-            className="text-xs px-2 py-0.5 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded"
+            className="apple-btn apple-btn-ghost apple-btn-sm"
+            style={{ padding: '3px 8px', fontSize: 11 }}
           >
             +{n === 1 ? '단품' : `${n}세트`}
           </button>
         ))}
         <button
           onClick={() => add()}
-          className="text-xs px-2 py-0.5 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded"
-          title="1개 기본값으로 빈 구성 추가"
+          className="apple-btn apple-btn-ghost apple-btn-sm"
+          style={{ padding: '3px 8px', fontSize: 11 }}
+          title="빈 옵션 추가 (옵션명/옵션값 직접 입력)"
         >
-          + 빈 구성
+          + 빈 옵션
         </button>
         {compositions.length > 0 && (
           <button
             onClick={() => onChange([])}
-            className="ml-auto text-xs px-2 py-0.5 text-red-600 hover:text-red-800"
+            className="ml-auto text-[11px] text-red-600 hover:text-red-800"
           >
-            모든 구성 삭제
+            모든 옵션 삭제
           </button>
         )}
       </div>
 
       {compositions.length === 0 ? (
-        <div className="text-center py-6 text-gray-400 text-sm border border-dashed rounded">
-          구성 없음. 위 버튼으로 단품/세트 옵션을 추가해 마진을 비교하세요.
+        <div className="text-center py-6 text-apple-text-3 text-[12px] border border-dashed rounded-lg" style={{ borderColor: 'var(--color-apple-border)' }}>
+          옵션 없음. 위 버튼으로 단품/세트/빈 옵션을 추가해 옵션명·값·가격 입력하세요.
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-[12px]">
-            <thead className="bg-gray-50 text-gray-700">
-              <tr>
-                <th className="border px-2 py-1 text-left">구성</th>
-                <th className="border px-2 py-1 text-right">수량</th>
-                <th className="border px-2 py-1 text-right">무게(g)</th>
-                <th className="border px-2 py-1 text-right">구매가(원)</th>
-                <th className="border px-2 py-1 text-right">구매배송(원)</th>
-                <th className="border px-2 py-1 text-right">포장·KSE(원)</th>
-                <th className="border px-2 py-1 text-right">판매가(¥)</th>
-                <th className="border px-2 py-1 text-center">메가</th>
-                <th className="border px-2 py-1 text-right">배송</th>
-                <th className="border px-2 py-1 text-right">총원가</th>
-                <th className="border px-2 py-1 text-right">이익</th>
-                <th className="border px-2 py-1 text-right">마진</th>
-                <th className="border px-2 py-1 text-center">평가</th>
-                <th className="border px-2 py-1"></th>
+        <div className="overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--color-apple-border)' }}>
+          <table className="w-full text-[12px]" style={{ borderCollapse: 'collapse' }}>
+            <thead style={{ background: 'var(--color-apple-bg-3)' }}>
+              <tr className="text-apple-text-3 text-[11px] uppercase tracking-wider font-medium">
+                <th className="px-2 py-1.5 text-left border-b" style={{ borderColor: 'var(--color-apple-border)' }}>옵션명</th>
+                <th className="px-2 py-1.5 text-left border-b" style={{ borderColor: 'var(--color-apple-border)' }}>옵션값</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)' }}>수량</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)', background: COST_BG }}>무게(g)</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)', background: COST_BG }}>구매가</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)', background: COST_BG }}>구매배송</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)', background: COST_BG }} title="무게 기반 자동 계산. 수동 override 가능">포장+KSE</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)', background: SELL_BG }}>판매가(¥)</th>
+                <th className="px-2 py-1.5 text-center border-b" style={{ borderColor: 'var(--color-apple-border)' }}>메가</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)' }}>배송</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)' }}>총원가</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)' }}>이익</th>
+                <th className="px-2 py-1.5 text-right border-b" style={{ borderColor: 'var(--color-apple-border)' }}>마진</th>
+                <th className="px-2 py-1.5 text-center border-b" style={{ borderColor: 'var(--color-apple-border)' }}>평가</th>
+                <th className="px-2 py-1.5 border-b" style={{ borderColor: 'var(--color-apple-border)' }}></th>
               </tr>
             </thead>
             <tbody>
               {results.map(({ opt, res }, i) => {
                 const verdict = marginVerdict(res.margin_rate);
                 const verdictColor = {
-                  '우수': 'bg-green-100 text-green-800',
+                  '우수': 'bg-emerald-100 text-emerald-800',
                   '양호': 'bg-blue-100 text-blue-800',
                   '애매': 'bg-amber-100 text-amber-800',
                   '부족': 'bg-orange-100 text-orange-800',
                   '손실': 'bg-red-100 text-red-800',
                 }[verdict];
                 const isBest = i === bestIdx && compositions.length > 1;
+                const cellStyle = { borderColor: 'var(--color-apple-border)' };
                 return (
-                  <tr key={opt.id} className={isBest ? 'bg-yellow-50' : ''}>
-                    <td className="border px-1 py-0.5">
+                  <tr key={opt.id} className={isBest ? 'bg-amber-50' : 'hover:bg-apple-bg-3'} style={{ borderTop: '1px solid var(--color-apple-border)' }}>
+                    <td className="px-1 py-0.5 border-r" style={cellStyle}>
                       <div className="flex items-center gap-1">
-                        {isBest && <span className="text-yellow-600" title="최고 마진">⭐</span>}
+                        {isBest && <span className="text-amber-600 text-[10px]" title="최고 마진">★</span>}
                         <input
                           type="text"
-                          value={opt.label}
-                          onChange={e => update(opt.id, { label: e.target.value })}
-                          className="w-24 border rounded px-1 py-0.5 text-[12px]"
+                          value={opt.option_name || ''}
+                          onChange={e => update(opt.id, { option_name: e.target.value })}
+                          onFocus={e => e.currentTarget.select()}
+                          placeholder="용량"
+                          className={textInputClass}
+                          style={{ background: 'transparent', border: 'none' }}
                         />
                       </div>
                     </td>
-                    <td className="border px-1 py-0.5 text-right">
+                    <td className="px-1 py-0.5 border-r" style={cellStyle}>
                       <input
-                        type="number" min={1}
+                        type="text"
+                        value={opt.option_value || ''}
+                        onChange={e => update(opt.id, { option_value: e.target.value })}
+                        onFocus={e => e.currentTarget.select()}
+                        placeholder="30ml"
+                        className={textInputClass}
+                        style={{ background: 'transparent', border: 'none' }}
+                      />
+                    </td>
+                    <td className="px-1 py-0.5 border-r" style={cellStyle}>
+                      <input
+                        type="text"
                         value={opt.quantity}
-                        onChange={e => update(opt.id, { quantity: Math.max(1, Number(e.target.value) || 1) })}
-                        className="w-12 border rounded px-1 py-0.5 text-right text-[12px]"
+                        onChange={e => updateQuantity(opt.id, parseNum(e.target.value))}
+                        onFocus={e => e.currentTarget.select()}
+                        className={numInputClass}
+                        style={{ background: 'transparent', border: 'none' }}
                       />
                     </td>
-                    <td className="border px-1 py-0.5 text-right">
+                    <td className="px-1 py-0.5 border-r" style={{ ...cellStyle, background: COST_BG }}>
                       <input
-                        type="number" min={0}
+                        type="text"
                         value={opt.weight_g}
-                        onChange={e => update(opt.id, { weight_g: Math.max(0, Number(e.target.value) || 0) })}
-                        className="w-16 border rounded px-1 py-0.5 text-right text-[12px]"
+                        onChange={e => updateWeight(opt.id, parseNum(e.target.value))}
+                        onFocus={e => e.currentTarget.select()}
+                        className={numInputClass}
+                        style={{ background: 'transparent', border: 'none' }}
                       />
                     </td>
-                    <td className="border px-1 py-0.5 text-right">
+                    <td className="px-1 py-0.5 border-r" style={{ ...cellStyle, background: COST_BG }}>
                       <input
-                        type="number" min={0}
+                        type="text"
                         value={opt.item_price_krw}
-                        onChange={e => update(opt.id, { item_price_krw: Math.max(0, Number(e.target.value) || 0) })}
-                        className="w-20 border rounded px-1 py-0.5 text-right text-[12px]"
+                        onChange={e => update(opt.id, { item_price_krw: parseNum(e.target.value) })}
+                        onFocus={e => e.currentTarget.select()}
+                        className={numInputClass}
+                        style={{ background: 'transparent', border: 'none' }}
                       />
                     </td>
-                    <td className="border px-1 py-0.5 text-right">
+                    <td className="px-1 py-0.5 border-r" style={{ ...cellStyle, background: COST_BG }}>
                       <input
-                        type="number" min={0}
+                        type="text"
                         value={opt.domestic_shipping_krw}
-                        onChange={e => update(opt.id, { domestic_shipping_krw: Math.max(0, Number(e.target.value) || 0) })}
-                        className="w-16 border rounded px-1 py-0.5 text-right text-[12px]"
+                        onChange={e => update(opt.id, { domestic_shipping_krw: parseNum(e.target.value) })}
+                        onFocus={e => e.currentTarget.select()}
+                        className={numInputClass}
+                        style={{ background: 'transparent', border: 'none' }}
                       />
                     </td>
-                    <td className="border px-1 py-0.5 text-right">
+                    <td className="px-1 py-0.5 border-r" style={{ ...cellStyle, background: COST_BG }}>
                       <input
-                        type="number" min={0}
+                        type="text"
                         value={opt.shipping_packaging_krw}
-                        onChange={e => update(opt.id, { shipping_packaging_krw: Math.max(0, Number(e.target.value) || 0) })}
-                        className="w-16 border rounded px-1 py-0.5 text-right text-[12px]"
+                        onChange={e => update(opt.id, { shipping_packaging_krw: parseNum(e.target.value) })}
+                        onFocus={e => e.currentTarget.select()}
+                        className={numInputClass}
+                        style={{ background: 'transparent', border: 'none' }}
+                        title="무게 변경 시 자동 갱신. 수동 override 가능."
                       />
                     </td>
-                    <td className="border px-1 py-0.5 text-right">
+                    <td className="px-1 py-0.5 border-r" style={{ ...cellStyle, background: SELL_BG }}>
                       <input
-                        type="number" min={0}
+                        type="text"
                         value={opt.sell_price_jpy}
-                        onChange={e => update(opt.id, { sell_price_jpy: Math.max(0, Number(e.target.value) || 0) })}
-                        className="w-20 border rounded px-1 py-0.5 text-right text-[12px] bg-yellow-50 font-semibold"
+                        onChange={e => update(opt.id, { sell_price_jpy: parseNum(e.target.value) })}
+                        onFocus={e => e.currentTarget.select()}
+                        className={`${numInputClass} font-semibold`}
+                        style={{ background: 'transparent', border: 'none' }}
                       />
                     </td>
-                    <td className="border px-1 py-0.5 text-center">
+                    <td className="px-1 py-0.5 text-center border-r" style={cellStyle}>
                       <input
                         type="checkbox"
                         checked={opt.is_mega ?? false}
@@ -207,30 +276,29 @@ export default function CompositionsPanel({ row, onChange, onClose }: Props) {
                         title="메가와리 10% 할인 적용"
                       />
                     </td>
-                    <td className="border px-1 py-0.5 text-right text-[11px] text-gray-600">
+                    <td className="px-1.5 py-0.5 text-right text-[10px] text-apple-text-3 border-r" style={cellStyle}>
                       {res.shipping_mode_resolved === 'free' ? '무료' : '유료'}
-                      <br />
-                      <span className="text-gray-400">{fmtKrw(res.shipping_cost_krw)}</span>
+                      <div className="text-[9px] text-apple-text-3">{fmtKrw(res.shipping_cost_krw)}</div>
                     </td>
-                    <td className="border px-1 py-0.5 text-right text-gray-600">{fmtKrw(res.total_cost_krw)}</td>
-                    <td className={`border px-1 py-0.5 text-right font-semibold ${res.profit_krw >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                    <td className="px-1.5 py-0.5 text-right text-apple-text-2 border-r" style={cellStyle}>{fmtKrw(res.total_cost_krw)}</td>
+                    <td className={`px-1.5 py-0.5 text-right font-semibold border-r ${res.profit_krw >= 0 ? 'text-emerald-700' : 'text-red-700'}`} style={cellStyle}>
                       {fmtKrw(res.profit_krw)}
                     </td>
-                    <td className={`border px-1 py-0.5 text-right font-semibold ${res.margin_rate >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                    <td className={`px-1.5 py-0.5 text-right font-semibold border-r ${res.margin_rate >= 0 ? 'text-emerald-700' : 'text-red-700'}`} style={cellStyle}>
                       {fmtPct(res.margin_rate)}
                     </td>
-                    <td className="border px-1 py-0.5 text-center">
+                    <td className="px-1 py-0.5 text-center border-r" style={cellStyle}>
                       <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${verdictColor}`}>
                         {verdict}
                       </span>
                     </td>
-                    <td className="border px-1 py-0.5 text-center">
+                    <td className="px-1 py-0.5 text-center" style={cellStyle}>
                       <button
                         onClick={() => remove(opt.id)}
-                        className="text-red-500 hover:text-red-700 text-xs"
-                        title="이 구성 삭제"
+                        className="text-red-500 hover:text-red-700"
+                        title="옵션 삭제"
                       >
-                        ✕
+                        <Trash2 size={12} />
                       </button>
                     </td>
                   </tr>
@@ -242,8 +310,8 @@ export default function CompositionsPanel({ row, onChange, onClose }: Props) {
       )}
 
       {compositions.length > 1 && bestIdx >= 0 && (
-        <div className="mt-2 text-xs text-gray-600">
-          ⭐ 최고 마진 구성: <b>{compositions[bestIdx].label}</b> — {fmtPct(results[bestIdx].res.margin_rate)} ({fmtKrw(results[bestIdx].res.profit_krw)})
+        <div className="mt-2 text-[11px] text-apple-text-3">
+          ★ 최고 마진: <b className="text-apple-text-1">{compositions[bestIdx].option_value || compositions[bestIdx].label || `옵션 ${bestIdx + 1}`}</b> — {fmtPct(results[bestIdx].res.margin_rate)} ({fmtKrw(results[bestIdx].res.profit_krw)})
         </div>
       )}
     </div>
@@ -266,8 +334,9 @@ export function summarizeBestComposition(row: SheetRow): { label: string; margin
       is_mega: c.is_mega ?? false,
       quantity: 1,
     });
+    const lab = c.option_value || c.label || '(옵션)';
     if (!best || res.margin_rate > best.margin_rate) {
-      best = { label: c.label, margin_rate: res.margin_rate };
+      best = { label: lab, margin_rate: res.margin_rate };
     }
   }
   return best;

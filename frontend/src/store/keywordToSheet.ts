@@ -8,6 +8,7 @@
  */
 import { loadSheet, saveSheet, newSheetRow, type SheetRow } from './productSheet';
 import { pushCloud } from './cloudSync';
+import api from '../api/client';
 
 export type KeywordLike = {
   keyword_jp: string;
@@ -35,32 +36,50 @@ export function keywordToSheetRow(kw: KeywordLike, source: string): SheetRow {
 }
 
 /** 키워드 list → 시트에 머지. dedup 후 신규만 prepend. localStorage + DB 동기.
- *  return: 실제 추가된 건수.
+ *  O (5/3): 블랙리스트 사전 차단 — keyword_jp 매칭 시 시트 추가 안 함.
+ *  return: { added, blacklisted, deduped }.
  */
 export async function mergeKeywordsToSheet(
   keywords: KeywordLike[], source: string
-): Promise<number> {
-  if (!keywords || !keywords.length) return 0;
+): Promise<{ added: number; blacklisted: number; deduped: number }> {
+  if (!keywords || !keywords.length) return { added: 0, blacklisted: 0, deduped: 0 };
   const sheet = loadSheet();
   const existing = new Set(
     sheet.map(r => r.keyword_jp || r.product_name).filter(Boolean)
   );
+
+  // O (5/3) 블랙리스트 batch 체크
+  let blockedSet = new Set<string>();
+  try {
+    const items = keywords.map(kw => ({ keyword_jp: kw.keyword_jp }));
+    const r = await api.post<any>('/blacklist/check-batch', { items });
+    for (const res of r.data.results || []) {
+      if (res.blacklisted && res.keyword_jp) blockedSet.add(res.keyword_jp);
+    }
+  } catch (e) {
+    // 백엔드 오류 시 차단 X (안전 장치 fallback)
+    console.warn('[mergeKeywordsToSheet] blacklist check 실패, skip:', e);
+  }
+
   const fresh: SheetRow[] = [];
+  let blacklisted = 0;
+  let deduped = 0;
   for (const kw of keywords) {
     const key = kw.keyword_jp;
-    if (!key || existing.has(key)) continue;
+    if (!key) continue;
+    if (blockedSet.has(key)) { blacklisted++; continue; }
+    if (existing.has(key)) { deduped++; continue; }
     existing.add(key);
     fresh.push(keywordToSheetRow(kw, source));
   }
-  if (!fresh.length) return 0;
+  if (!fresh.length) return { added: 0, blacklisted, deduped };
 
   const next = [...fresh, ...sheet];  // 새 row 가 위로
   saveSheet(next);
-  // cloudSync push (다른 PC 즉시 반영)
   try {
     await pushCloud('product_sheet', next);
   } catch {
-    // 실패해도 localStorage 는 저장됨
+    /* localStorage 는 저장됨 */
   }
-  return fresh.length;
+  return { added: fresh.length, blacklisted, deduped };
 }

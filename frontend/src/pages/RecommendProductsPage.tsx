@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import { themeQuartz } from 'ag-grid-community';
 import type { ColDef } from 'ag-grid-community';
+import {
+  Plus, Trash2, Ban, Wand2, ArrowDownAZ, Eye, FileText, Maximize2, Minimize2,
+  ChevronUp, ChevronDown,
+} from 'lucide-react';
+import Qoo10CategoryPicker from '../components/Qoo10CategoryPicker';
+import FloatingCalculator from '../components/FloatingCalculator';
 import api from '../api/client';
 import {
   collectRecommendations, getLoginStatus, getRecommendationReport,
@@ -20,7 +26,7 @@ import {
   loadSheet, newSheetRow, saveSheet, totalPurchaseKrw, type SheetRow,
   type CompositionOption,
 } from '../store/productSheet';
-import CompositionsPanel, { summarizeBestComposition } from '../components/common/CompositionsPanel';
+import CompositionsPanel from '../components/common/CompositionsPanel';
 import SheetRowDetailPanel from '../components/SheetRowDetailPanel';
 import SheetSourceToolbar from '../components/SheetSourceToolbar';
 import TaskProgressPanel from '../components/common/TaskProgressPanel';
@@ -29,6 +35,7 @@ import {
   calculateMargin, marginVerdict,
   calculateRecommendScore,
   targetSellJpyForMargin,
+  lookupKseShipping,
 } from '../lib/marginCalc';
 
 const TARGET_MARGIN_NORMAL = 0.20;
@@ -91,10 +98,33 @@ function ImageZoomModal({ src, onClose }: { src: string; onClose: () => void }) 
 // v1 → v2: TT-1A 매칭/SEO 신규 컬럼 8개 추가 시 옛 state 자동 무효화 (default 적용)
 const COL_STATE_KEY = 'productSheet.colState.v3';  // R-7 컬럼 set 변경 (등록상태/⊕/카테고리/경쟁배송/경쟁합계 추가, 매칭/평가/메가/리뷰 등 default hide)
 
-function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetRow[]) => void }) {
+function ProductSheet({ rows, setRows }: {
+  rows: SheetRow[];
+  setRows: React.Dispatch<React.SetStateAction<SheetRow[]>>;
+}) {
   const gridRef = useRef<AgGridReact>(null);
+  // copy/paste 용 마지막 focused cell 추적 — getFocusedCell() 이 null 일 때 fallback
+  const lastFocusedRef = useRef<{ rowIndex: number; colId: string } | null>(null);
+  // 옵션 sub-row toggle — columnDefs stable 이라 ref 로 최신값 접근
+  const compositionRowIdRef = useRef<string | null>(null);
   const [zoomImg, setZoomImg] = useState<string | null>(null);
   const [colDropdownOpen, setColDropdownOpen] = useState(false);
+  // V (5/3) 큐텐 카테고리 picker — 어느 행 편집 중인지
+  const [qoo10CatRowId, setQoo10CatRowId] = useState<string | null>(null);
+  // 풀스크린 (엑셀 모드) — sidebar/header/sourceToolbar 숨김. 토글 영속.
+  const [fullscreen, setFullscreen] = useState<boolean>(() =>
+    localStorage.getItem('productSheet.fullscreen.v1') === '1'
+  );
+  const toggleFullscreen = () => {
+    const next = !fullscreen;
+    setFullscreen(next);
+    localStorage.setItem('productSheet.fullscreen.v1', next ? '1' : '0');
+  };
+  useEffect(() => {
+    if (fullscreen) document.body.classList.add('sheet-fullscreen');
+    else document.body.classList.remove('sheet-fullscreen');
+    return () => document.body.classList.remove('sheet-fullscreen');
+  }, [fullscreen]);
   const colDropdownRef = useRef<HTMLDivElement>(null);
   // outside click 닫기
   useEffect(() => {
@@ -112,11 +142,18 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const [qoo10ExportRows, setQoo10ExportRows] = useState<SheetRow[]>([]);
   // 구성 편집 패널: 선택된 상품 id (null이면 패널 숨김)
   const [compositionRowId, setCompositionRowId] = useState<string | null>(null);
+  useEffect(() => {
+    compositionRowIdRef.current = compositionRowId;
+    // 옵션 컬럼 셀 표시 갱신 (토글 상태 반영)
+    try { gridRef.current?.api?.refreshCells?.({ columns: ['__option_toggle'], force: true }); } catch {}
+  }, [compositionRowId]);
   // R-7 복제 직후 임시 강조 (2초)
   const [highlightedRowId, setHighlightedRowId] = useState<string | null>(null);
   // TT-1B 우측 슬라이드 패널 — 키워드 클릭 시 SEO 콘텐츠/옵션/매칭 사유 한 번에
   const [detailRow, setDetailRow] = useState<SheetRow | null>(null);
-  const onOpenDetailPanel = (row: SheetRow) => setDetailRow(row);
+  // useCallback — render 마다 새 ref 생기면 columnDefs deps 변경 → AG Grid 가
+  // columnDefs 재적용하면서 너비 reset 부작용. stable ref 로 columnDefs 도 stable.
+  const onOpenDetailPanel = useCallback((row: SheetRow) => setDetailRow(row), []);
   const onCloseDetailPanel = () => setDetailRow(null);
 
   // TT-2 source toolbar — 외부 source row 머지 (중복 dedup, 신규만 setRows)
@@ -287,10 +324,47 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     });
   };
 
+  // 콤마 입력 처리 (예: "12,000" → 12000). NaN 시 0.
+  const parseNum = (p: any): number => {
+    const raw = String(p.newValue ?? '').replace(/[,\s]/g, '');
+    const n = Number(raw);
+    return isFinite(n) ? n : 0;
+  };
+  // 그룹 셀 배경색 — 시각적 그루핑
+  const COST_GROUP_STYLE = { background: 'rgba(99, 102, 241, 0.06)' };           // 파랑 (내 원가)
+  const COMPETITOR_GROUP_STYLE = { background: 'rgba(34, 197, 94, 0.07)' };       // 초록 (경쟁가/배송/합계)
+
+  // 중복 카운트 (한국 URL / 큐텐 URL / 상품명). 같은 값 두 행 이상이면 dup 색 표기.
+  // ref 로 보관 — useMemo 로 두면 rows 변경 시 columnDefs 재생성 → 컬럼 너비 reset 부작용.
+  const urlDupCountsRef = useRef<{ kr: Map<string, number>; qoo: Map<string, number>; name: Map<string, number> }>({
+    kr: new Map(), qoo: new Map(), name: new Map(),
+  });
+  useEffect(() => {
+    const kr = new Map<string, number>();
+    const qoo = new Map<string, number>();
+    const name = new Map<string, number>();
+    for (const r of rows) {
+      const u = (r.product_url || '').trim();
+      if (u) kr.set(u, (kr.get(u) || 0) + 1);
+      const q = (r.qoo10_url || '').trim();
+      if (q) qoo.set(q, (qoo.get(q) || 0) + 1);
+      const n = (r.product_name || '').trim();
+      if (n) name.set(n, (name.get(n) || 0) + 1);
+    }
+    urlDupCountsRef.current = { kr, qoo, name };
+    // 편집 중에는 refreshCells 호출 금지 — cellEditor input 을 강제 redraw 해서 입력값 lost
+    try {
+      const editing = (gridRef.current?.api as any)?.getEditingCells?.()?.length > 0;
+      if (!editing) {
+        gridRef.current?.api?.refreshCells?.({ columns: ['product_url', 'qoo10_url', 'product_name'], force: true });
+      }
+    } catch {}
+  }, [rows]);
+
   const columnDefs: ColDef[] = useMemo<ColDef[]>(() => ([
     // ─ 핀 고정 영역 ─
     {
-      headerName: '선택', width: 55, pinned: 'left', sortable: false, filter: false,
+      headerName: '', width: 55, pinned: 'left', sortable: false, filter: false,
       checkboxSelection: true, headerCheckboxSelection: true,
     },
     {
@@ -316,10 +390,16 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
                 qoo10_product_id: undefined,
                 compositions: [],
               };
-              const idx = rows.findIndex(r => r.id === orig.id);
-              const next = [...rows.slice(0, idx + 1), copy, ...rows.slice(idx + 1)];
-              setRows(next);
-              saveSheet(next);
+              // functional setRows — columnDefs 가 stable 이라 closure 의 rows 가 stale.
+              // prev 기반으로 항상 최신 state 에서 복제.
+              setRows(prev => {
+                const idx = prev.findIndex(r => r.id === orig.id);
+                const next = idx >= 0
+                  ? [...prev.slice(0, idx + 1), copy, ...prev.slice(idx + 1)]
+                  : [...prev, copy];
+                saveSheet(next);
+                return next;
+              });
               // 일시 강조 — 2초 동안 깜빡 (highlightedRowId 로 추적)
               setHighlightedRowId(newId);
               setTimeout(() => setHighlightedRowId(prev => prev === newId ? null : prev), 2000);
@@ -397,32 +477,12 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       headerTooltip: '등록 상태 — 어떤 셀이든 편집하면 자동 "진행중". [✓ 완료] 버튼 클릭 시 완료.',
     },
     {
-      field: 'created_at', headerName: '작성일 / 구성', width: 115,
+      // 5/3: 구성 편집 UI 제거 (사장님 요청). compositions 데이터 구조는 보존.
+      field: 'created_at', headerName: '작성일', width: 95,
       cellRenderer: (p: any) => {
         if (p.data?.__expansion) return null;
-        const best = summarizeBestComposition(p.data);
-        const count = (p.data?.compositions || []).length;
-        const isOpen = compositionRowId === p.data?.id;
-        return (
-          <div className="flex flex-col h-full justify-center leading-tight py-0.5">
-            <span className="text-[11px] text-gray-500">{p.value || ''}</span>
-            <button
-              onClick={(e) => { e.stopPropagation(); setCompositionRowId(isOpen ? null : (p.data?.id || null)); }}
-              className={`text-[10px] mt-0.5 px-1 py-0 rounded border self-start ${
-                isOpen
-                  ? 'bg-blue-600 text-white border-blue-600'
-                  : 'bg-white text-blue-700 border-blue-300 hover:bg-blue-50'
-              }`}
-              title={best ? `최고 마진 구성: ${best.label} ${(best.margin_rate * 100).toFixed(1)}%` : '구성 편집'}
-            >
-              {isOpen ? '▾ 접기' : (count > 0
-                ? `▸ ${count}개${best ? ` ${(best.margin_rate * 100).toFixed(0)}%` : ''}`
-                : '▸ 편집')}
-            </button>
-          </div>
-        );
+        return <span className="text-[11px] text-gray-500">{p.value || ''}</span>;
       },
-      autoHeight: true,
       cellStyle: { padding: 2 },
     },
     {
@@ -467,47 +527,273 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
     },
     {
-      field: 'product_name', headerName: '한국 SKU 명', width: 360, pinned: 'left', autoHeight: false,
+      colId: '__option_toggle',
+      headerName: '옵션', width: 90, pinned: 'left', sortable: false, filter: false,
+      headerTooltip: '옵션 sub-row 토글 — 클릭 시 펼쳐 옵션값/가격/판매가 입력. 같은 상품의 여러 옵션을 한 행 안에서 관리.',
+      cellRenderer: (p: any) => {
+        if (p.data?.__expansion) return null;
+        const n = (p.data?.compositions || []).length;
+        const id = p.data?.id;
+        const isOpen = compositionRowIdRef.current === id;
+        return (
+          <button
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              setCompositionRowId(isOpen ? null : id);
+            }}
+            className={`text-[11px] font-semibold px-2 py-0.5 rounded transition-colors ${
+              isOpen ? 'bg-blue-600 text-white' :
+              n > 0 ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' :
+              'bg-apple-bg-2 text-apple-text-2 hover:bg-apple-bg-3 border border-apple-border'
+            }`}
+            style={{ borderColor: 'var(--color-apple-border)' }}
+            title={isOpen ? '옵션 닫기' : (n > 0 ? `${n}개 옵션 — 클릭 펼침` : '클릭 → 옵션 추가')}
+          >
+            {isOpen ? '닫기' : (n > 0 ? `${n}개 ▾` : '+ 옵션')}
+          </button>
+        );
+      },
+    },
+    {
+      field: 'product_name', headerName: '상품명', width: 360, pinned: 'left', autoHeight: false,
+      editable: true,
+      cellStyle: (p: any) => {
+        const n = (p.value || '').trim();
+        const dup = n && (urlDupCountsRef.current.name.get(n) || 0) > 1;
+        return {
+          whiteSpace: 'normal', lineHeight: '1.25',
+          display: 'flex', alignItems: 'center', padding: 4,
+          background: dup ? 'rgba(245, 158, 11, 0.18)' : undefined,
+        };
+      },
       cellRenderer: (p: any) => {
         if (p.data?.__expansion) return null;
         const name = p.value || '';
         return (
-          <span
-            onClick={(e) => { e.stopPropagation(); onOpenDetailPanel?.(p.data); }}
-            className="text-blue-700 hover:underline line-clamp-2 leading-tight cursor-pointer"
-            title="클릭 → 우측 패널에서 SEO/매칭/옵션/URL/원가 편집"
-          >
-            {name}
-          </span>
+          <div className="flex items-center gap-1 w-full h-full">
+            <span
+              className="break-words flex-1 min-w-0 text-apple-text-1"
+              style={{
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+                overflow: 'hidden',
+              }}
+              title={name + '\n\n더블클릭 → 이름 편집 / [콘텐츠] 버튼 → SEO·매칭·옵션·JP 상세 패널'}
+            >
+              {name || <span className="italic text-apple-text-3">상품명 입력</span>}
+            </span>
+            <button
+              onMouseDown={(e) => { e.stopPropagation(); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenDetailPanel(p.data);
+              }}
+              className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold flex items-center gap-0.5 bg-apple-accent text-white hover:opacity-90"
+              title="콘텐츠 패널 — SEO/매칭/옵션/JP 상세"
+            >
+              <FileText size={10} strokeWidth={2.25} />
+              콘텐츠
+            </button>
+          </div>
         );
       },
     },
 
-    // ─ 원가 섹션 (엑셀 L, M 근처) ─
-    { field: 'weight_g', headerName: '무게(g)', width: 80, type: 'numericColumn' },
+    // M (5/3): 한국 셀러 URL — 썸네일 + URL 통합 (인플레이스 편집)
+    {
+      field: 'product_url', headerName: '한국 URL', width: 220, editable: true,
+      cellStyle: (p: any) => {
+        const u = (p.value || '').trim();
+        const dup = u && (urlDupCountsRef.current.kr.get(u) || 0) > 1;
+        return {
+          whiteSpace: 'normal', fontSize: '11px',
+          background: dup ? 'rgba(245, 158, 11, 0.18)' : 'rgba(99, 102, 241, 0.05)',
+          padding: 2,
+        };
+      },
+      cellRenderer: (p: any) => {
+        if (p.data?.__expansion) return null;
+        const url = p.value || '';
+        const local = (p.data?.cover_local_path || '').trim();
+        const remote = (p.data?.cover_image_url || '').trim();
+        const thumb = local ? `/${local.replace(/^\//, '')}` : remote;
+        if (!url && !thumb) return <span className="text-apple-text-3 text-[11px] italic">URL 입력</span>;
+        const dom = (() => {
+          try { return new URL(url).hostname.replace(/^www\./, ''); }
+          catch { return url.slice(0, 30); }
+        })();
+        return (
+          <div className="flex items-center gap-1.5 w-full h-full">
+            {thumb ? (
+              <img src={thumb} alt="kr"
+                className="rounded border bg-white shrink-0 cursor-pointer"
+                style={{ width: 36, height: 36, objectFit: 'contain' }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (url) window.open(url, '_blank', 'popup,width=1400,height=900,left=100,top=50');
+                  else window.open(thumb, '_blank', 'popup,width=900,height=900,left=200,top=80');
+                }}
+                title={url ? "클릭 → URL 열기" : "한국 cover — 클릭 → 큰 이미지"}
+              />
+            ) : (
+              <div
+                onMouseDown={(e) => { if (url) e.stopPropagation(); }}
+                onClick={(e) => {
+                  if (!url) return;
+                  e.stopPropagation();
+                  window.open(url, '_blank', 'popup,width=1400,height=900,left=100,top=50');
+                }}
+                className={`shrink-0 w-9 h-9 rounded border bg-apple-bg-2 flex items-center justify-center text-[9px] text-apple-text-3 ${url ? 'cursor-pointer hover:bg-apple-bg' : ''}`}
+                title={url ? "URL 열기 (cover 미수집)" : ""}
+              >-</div>
+            )}
+            {url ? (
+              <a href={url} target="_blank" rel="noreferrer"
+                 onMouseDown={(e) => e.stopPropagation()}
+                 onClick={(e) => {
+                   e.preventDefault();
+                   e.stopPropagation();
+                   window.open(url, '_blank', 'popup,width=1400,height=900,left=100,top=50');
+                 }}
+                 className="text-apple-accent hover:underline text-[11px] truncate"
+                 title={url}>
+                {dom}
+              </a>
+            ) : <span className="text-apple-text-3 text-[11px] italic">URL 입력</span>}
+          </div>
+        );
+      },
+      headerTooltip: '한국 셀러 URL + cover 썸네일. [컨텐츠 제작] 시 fetch',
+    },
+    // R (5/3): 큐텐 일본 URL — 썸네일 + URL 통합. 경쟁가/경쟁배송 fetch source
+    {
+      field: 'qoo10_url', headerName: '큐텐 URL', width: 220, editable: true,
+      cellStyle: (p: any) => {
+        const u = (p.value || '').trim();
+        const dup = u && (urlDupCountsRef.current.qoo.get(u) || 0) > 1;
+        return {
+          whiteSpace: 'normal', fontSize: '11px',
+          background: dup ? 'rgba(245, 158, 11, 0.18)' : 'rgba(34, 197, 94, 0.07)',
+          padding: 2,
+        };
+      },
+      cellRenderer: (p: any) => {
+        if (p.data?.__expansion) return null;
+        const url = p.value || '';
+        const thumb = (p.data?.qoo10_cover_image_url || '').trim();
+        if (!url && !thumb) return <span className="text-apple-text-3 text-[11px] italic">큐텐 URL 입력</span>;
+        const dom = (() => {
+          try { return new URL(url).hostname.replace(/^www\./, ''); }
+          catch { return url.slice(0, 30); }
+        })();
+        return (
+          <div className="flex items-center gap-1.5 w-full h-full">
+            {thumb ? (
+              <img src={thumb} alt="jp"
+                className="rounded border bg-white shrink-0 cursor-pointer"
+                style={{ width: 36, height: 36, objectFit: 'contain' }}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (url) window.open(url, '_blank', 'popup,width=1400,height=900,left=100,top=50');
+                  else window.open(thumb, '_blank', 'popup,width=900,height=900,left=200,top=80');
+                }}
+                title={url ? "클릭 → URL 열기" : "큐텐 cover — 클릭 → 큰 이미지"}
+              />
+            ) : (
+              <div
+                onMouseDown={(e) => { if (url) e.stopPropagation(); }}
+                onClick={(e) => {
+                  if (!url) return;
+                  e.stopPropagation();
+                  window.open(url, '_blank', 'popup,width=1400,height=900,left=100,top=50');
+                }}
+                className={`shrink-0 w-9 h-9 rounded border bg-apple-bg-2 flex items-center justify-center text-[9px] text-apple-text-3 ${url ? 'cursor-pointer hover:bg-apple-bg' : ''}`}
+                title={url ? "URL 열기 (cover 미수집)" : ""}
+              >-</div>
+            )}
+            {url ? (
+              <a href={url} target="_blank" rel="noreferrer"
+                 onMouseDown={(e) => e.stopPropagation()}
+                 onClick={(e) => {
+                   e.preventDefault();
+                   e.stopPropagation();
+                   window.open(url, '_blank', 'popup,width=1400,height=900,left=100,top=50');
+                 }}
+                 className="text-apple-accent hover:underline text-[11px] truncate"
+                 title={url}>
+                {dom}
+              </a>
+            ) : <span className="text-apple-text-3 text-[11px] italic">큐텐 URL 입력</span>}
+          </div>
+        );
+      },
+      headerTooltip: '큐텐 일본 단품 URL + cover 썸네일. [컨텐츠 제작] 시 경쟁가/배송 fetch',
+    },
+    // V (5/3): 큐텐 등록 카테고리 — 클릭 시 picker 모달
+    {
+      field: 'qoo10_category_path', headerName: '큐텐 카테고리', width: 220,
+      cellStyle: { whiteSpace: 'normal', fontSize: '11px', cursor: 'pointer' },
+      cellRenderer: (p: any) => {
+        if (p.data?.__expansion) return null;
+        const path = p.value || '';
+        const code = p.data?.qoo10_category_code || '';
+        return (
+          <div
+            onClick={(e) => { e.stopPropagation(); setQoo10CatRowId(p.data?.id || null); }}
+            className="w-full h-full flex items-center"
+            title={code ? `code ${code}\n클릭 → 변경` : '클릭 → 카테고리 선택'}
+          >
+            {path
+              ? <span className="text-[11px] tracking-tight text-apple-text-2 line-clamp-2">{path}</span>
+              : <span className="text-[11px] text-apple-text-3 italic">카테고리 선택</span>}
+          </div>
+        );
+      },
+      headerTooltip: 'Qoo10_CategoryInfo.csv 의 소카테고리. 클릭 → 검색/cascade 모달',
+    },
+
+    // ─ 내 원가 섹션 — 모두 수기 입력 가능. 콤마 자동 strip.
+    //   그룹 색: 파랑 톤 (rgba(99, 102, 241, 0.05~0.10))
+    { field: 'weight_g', headerName: '무게(g)', width: 80, type: 'numericColumn',
+      editable: true, valueParser: parseNum,
+      cellStyle: COST_GROUP_STYLE },
     { field: 'item_price_krw', headerName: '구매가', width: 90, type: 'numericColumn',
-      valueFormatter: (p: any) => fmt.krw(p.value) },
-    { field: 'domestic_shipping_krw', headerName: '구매배송', width: 85, type: 'numericColumn',
+      editable: true, valueParser: parseNum,
       valueFormatter: (p: any) => fmt.krw(p.value),
+      cellStyle: COST_GROUP_STYLE },
+    { field: 'domestic_shipping_krw', headerName: '구매배송', width: 85, type: 'numericColumn',
+      editable: true, valueParser: parseNum,
+      valueFormatter: (p: any) => fmt.krw(p.value),
+      cellStyle: COST_GROUP_STYLE,
       headerTooltip: '구매처 → 사장님 사무실 배송비 (마진 계산 input)' },
     { headerName: '합계', width: 90, type: 'numericColumn',
       valueGetter: (p: any) => totalPurchaseKrw(p.data),
       valueFormatter: (p: any) => fmt.krw(p.value),
-      cellStyle: { color: '#374151', fontStyle: 'italic' } },
+      cellStyle: { ...COST_GROUP_STYLE, color: '#374151', fontStyle: 'italic' } },
     { field: 'shipping_packaging_krw', headerName: '포장+KSE', width: 90, type: 'numericColumn',
-      valueFormatter: (p: any) => fmt.krw(p.value) },
+      editable: true, valueParser: parseNum,
+      valueFormatter: (p: any) => fmt.krw(p.value),
+      cellStyle: COST_GROUP_STYLE },
 
-    // ─ 판매가 섹션 (엑셀 Y, AD 근처) ─
+    // ─ 경쟁가 그룹 — 경쟁가 + 경쟁배송 + 경쟁합계 (큐텐 URL 색과 동일 — 초록 톤)
     { field: 'competitor_price_jpy', headerName: '경쟁가(¥)', width: 95, type: 'numericColumn',
+      editable: true, valueParser: parseNum,
       valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
-      headerTooltip: '경쟁사 상품가 (배송비 제외) — 우측 패널에서 입력' },
+      cellStyle: COMPETITOR_GROUP_STYLE,
+      headerTooltip: '경쟁사 상품가 (배송비 제외) — 시트에서 직접 또는 우측 패널에서 입력' },
     { field: 'competitor_shipping_jpy', headerName: '경쟁배송(¥)', width: 100, type: 'numericColumn',
+      editable: true, valueParser: parseNum,
       valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
+      cellStyle: COMPETITOR_GROUP_STYLE,
       headerTooltip: '경쟁사 배송비 (¥) — 합계 계산용' },
     { headerName: '경쟁합계(¥)', width: 100, type: 'numericColumn',
       valueGetter: (p: any) => (p.data?.competitor_price_jpy || 0) + (p.data?.competitor_shipping_jpy || 0),
       valueFormatter: (p: any) => p.value ? `¥${fmt.jpy(p.value)}` : '-',
-      cellStyle: { color: '#6b7280', fontWeight: 'bold' },
+      cellStyle: { ...COMPETITOR_GROUP_STYLE, color: '#6b7280', fontWeight: 'bold' },
       headerTooltip: '경쟁가 + 경쟁배송 합계 (자동 계산)' },
     { headerName: '예상판매가(¥)', width: 110, type: 'numericColumn',
       valueGetter: (p: any) => {
@@ -556,6 +842,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
       },
       headerTooltip: '일반마진 20%를 달성하려면 필요한 엔화 판매가. 수수료·배송 모드 반영 정밀 역산. 내 판매가가 이 값 이상이면 녹색.' },
     { field: 'sell_price_jpy', headerName: '내 판매가(¥)', width: 110, type: 'numericColumn',
+      editable: true, valueParser: parseNum,
       valueFormatter: (p: any) => `¥${fmt.jpy(p.value)}`,
       cellStyle: { fontWeight: 'bold' },
       headerTooltip: '내가 큐텐에 등록할 판매가 (마진 계산 기준). 경쟁가·예상판매가 참고하여 수동 입력' },
@@ -715,18 +1002,21 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     },
     { field: 'qoo10_option_name', headerName: '큐텐 옵션', width: 130, hide: true,
       cellStyle: { fontSize: '12px' } as any },
-  ] as ColDef[]), [compositionRowId, onOpenDetailPanel]);
+  // deps 비움 — columnDefs 는 한 번만 만들고 영원히 stable. cellRenderer 안에서는
+  // gridRef.current?.api 또는 setState 함수 (stable) 만 사용하므로 closure 문제 없음.
+  ] as ColDef[]), []);
 
+  // sortable: true — 헤더 클릭으로 오름/내림차순.
+  // 편집 시 자동 재정렬은 onCellValueChanged 의 forEachNodeAfterFilterAndSort 로 displayed 순서 보존.
+  // cellEditor 명시 — 기본값이 timing 이슈로 input 재mount 되는 케이스 차단.
   const defaultColDef: ColDef = useMemo(() => ({
     resizable: true, sortable: true, filter: false, suppressHeaderMenuButton: false,
+    cellEditor: 'agTextCellEditor',
   }), []);
 
   const onCellValueChanged = (e: any) => {
     const api = gridRef.current?.api as any;
     if (!api) return;
-    try {
-      api.applyColumnState?.({ defaultState: { sort: null } });
-    } catch { /* ignore */ }
     // R-7: 다른 필드 편집 시 미정 → 진행중 자동 (사장님 한 번이라도 손대면 진행중으로 간주)
     if (e?.data && e?.colDef?.field !== 'registration_status') {
       const cur = e.data.registration_status || '미정';
@@ -734,13 +1024,44 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         e.data.registration_status = 'in_progress';
       }
     }
+    // 무게 변경 시 포장+KSE 자동 계산 — 메인 시트와 옵션 sub-row 모두 같은 spec
+    if (e?.colDef?.field === 'weight_g' && e.data) {
+      const w = Number(e.data.weight_g) || 0;
+      e.data.shipping_packaging_krw = w > 0 ? lookupKseShipping(w) : (e.data.shipping_packaging_krw || 0);
+    }
+    // 스크롤 위치 보존 — setRows 후 AG Grid 가 viewport 를 reset 하는 부작용 방지
+    const root = (gridRef.current as any)?.eGridDiv as HTMLElement | undefined;
+    const viewport = root?.querySelector('.ag-body-viewport') as HTMLElement | null;
+    const savedScrollLeft = viewport?.scrollLeft || 0;
+    const savedScrollTop = viewport?.scrollTop || 0;
+    // 편집 시 자동 재정렬 방지 — 현재 보이는 순서를 setRows 에 그대로 반영하고 sort 해제.
+    // forEachNodeAfterFilterAndSort = displayed 순서. 변경 행만 새 ref 로 spread.
+    const editedId = e?.data?.id;
     const newRows: SheetRow[] = [];
-    api.forEachNode((node: any) => {
-      if (node.data && !node.data.__expansion) newRows.push(node.data);
-    });
-    setRows(newRows);
+    const fn = (node: any) => {
+      if (node.data && !node.data.__expansion) {
+        newRows.push(node.data.id === editedId ? { ...node.data } : node.data);
+      }
+    };
+    if (typeof api.forEachNodeAfterFilterAndSort === 'function') {
+      api.forEachNodeAfterFilterAndSort(fn);
+    } else {
+      api.forEachNode(fn);
+    }
     saveSheet(newRows);
-    api.refreshCells?.({ force: true });
+    // setRows 를 transition priority — 사장님이 다음 row 에 빠르게 typing 시작했을 때
+    // setRows rerender 가 active cellEditor input 을 reset 하는 race 방지.
+    // typing 완료 후 idle 시점에 react rerender 되어 valueGetter 재계산.
+    startTransition(() => {
+      setRows(newRows);
+    });
+    requestAnimationFrame(() => {
+      const v = root?.querySelector('.ag-body-viewport') as HTMLElement | null;
+      if (v) {
+        v.scrollLeft = savedScrollLeft;
+        v.scrollTop = savedScrollTop;
+      }
+    });
   };
 
   // ─── 컬럼 상태 저장/복원 (너비·숨김·순서 localStorage) ───
@@ -769,14 +1090,19 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   const onColumnMoved = (e: any) => { if (e.finished) saveColState(); };
   // R-7: 컬럼 pin/unpin 변경 저장 (사장님이 우클릭 → Pin Left/No Pin 시 유지)
   const onColumnPinned = () => { saveColState(); };
+  // 5/3: sort (헤더 클릭) 도 저장 — 마지막 정렬 상태 유지
+  const onSortChangedSave = () => { saveColState(); };
 
-  // R-7: 마우스 드래그 다중 선택 (mouse down + drag → hovering 행 모두 선택/해제 토글)
+  // 마우스 드래그 다중 선택 — editable 셀 (가격/URL/상품명/카테고리 등) 은 skip.
+  // 편집 진입과 충돌 방지. 다중 선택은 체크박스 컬럼 또는 비-editable 셀 (마진/이익/점수 등) 에서.
   const dragSelectRef = useRef<{ mode: 'select' | 'deselect' } | null>(null);
   const onCellMouseDown = (e: any) => {
-    // 편집 가능 셀(노랑 배경) 또는 product_name(detail panel 열림) 은 drag select 비활성
+    if (e?.event?.button !== undefined && e.event.button !== 0) return;  // 좌클릭만
+    // editable 셀은 편집 진입 우선 — selection 토글 안 함
+    if (e.colDef?.editable === true) return;
     const colId = e.column?.getColId?.();
-    const editableSkip = ['product_name', 'qoo10_marketing'];
-    if (e.colDef?.editable === true || editableSkip.includes(colId)) return;
+    const skipColumns = ['qoo10_marketing'];
+    if (skipColumns.includes(colId)) return;
     const node = e.node;
     if (!node || node.data?.__expansion) return;
     const wasSelected = node.isSelected();
@@ -795,7 +1121,192 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     window.addEventListener('mouseup', onUp);
     return () => window.removeEventListener('mouseup', onUp);
   }, []);
-  const onGridReady = () => { restoreColState(); };
+  // 셀 복사·붙여넣기 — focused cell 결정 3중 fallback (화살표 navigate + 마우스 클릭 모두 대응)
+  //   (a) api.getFocusedCell() — AG Grid 정상 state
+  //   (b) lastFocusedRef — onCellFocused event 로 우리가 추적한 ref (API 가 null 일 때)
+  //   (c) e.target.closest('.ag-cell') — DOM 에서 직접 추출 (마지막 fallback)
+  const resolveFocusedCell = (e: ClipboardEvent): { rowIndex: number; colId: string } | null => {
+    const api = gridRef.current?.api as any;
+    if (!api) return null;
+    const focused = api.getFocusedCell?.();
+    if (focused && focused.column) {
+      return { rowIndex: focused.rowIndex, colId: focused.column.getColId() };
+    }
+    if (lastFocusedRef.current) return lastFocusedRef.current;
+    const cellEl = (e.target as HTMLElement)?.closest?.('.ag-cell') as HTMLElement | null;
+    if (cellEl) {
+      const ci = cellEl.getAttribute('col-id');
+      const rowEl = cellEl.closest('.ag-row') as HTMLElement | null;
+      const ri = rowEl?.getAttribute('row-index');
+      if (ci && ri != null) return { rowIndex: Number(ri), colId: ci };
+    }
+    return null;
+  };
+
+  const onCopy = (e: ClipboardEvent) => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const tgt = e.target as HTMLElement | null;
+    const root = (gridRef.current as any)?.eGridDiv as HTMLElement | undefined;
+    const inGrid = !!(root && tgt && root.contains(tgt));
+    // grid 외부 input/textarea 면 native (text selection)
+    if (!inGrid && tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+    // grid 안 input (편집 모드) 는 native (사장님이 input 안 일부 text selection 후 복사)
+    if (inGrid && tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return;
+    const cell = resolveFocusedCell(e);
+    if (!cell) return;
+    const node = api.getDisplayedRowAtIndex?.(cell.rowIndex);
+    if (!node?.data) return;
+    const value = node.data[cell.colId];
+    if (value === undefined || value === null) return;
+    e.preventDefault();
+    e.clipboardData?.setData('text/plain', String(value));
+  };
+
+  const onPaste = (e: ClipboardEvent) => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const tgt = e.target as HTMLElement | null;
+    const root = (gridRef.current as any)?.eGridDiv as HTMLElement | undefined;
+    const inGrid = !!(root && tgt && root.contains(tgt));
+    // grid 외부 input/textarea 만 native paste (다른 페이지 검색창 등)
+    if (!inGrid && tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+    const cell = resolveFocusedCell(e);
+    if (!cell) return;
+    const column = api.getColumn?.(cell.colId);
+    if (!column) return;
+    const colDef = column.getColDef();
+    if (!colDef.editable) return;
+    const node = api.getDisplayedRowAtIndex?.(cell.rowIndex);
+    if (!node?.data) return;
+    e.preventDefault();
+    const text = e.clipboardData?.getData('text') || '';
+    const cleaned = text.trim();
+    let parsed: any = cleaned;
+    if (colDef.type === 'numericColumn') {
+      const n = Number(cleaned.replace(/[,\s]/g, ''));
+      parsed = isFinite(n) ? n : 0;
+    }
+    // 편집 중이면 stopEditing (cancel) 후 setDataValue
+    try { if (api.getEditingCells?.()?.length > 0) api.stopEditing?.(true); } catch {}
+    node.setDataValue(cell.colId, parsed);
+  };
+
+  const onGridReady = () => {
+    restoreColState();
+    // 셀 copy/paste — window capture phase. focused cell 만 있으면 클릭 없이도 작동.
+    window.addEventListener('copy', onCopy, true);
+    window.addEventListener('paste', onPaste, true);
+    (gridRef.current as any).__cpCleanup = () => {
+      window.removeEventListener('copy', onCopy, true);
+      window.removeEventListener('paste', onPaste, true);
+    };
+    // 키보드 단축키 — Ctrl+Z, Ctrl+Shift++, Backspace/Delete (셀 값 통째 삭제)
+    const onShortcut = (e: KeyboardEvent) => {
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) return;
+      // Backspace/Delete — focused 셀 (편집 모드 X) 값 통째 삭제 (엑셀 동작)
+      if (!e.ctrlKey && !e.metaKey && !e.shiftKey && (e.key === 'Backspace' || e.key === 'Delete')) {
+        const apiCur = gridRef.current?.api as any;
+        const focused = apiCur?.getFocusedCell?.();
+        if (!focused) return;
+        const colDef = focused.column.getColDef();
+        if (!colDef.editable) return;
+        const node = apiCur?.getDisplayedRowAtIndex?.(focused.rowIndex);
+        if (!node?.data) return;
+        e.preventDefault();
+        const newVal = colDef.type === 'numericColumn' ? 0 : '';
+        node.setDataValue(focused.column.getColId(), newVal);
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey)) return;
+      // Ctrl+Z
+      if (!e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      // Ctrl+Shift++ (또는 Ctrl++)
+      if (e.key === '+' || e.key === '=' || e.code === 'Equal' || e.code === 'NumpadAdd') {
+        e.preventDefault();
+        insertRowAboveSelected();
+      }
+    };
+    window.addEventListener('keydown', onShortcut, true);
+    (gridRef.current as any).__shortcutCleanup = () => {
+      window.removeEventListener('keydown', onShortcut, true);
+    };
+    // 미들 클릭 가로 스크롤 — capture phase + AG Grid v34 의 가로 viewport 동시 동기화
+    //   .ag-center-cols-viewport 가 실제 가로 스크롤 element (pinned 제외 가운데 cols)
+    //   .ag-body-horizontal-scroll-viewport 도 동시 sync 필요 (스크롤바)
+    const root = (gridRef.current as any)?.eGridDiv as HTMLElement | undefined;
+    if (!root) return;
+    let panning = false;
+    let startX = 0;
+    let startScroll = 0;
+    const isInGrid = (target: EventTarget | null) =>
+      target instanceof Node && root.contains(target);
+    const getHorzViewports = () => Array.from(root.querySelectorAll<HTMLElement>(
+      '.ag-center-cols-viewport, .ag-body-horizontal-scroll-viewport'
+    ));
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      if (!isInGrid(e.target)) return;
+      const vps = getHorzViewports();
+      if (vps.length === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      panning = true;
+      startX = e.clientX;
+      startScroll = vps[0].scrollLeft;
+      document.body.style.cursor = 'grabbing';
+    };
+    const onMove = (e: MouseEvent) => {
+      if (!panning) return;
+      e.preventDefault();
+      const newLeft = startScroll - (e.clientX - startX);
+      // 모든 가로 viewport 동시 동기화 (AG Grid 내부 sync 가 늦거나 안 되는 경우 대비)
+      getHorzViewports().forEach(v => { v.scrollLeft = newLeft; });
+    };
+    const onUp = () => {
+      if (!panning) return;
+      panning = false;
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('mousedown', onDown, true);
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('mouseup', onUp, true);
+    const onAuxClick = (e: MouseEvent) => {
+      if (e.button === 1 && isInGrid(e.target)) e.preventDefault();
+    };
+    window.addEventListener('auxclick', onAuxClick, true);
+    (gridRef.current as any).__panCleanup = () => {
+      window.removeEventListener('mousedown', onDown, true);
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('mouseup', onUp, true);
+      window.removeEventListener('auxclick', onAuxClick, true);
+    };
+  };
+  useEffect(() => () => {
+    try { (gridRef.current as any)?.__panCleanup?.(); } catch {}
+    try { (gridRef.current as any)?.__cpCleanup?.(); } catch {}
+    try { (gridRef.current as any)?.__shortcutCleanup?.(); } catch {}
+  }, []);
+
+  // history stack 자동 관리 — rows 변경 시 직전 snapshot push (max 50)
+  // 폴링 fetch 같은 자동 갱신은 __skipNextHistory flag 로 제외
+  const lastRowsRef = useRef<SheetRow[]>(rows);
+  useEffect(() => {
+    const skipFlag = (gridRef.current as any)?.__skipNextHistory;
+    if (skipFlag) {
+      (gridRef.current as any).__skipNextHistory = false;
+    } else if (lastRowsRef.current && lastRowsRef.current !== rows) {
+      const stack = ((gridRef.current as any).__history ||= []) as SheetRow[][];
+      stack.push(lastRowsRef.current);
+      if (stack.length > 50) stack.shift();
+    }
+    lastRowsRef.current = rows;
+  }, [rows]);
 
   const toggleColumn = (colId: string) => {
     const api = gridRef.current?.api as any;
@@ -902,9 +1413,47 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     );
     setRows(sorted);
     saveSheet(sorted);
-    // 혹시 사용자가 컬럼 헤더 클릭으로 설정한 sort가 남아있으면 해제
+    // 컬럼 헤더 sort 만 해제 (5/3: defaultState 대신 state 기반 — 너비/고정 보존)
     try {
-      api?.applyColumnState?.({ defaultState: { sort: null } });
+      const cur = api?.getColumnState?.() || [];
+      const cleared = cur.map((s: any) => ({ ...s, sort: null, sortIndex: null }));
+      api?.applyColumnState?.({ state: cleared, applyOrder: false });
+    } catch { /* ignore */ }
+  };
+
+  // 선택 행 위/아래 한 칸 이동 — 인접 선택 그룹은 통째로 이동
+  const moveSelected = (dir: 'up' | 'down') => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    const sel: SheetRow[] = api.getSelectedRows?.() || [];
+    if (sel.length === 0) {
+      alert('선택된 행 없음. 좌측 체크박스로 선택 후 ↑/↓ 누르세요.');
+      return;
+    }
+    const ids = new Set(sel.map(s => s.id));
+    setRows(prev => {
+      const arr = [...prev];
+      if (dir === 'up') {
+        for (let i = 1; i < arr.length; i++) {
+          if (ids.has(arr[i].id) && !ids.has(arr[i - 1].id)) {
+            [arr[i - 1], arr[i]] = [arr[i], arr[i - 1]];
+          }
+        }
+      } else {
+        for (let i = arr.length - 2; i >= 0; i--) {
+          if (ids.has(arr[i].id) && !ids.has(arr[i + 1].id)) {
+            [arr[i], arr[i + 1]] = [arr[i + 1], arr[i]];
+          }
+        }
+      }
+      saveSheet(arr);
+      return arr;
+    });
+    // 정렬 헤더 sort 해제 — 수동 순서 유지
+    try {
+      const cur = api?.getColumnState?.() || [];
+      const cleared = cur.map((s: any) => ({ ...s, sort: null, sortIndex: null }));
+      api?.applyColumnState?.({ state: cleared, applyOrder: false });
     } catch { /* ignore */ }
   };
 
@@ -931,6 +1480,33 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     const next = rows.map(r => selIds.has(r.id) ? { ...r, match_decision: 'rejected' as const } : r);
     setRows(next);
     saveSheet(next);
+  };
+
+  // 선택 행의 sell_price_jpy 를 권장가(20%) 로 일괄 변경
+  const applyTargetPriceToSelected = () => {
+    const gridApi = gridRef.current?.api as any;
+    if (!gridApi) return;
+    const sel: SheetRow[] = gridApi.getSelectedRows?.() || [];
+    if (sel.length === 0) {
+      alert('선택된 행 없음. 좌측 체크박스로 선택 후 다시 누르세요.');
+      return;
+    }
+    const updates = sel.map(r => ({ id: r.id, target: Math.round(computeTargetJpy(r, TARGET_MARGIN_NORMAL)) }));
+    const valid = updates.filter(u => u.target > 0);
+    if (valid.length === 0) {
+      alert('권장가 계산 가능한 행 0개 (구매가/포장+KSE/환율 입력 확인).');
+      return;
+    }
+    if (!confirm(
+      `${valid.length}개 행의 [내 판매가] 를 권장가(20% 마진) 로 일괄 변경?\n` +
+      `\n예: ${valid.slice(0, 3).map(v => `¥${v.target.toLocaleString()}`).join(', ')}` +
+      (valid.length > 3 ? ` ...` : '')
+    )) return;
+    const idMap = new Map(valid.map(v => [v.id, v.target]));
+    const next = rows.map(r => idMap.has(r.id) ? { ...r, sell_price_jpy: idMap.get(r.id)! } : r);
+    setRows(next);
+    saveSheet(next);
+    try { gridApi.refreshCells?.({ force: true }); } catch {}
   };
 
   const regenerateQoo10Content = async () => {
@@ -966,6 +1542,145 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
     saveSheet(next);
   };
 
+  // 선택 행 위에 새 빈 행 삽입 (엑셀 Ctrl+Shift++)
+  const insertRowAboveSelected = () => {
+    const api = gridRef.current?.api as any;
+    const sel: SheetRow[] = api?.getSelectedRows?.() || [];
+    const newRow = newSheetRow({ source: '수동', product_name: '' });
+    setRows(prev => {
+      let next: SheetRow[];
+      if (sel.length === 0) {
+        next = [...prev, newRow];
+      } else {
+        const firstId = sel[0].id;
+        const idx = prev.findIndex(r => r.id === firstId);
+        next = idx >= 0
+          ? [...prev.slice(0, idx), newRow, ...prev.slice(idx)]
+          : [...prev, newRow];
+      }
+      saveSheet(next);
+      return next;
+    });
+  };
+
+  // Ctrl+Z undo — history stack 기반 마지막 변경 되돌리기
+  const undo = () => {
+    const stack = (gridRef.current as any)?.__history as SheetRow[][] | undefined;
+    if (!stack || stack.length === 0) return;
+    const prev = stack.pop();
+    if (prev) {
+      // undo 자체는 history 에 push 하지 않도록 skip flag
+      (gridRef.current as any).__skipNextHistory = true;
+      setRows(prev);
+      saveSheet(prev);
+    }
+  };
+
+  // R (5/3): 선택 행의 한국 URL + 큐텐 URL 으로 컨텐츠 제작 일괄
+  const bulkRegenerateFromUrls = async () => {
+    const gridApi = gridRef.current?.api as any;
+    if (!gridApi) return;
+    const sel: SheetRow[] = gridApi.getSelectedRows?.() || [];
+    if (sel.length === 0) {
+      alert('선택된 행 없음. 좌측 체크박스로 선택 후 다시 누르세요.');
+      return;
+    }
+    const validRows = sel.filter(r => {
+      const u = (r.product_url || '').trim().toLowerCase();
+      const q = (r.qoo10_url || '').trim().toLowerCase();
+      const hasKr = u && (u.includes('naver.com') || u.includes('coupang.com'));
+      const hasQoo = q.includes('qoo10.jp');
+      return hasKr || hasQoo;
+    });
+    if (validRows.length === 0) {
+      alert(
+        `선택 ${sel.length}개 행 중 한국 URL (네이버/쿠팡) 또는 큐텐 URL 가진 행 0개.\n` +
+        `한국 URL 또는 큐텐 URL 컬럼에 입력 후 다시 시도하세요.`
+      );
+      return;
+    }
+    const krOnly = validRows.filter(r => {
+      const u = (r.product_url || '').trim().toLowerCase();
+      const q = (r.qoo10_url || '').trim().toLowerCase();
+      return (u.includes('naver.com') || u.includes('coupang.com')) && !q.includes('qoo10.jp');
+    }).length;
+    const qooOnly = validRows.filter(r => {
+      const u = (r.product_url || '').trim().toLowerCase();
+      const q = (r.qoo10_url || '').trim().toLowerCase();
+      return q.includes('qoo10.jp') && !(u.includes('naver.com') || u.includes('coupang.com'));
+    }).length;
+    const both = validRows.length - krOnly - qooOnly;
+    const skipped = sel.length - validRows.length;
+    if (!confirm(
+      `${validRows.length}개 행 컨텐츠 제작?\n` +
+      `  • 한국 URL (네이버/쿠팡만) → SEO + 이미지 + JP 상세 카피\n` +
+      `  • 큐텐 URL → 경쟁가 + 경쟁배송 + 옵션\n` +
+      `  • 한국+큐텐 모두: ${both}개  /  한국만: ${krOnly}개  /  큐텐만: ${qooOnly}개\n` +
+      (skipped > 0 ? `  • ${skipped}개는 URL 없음 — 스킵\n` : '') +
+      `\n* 한국 URL 이 네이버/쿠팡이 아니면 자동으로 무시되고 큐텐만 fetch.\n` +
+      `예상 시간: 한국 URL 평균 100-150s/건 (JP 상세 카피 포함), 큐텐만 ~10s\n` +
+      `진행률: 시트 상단 청색 패널에서 실시간 확인. 완료 시 시트 자동 갱신.`
+    )) return;
+    try {
+      const r = await api.post<any>('/automation/url-batch-regenerate', {
+        row_ids: validRows.map(v => v.id),
+        include_jp_detail: true,
+        skip_if_filled: false,
+      });
+      if (r.data.error) {
+        alert(`✗ ${r.data.error}`);
+        return;
+      }
+      alert(
+        `✓ task 시작 — ${r.data.total}건 처리 중\n` +
+        `진행률: 시트 상단 청색 패널.\n` +
+        `완료 시 자동으로 시트 새로고침됩니다 (커버/경쟁가/SEO 채워짐).\n` +
+        `[!] 사장님 메인 Chrome 켜져있어야 (Naver URL) — Coupang/큐텐 은 무관.`
+      );
+      // 폴링 — task 완료 시 자동 sheet reload
+      const taskId = r.data.task_id;
+      if (taskId) pollAndReloadSheet(taskId);
+    } catch (e: any) {
+      alert(`✗ ${e?.response?.data?.detail || e.message}`);
+    }
+  };
+
+  // task 진행 polling (2s 간격) — 진행 중에도 부분 저장된 sheet 를 updated_at 기반 감지 후
+  // 즉시 setRows. 완료 시 종료. 사장님 수동 새로고침 불필요.
+  const pollAndReloadSheet = async (taskId: string) => {
+    let lastUpdatedAt = '';
+    for (let i = 0; i < 900; i++) {
+      await new Promise(res => setTimeout(res, i === 0 ? 800 : 2000));
+      let isDone = false;
+      try {
+        const sd = await api.get<{ data: SheetRow[] | null; updated_at: string | null }>('/user-data/product_sheet');
+        const upd = sd.data?.updated_at || '';
+        if (upd && upd !== lastUpdatedAt) {
+          // 사장님이 셀 편집 중이면 setRows 보류 — 입력값 보존. 다음 polling 에서 재시도.
+          const editing = (gridRef.current?.api as any)?.getEditingCells?.()?.length > 0;
+          if (editing) {
+            // updated_at 갱신은 안 함 — 다음 회차에서도 변경 감지되도록
+          } else {
+            lastUpdatedAt = upd;
+            const data = sd.data?.data;
+            if (Array.isArray(data) && data.length > 0) {
+              (gridRef.current as any).__skipNextHistory = true;
+              setRows(data);
+              saveSheet(data);
+              try { gridRef.current?.api?.refreshCells?.({ force: true }); } catch {}
+            }
+          }
+        }
+      } catch { /* skip */ }
+      try {
+        const r = await api.get<any>(`/tasks/${taskId}`);
+        const status = r.data?.status;
+        if (status === 'completed' || status === 'failed') isDone = true;
+      } catch { /* skip */ }
+      if (isDone) return;
+    }
+  };
+
 
   // 합계
   const totals = useMemo(() => {
@@ -979,38 +1694,115 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
   }, [filteredRows]);
 
   return (
-    <div className="bg-white rounded-lg shadow">
-      <div className="px-4 py-3 border-b flex items-center justify-between">
+    <div className="bg-apple-bg">
+      <div className="sticky top-0 z-30 bg-apple-bg px-6 py-4 border-b flex items-start justify-between gap-4 flex-wrap" style={{ borderBottomColor: 'var(--color-apple-border)' }}>
         <div>
-          <h3 className="font-bold text-lg">📋 상품 시트</h3>
-          <div className="text-xs text-gray-500 mt-0.5">
-            노란색 셀만 편집 가능. 편집하면 오른쪽 지표가 즉시 재계산됩니다.
+          <h3 className="apple-title-2">상품 시트</h3>
+          <div className="text-[12px] text-apple-text-3 mt-1 tracking-tight">
+            노란 셀만 편집 가능. 편집 시 오른쪽 지표 즉시 재계산.
           </div>
           <FilterThresholdsBadge />
         </div>
-        <div className="flex gap-2 relative items-center">
-          <SheetSourceToolbar onMergeRows={onMergeSourceRows} />
-          <button onClick={sortByScore} className="px-3 py-1.5 bg-amber-500 text-white text-xs rounded hover:bg-amber-600">
-            🔄 점수순 정렬
+        <div className="flex gap-1.5 items-center flex-wrap">
+          {!fullscreen && <SheetSourceToolbar onMergeRows={onMergeSourceRows} />}
+
+          {/* 풀스크린 (엑셀 모드) 토글 — sidebar/header/sourceToolbar 숨김 */}
+          <button onClick={toggleFullscreen}
+            className="apple-btn apple-btn-sm flex items-center gap-1.5 font-semibold"
+            style={{ background: '#1d4ed8', color: 'white', borderColor: '#1d4ed8' }}
+            title={fullscreen ? "엑셀 모드 OFF — 사이드바/상단 메뉴 다시 표시" : "엑셀 모드 ON — 사이드바/상단/소싱 패널 모두 숨겨 풀페이지로"}>
+            {fullscreen ? <Minimize2 size={14} strokeWidth={2.5} /> : <Maximize2 size={14} strokeWidth={2.5} />}
+            <span>{fullscreen ? '엑셀 ON' : '엑셀 모드'}</span>
+          </button>
+
+          {/* 삭제 — 빨간 강조, 엑셀 모드 옆 잘 보이는 위치 */}
+          <button onClick={deleteSelected}
+            className="apple-btn apple-btn-sm flex items-center gap-1.5 font-semibold"
+            style={{ background: '#dc2626', color: 'white', borderColor: '#dc2626' }}
+            title="선택 행 삭제 (영구)">
+            <Trash2 size={14} strokeWidth={2.5} />
+            <span>삭제</span>
+          </button>
+
+          {/* Primary action — 빈 행 추가 */}
+          <button onClick={addEmptyRow}
+            className="apple-btn apple-btn-primary apple-btn-sm flex items-center gap-1.5"
+            title="빈 행 추가 (수동 입력용)">
+            <Plus size={14} strokeWidth={2.25} />
+            <span>빈 행</span>
+          </button>
+
+          {/* 선택 행 순서 이동 */}
+          <button onClick={() => moveSelected('up')}
+            className="apple-btn apple-btn-ghost apple-btn-sm flex items-center gap-1.5"
+            title="선택 행 위로 한 칸 이동">
+            <ChevronUp size={14} strokeWidth={1.75} />
+            <span>위로</span>
+          </button>
+          <button onClick={() => moveSelected('down')}
+            className="apple-btn apple-btn-ghost apple-btn-sm flex items-center gap-1.5"
+            title="선택 행 아래로 한 칸 이동">
+            <ChevronDown size={14} strokeWidth={1.75} />
+            <span>아래</span>
+          </button>
+
+          <button onClick={rejectSelected}
+            className="apple-btn apple-btn-ghost apple-btn-sm flex items-center gap-1.5"
+            title="선택 행 검수 거부 표시 — 시트에서 안 사라짐, 필터로 제외 가능">
+            <Ban size={14} strokeWidth={1.75} />
+            <span>거부</span>
+          </button>
+          <button onClick={applyTargetPriceToSelected}
+            className="apple-btn apple-btn-ghost apple-btn-sm flex items-center gap-1.5"
+            title="선택 행: 내 판매가 = 권장가(20% 마진) 일괄 변경">
+            <ArrowDownAZ size={14} strokeWidth={1.75} />
+            <span>권장가 적용</span>
+          </button>
+          <button onClick={regenerateQoo10Content}
+            className="apple-btn apple-btn-ghost apple-btn-sm flex items-center gap-1.5"
+            title="선택 keyword_jp 의 큐텐 SEO 콘텐츠 재생성 (keyword 기반)">
+            <Wand2 size={14} strokeWidth={1.75} />
+            <span>SEO 재생성</span>
+          </button>
+          <button onClick={bulkRegenerateFromUrls}
+            className="apple-btn apple-btn-primary apple-btn-sm flex items-center gap-1.5"
+            title="선택 행: 한국 URL → SEO/이미지/JP 카피 + 큐텐 URL → 경쟁가/경쟁배송 자동 채움">
+            <Wand2 size={14} strokeWidth={2} />
+            <span>컨텐츠 제작</span>
+          </button>
+
+          {/* Divider */}
+          <span className="w-px h-5 mx-1" style={{ background: 'var(--color-apple-border)' }} />
+
+          {/* View controls */}
+          <button onClick={sortByScore}
+            className="apple-btn apple-btn-ghost apple-btn-sm flex items-center gap-1.5"
+            title="점수순 정렬">
+            <ArrowDownAZ size={14} strokeWidth={1.75} />
+            <span>정렬</span>
           </button>
           <div className="relative" ref={colDropdownRef}>
             <button
               onClick={() => setColDropdownOpen(v => !v)}
-              className="px-3 py-1.5 bg-gray-600 text-white text-xs rounded hover:bg-gray-700"
+              className="apple-btn apple-btn-ghost apple-btn-sm flex items-center gap-1.5"
+              title="컬럼 표시 설정"
             >
-              👁 컬럼 표시
+              <Eye size={14} strokeWidth={1.75} />
+              <span>컬럼</span>
             </button>
             {colDropdownOpen && (
-              <div className="absolute right-0 top-full mt-1 bg-white border shadow-lg rounded z-20 w-64 max-h-80 overflow-y-auto">
-                <div className="p-2 border-b flex justify-between items-center sticky top-0 bg-white">
-                  <span className="text-xs font-semibold">컬럼 선택 ({columnList.length})</span>
-                  <button onClick={resetColState} className="text-[10px] text-blue-600 hover:underline"
-                    title="신규 컬럼이 안 보이면 초기화 — 모든 컬럼 default 상태로 (저장된 column state 삭제)">
+              <div className="absolute right-0 top-full mt-2 bg-apple-bg border rounded-2xl z-20 w-64 max-h-80 overflow-y-auto"
+                   style={{ borderColor: 'var(--color-apple-border)', boxShadow: '0 8px 30px rgba(0,0,0,0.12)' }}>
+                <div className="p-3 border-b flex justify-between items-center sticky top-0 bg-apple-bg"
+                     style={{ borderBottomColor: 'var(--color-apple-border)' }}>
+                  <span className="text-[12px] font-semibold tracking-tight">컬럼 ({columnList.length})</span>
+                  <button onClick={resetColState} className="text-[11px] text-apple-accent hover:underline"
+                    title="신규 컬럼이 안 보이면 초기화">
                     초기화
                   </button>
                 </div>
                 {columnList.map((c: any) => (
-                  <label key={c.colId} className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer text-xs">
+                  <label key={c.colId} className="flex items-center gap-2 px-3 py-1.5 hover:bg-apple-bg-2 cursor-pointer text-[12px] tracking-tight">
                     <input
                       type="checkbox"
                       checked={c.visible}
@@ -1022,20 +1814,6 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
               </div>
             )}
           </div>
-          <button onClick={addEmptyRow} className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">
-            ➕ 빈 행 추가
-          </button>
-          <button onClick={deleteSelected} className="px-3 py-1.5 bg-red-500 text-white text-xs rounded hover:bg-red-600">
-            🗑 선택 삭제
-          </button>
-          <button onClick={rejectSelected} className="px-3 py-1.5 bg-orange-500 text-white text-xs rounded hover:bg-orange-600"
-            title="검수 거부 표시 — 매칭 컬럼 'rejected' 배지 (시트에서 안 사라짐, 필터로 제외 가능)">
-            🚫 검수 거부
-          </button>
-          <button onClick={regenerateQoo10Content} className="px-3 py-1.5 bg-indigo-500 text-white text-xs rounded hover:bg-indigo-600"
-            title="선택 keyword_jp 의 큐텐 SEO 콘텐츠 재생성">
-            ✨ 콘텐츠 재생성
-          </button>
         </div>
       </div>
 
@@ -1223,7 +2001,7 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
         <span>합계 순이익: <b className={totals.totalProfit >= 0 ? 'text-emerald-700' : 'text-red-600'}>{fmt.krw(totals.totalProfit)}원</b></span>
       </div>
 
-      <div style={{ height: 600, width: '100%' }}>
+      <div style={{ height: fullscreen ? 'calc(100vh - 110px)' : 'calc(100vh - 280px)', minHeight: 480, width: '100%' }}>
         <AgGridReact
           ref={gridRef}
           theme={myTheme}
@@ -1234,11 +2012,41 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
           suppressRowClickSelection={false}
           rowMultiSelectWithClick={true}
           stopEditingWhenCellsLoseFocus={true}
+          onCellFocused={(e: any) => {
+            if (e?.rowIndex != null && e?.column) {
+              try { lastFocusedRef.current = { rowIndex: e.rowIndex, colId: e.column.getColId() }; } catch {}
+            }
+          }}
+          onCellEditingStarted={(e: any) => {
+            (gridRef.current as any).__isEditing = true;
+            // eslint-disable-next-line no-console
+            console.log('[sheet-debug] EDIT START', e.column?.getColId?.(), 'row', e.rowIndex, 'cur:', e.value);
+          }}
+          onCellEditingStopped={(e: any) => {
+            (gridRef.current as any).__isEditing = false;
+            // eslint-disable-next-line no-console
+            console.log('[sheet-debug] EDIT STOP', e.column?.getColId?.(), 'row', e.rowIndex, 'final:', e.value);
+          }}
           onCellValueChanged={onCellValueChanged}
+          navigateToNextCell={(params: any) => {
+            // 화살표 navigate 시 viewport scroll reset 방지 — 위치 보존 후 다음 셀 focus
+            const root = (gridRef.current as any)?.eGridDiv as HTMLElement | undefined;
+            const viewport = root?.querySelector('.ag-body-viewport') as HTMLElement | null;
+            const savedLeft = viewport?.scrollLeft || 0;
+            const savedTop = viewport?.scrollTop || 0;
+            requestAnimationFrame(() => {
+              if (viewport) {
+                viewport.scrollLeft = savedLeft;
+                viewport.scrollTop = savedTop;
+              }
+            });
+            return params.nextCellPosition;
+          }}
           onColumnResized={onColumnResized}
           onColumnMoved={onColumnMoved}
           onColumnVisible={onColumnVisible}
           onColumnPinned={onColumnPinned}
+          onSortChanged={onSortChangedSave}
           onCellMouseDown={onCellMouseDown}
           onCellMouseOver={onCellMouseOver}
           onGridReady={onGridReady}
@@ -1307,7 +2115,8 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
               const n = parent?.compositions?.length || 0;
               return Math.min(600, 180 + n * 40);
             }
-            return 30;
+            // 5/3: 한국 SKU명 2줄 표시 위해 기본 행 높이 30→48
+            return 48;
           }}
           isRowSelectable={(p: any) => !p.data?.__expansion}
         />
@@ -1326,14 +2135,87 @@ function ProductSheet({ rows, setRows }: { rows: SheetRow[]; setRows: (r: SheetR
             const next = rows.map(r => r.id === detailRow.id ? { ...r, ...patch } : r);
             saveSheet(next);
             setRows(next);
+            // J (5/3): detailRow 도 갱신 — 패널이 row prop 으로 직접 읽는 필드 (qoo10_jp_detail 등) 즉시 반영
+            setDetailRow({ ...detailRow, ...patch });
+            // H (5/3): SEO 재생성 후 AG Grid 셀 강제 refresh
+            setTimeout(() => {
+              const api = gridRef.current?.api as any;
+              if (!api) return;
+              const node = api.getRowNode?.(detailRow.id);
+              if (node) api.refreshCells?.({ rowNodes: [node], force: true });
+            }, 0);
           }}
           onReject={() => {
             const next = rows.map(r => r.id === detailRow.id ? { ...r, match_decision: 'rejected' as const } : r);
             saveSheet(next);
             setRows(next);
           }}
+          // K (5/3) 블랙리스트 — 백엔드 등록 + 시트에서 제거
+          onBlacklist={async () => {
+            const kw = (detailRow.keyword_jp || '').trim();
+            const nm = (detailRow.product_name || '').trim();
+            if (!kw && !nm) {
+              alert('keyword_jp 또는 product_name 둘 다 비어있어 블랙리스트 추가 불가');
+              return;
+            }
+            const reason = window.prompt(
+              `블랙리스트에 추가:\n  keyword_jp: ${kw || '(빈)'}\n  product_name: ${nm || '(빈)'}\n\n사유 (선택, 비워도 됨):`,
+              ''
+            );
+            if (reason === null) return; // cancel
+            try {
+              const r = await api.post<any>('/blacklist/add', {
+                keyword_jp: kw || undefined,
+                product_name: nm || undefined,
+                reason: reason || undefined,
+                source: 'manual',
+              });
+              if (r.data.added) {
+                // 시트에서 제거
+                const next = rows.filter(r2 => r2.id !== detailRow.id);
+                saveSheet(next);
+                setRows(next);
+                onCloseDetailPanel();
+              } else {
+                alert(`블랙리스트 추가 안 됨: ${r.data.reason}`);
+              }
+            } catch (e: any) {
+              alert(`블랙리스트 호출 실패: ${e?.response?.data?.detail || e.message}`);
+            }
+          }}
         />
       )}
+
+      {/* V (5/3): 큐텐 카테고리 선택 모달 */}
+      {qoo10CatRowId && (() => {
+        const row = rows.find(r => r.id === qoo10CatRowId);
+        if (!row) return null;
+        return (
+          <Qoo10CategoryPicker
+            initialCode={row.qoo10_category_code}
+            onClose={() => setQoo10CatRowId(null)}
+            onSelect={(cat) => {
+              const next = rows.map(r => r.id === qoo10CatRowId ? {
+                ...r,
+                qoo10_category_code: cat.s_code,
+                qoo10_category_path: cat.path,
+              } : r);
+              setRows(next);
+              saveSheet(next);
+              setQoo10CatRowId(null);
+              // AG Grid refresh
+              setTimeout(() => {
+                const api = gridRef.current?.api as any;
+                const node = api?.getRowNode?.(qoo10CatRowId);
+                if (node && api) api.refreshCells?.({ rowNodes: [node], force: true });
+              }, 0);
+            }}
+          />
+        );
+      })()}
+
+      {/* 좌측 하단 플로팅 계산기 — 시트 옆에 띄워두고 즉석 계산 */}
+      <FloatingCalculator />
     </div>
   );
 }
@@ -2274,32 +3156,34 @@ export default function RecommendProductsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">📊 상품 추천 시트</h2>
-        <div className="flex items-center gap-3 text-xs">
-          <Link
-            to={`/review/${new Date().toISOString().slice(0, 10)}`}
-            className="px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs font-semibold"
-            title="야간 자동화 결과 — 검수 페이지 (카드 grid)"
-          >
-            🌙 오늘 자동 결과
-          </Link>
-          {cloudStatus === 'syncing' && <span className="text-blue-600">☁ 동기화 중...</span>}
-          {cloudStatus === 'synced' && <span className="text-emerald-600">☁ 클라우드 저장됨 (다른 PC에서 접속 가능)</span>}
-          {cloudStatus === 'error' && <span className="text-red-600">☁ 동기화 실패 (로컬만 저장됨)</span>}
+      <div className="fs-hide-block">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-2xl font-bold">📊 상품 추천 시트</h2>
+          <div className="flex items-center gap-3 text-xs">
+            <Link
+              to={`/review/${new Date().toISOString().slice(0, 10)}`}
+              className="px-3 py-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 text-xs font-semibold"
+              title="야간 자동화 결과 — 검수 페이지 (카드 grid)"
+            >
+              🌙 오늘 자동 결과
+            </Link>
+            {cloudStatus === 'syncing' && <span className="text-blue-600">☁ 동기화 중...</span>}
+            {cloudStatus === 'synced' && <span className="text-emerald-600">☁ 클라우드 저장됨 (다른 PC에서 접속 가능)</span>}
+            {cloudStatus === 'error' && <span className="text-red-600">☁ 동기화 실패 (로컬만 저장됨)</span>}
+          </div>
         </div>
-      </div>
-      <LoginBanner />
-      <div className="bg-blue-50 border-l-4 border-blue-400 text-xs p-3 mb-4 rounded">
-        💡 <b>엑셀식 실시간 계산</b>: 샵 벤치마크·관심 키워드·수동 입력으로 시트에 상품 추가 →
-        무게/구매가/배송비 편집 → <b>마진·이익·평가 즉시 재계산</b>. 모든 값은 브라우저에 자동 저장됩니다.
-      </div>
+        <LoginBanner />
+        <div className="bg-blue-50 border-l-4 border-blue-400 text-xs p-3 mb-4 rounded">
+          💡 <b>엑셀식 실시간 계산</b>: 샵 벤치마크·관심 키워드·수동 입력으로 시트에 상품 추가 →
+          무게/구매가/배송비 편집 → <b>마진·이익·평가 즉시 재계산</b>. 모든 값은 브라우저에 자동 저장됩니다.
+        </div>
 
-      <AutoSourcingBlock
-        onAddRows={addRows}
-        interestKeywords={getInterestKeywords().map(i => i.keyword_jp)}
-      />
-      <InterestKeywordBlock onAddRows={addRows} />
+        <AutoSourcingBlock
+          onAddRows={addRows}
+          interestKeywords={getInterestKeywords().map(i => i.keyword_jp)}
+        />
+        <InterestKeywordBlock onAddRows={addRows} />
+      </div>
       {/* PriceHistogram 제거 (R-7) */}
       <ProductSheet rows={rows} setRows={setRows} />
     </div>

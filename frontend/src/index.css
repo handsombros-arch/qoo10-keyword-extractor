@@ -1,6 +1,281 @@
 @import "tailwindcss";
 
-body {
+/* ============================================================
+   Apple Design System — Phase 1 Foundation (5/3)
+   참고: apple-uiux-request.md
+   ============================================================ */
+
+/* ---- Tailwind 4 — CSS 토큰 (Theme extension) ---- */
+@theme {
+  /* Color tokens — Tailwind 가 bg-apple-bg, text-apple-text 등 utility 자동 생성 */
+  --color-apple-bg: #FFFFFF;
+  --color-apple-bg-2: #F5F5F7;
+  --color-apple-bg-3: #FBFBFD;
+  --color-apple-text: #1D1D1F;
+  --color-apple-text-2: #6E6E73;
+  --color-apple-text-3: #86868B;
+  --color-apple-accent: #0071E3;
+  --color-apple-accent-hover: #0077ED;
+  --color-apple-border: rgba(0, 0, 0, 0.08);
+  --color-apple-card: rgba(255, 255, 255, 0.72);
+
+  /* Status colors (제한적 사용) */
+  --color-apple-success: #34C759;
+  --color-apple-warn: #FF9500;
+  --color-apple-error: #FF3B30;
+
+  /* Font stack — SF Pro fallback chain + 한글 (Pretendard / Apple SD Gothic Neo) */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text',
+               'Helvetica Neue', 'Pretendard', 'Apple SD Gothic Neo', sans-serif;
+
+  /* Radii */
+  --radius-pill: 980px;
+  --radius-card: 18px;
+  --radius-input: 12px;
+
+  /* Easing */
+  --ease-apple: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+/* ---- 다크 모드 — `.dark` 클래스 또는 prefers-color-scheme ---- */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --color-apple-bg: #000000;
+    --color-apple-bg-2: #1D1D1F;
+    --color-apple-bg-3: #2D2D2F;
+    --color-apple-text: #F5F5F7;
+    --color-apple-text-2: #A1A1A6;
+    --color-apple-text-3: #6E6E73;
+    --color-apple-accent: #2997FF;
+    --color-apple-accent-hover: #0A84FF;
+    --color-apple-border: rgba(255, 255, 255, 0.1);
+    --color-apple-card: rgba(29, 29, 31, 0.72);
+  }
+}
+
+.dark {
+  --color-apple-bg: #000000;
+  --color-apple-bg-2: #1D1D1F;
+  --color-apple-bg-3: #2D2D2F;
+  --color-apple-text: #F5F5F7;
+  --color-apple-text-2: #A1A1A6;
+  --color-apple-text-3: #6E6E73;
+  --color-apple-accent: #2997FF;
+  --color-apple-accent-hover: #0A84FF;
+  --color-apple-border: rgba(255, 255, 255, 0.1);
+  --color-apple-card: rgba(29, 29, 31, 0.72);
+}
+
+/* ---- Base styles ---- */
+:root {
+  font-family: var(--font-sans);
+  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1, 'ss01' 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+html, body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--color-apple-bg);
+  color: var(--color-apple-text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  letter-spacing: -0.011em;
+}
+
+#root {
+  min-height: 100vh;
+  background: var(--color-apple-bg);
+  color: var(--color-apple-text);
+}
+
+/* ---- 미세 디테일 ---- */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+a { color: inherit; text-decoration: none; }
+button { font-family: inherit; }
+
+/* 포커스 링 — Apple 스타일 (subtle ring, accent color) */
+:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-apple-accent) 25%, transparent);
+  border-radius: 4px;
+}
+
+/* 스크롤바 — macOS 스타일 (얇고 자동 fade) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-apple-text-3) 30%, transparent);
+  border-radius: 980px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-apple-text-3) 50%, transparent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* ---- 모션 — 의미 있는 곳에만 ---- */
+@keyframes apple-fade-in-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.apple-enter {
+  animation: apple-fade-in-up 0.6s var(--ease-apple) both;
+}
+
+/* prefers-reduced-motion 준수 — 사용자가 모션 줄이기 설정 시 모두 즉시 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---- 컴포넌트 클래스 (재사용용) ---- */
+
+/* Pill button (primary/secondary) */
+.apple-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 22px;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  border: none;
+  border-radius: 980px;
+  cursor: pointer;
+  transition: background 0.2s var(--ease-apple), color 0.2s var(--ease-apple), transform 0.2s var(--ease-apple);
+  white-space: nowrap;
+}
+.apple-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.apple-btn-primary {
+  background: var(--color-apple-accent);
+  color: #FFFFFF;
+}
+.apple-btn-primary:hover:not(:disabled) {
+  background: var(--color-apple-accent-hover);
+}
+
+.apple-btn-secondary {
+  background: transparent;
+  color: var(--color-apple-accent);
+  border: 1px solid color-mix(in srgb, var(--color-apple-accent) 30%, transparent);
+}
+.apple-btn-secondary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-apple-accent) 8%, transparent);
+}
+
+.apple-btn-ghost {
+  background: transparent;
+  color: var(--color-apple-text-2);
+}
+.apple-btn-ghost:hover:not(:disabled) {
+  background: var(--color-apple-bg-2);
+  color: var(--color-apple-text);
+}
+
+.apple-btn-danger {
+  background: var(--color-apple-error);
+  color: #FFFFFF;
+}
+.apple-btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-apple-error) 90%, black);
+}
+
+/* sm/lg variants */
+.apple-btn-sm { padding: 7px 14px; font-size: 13px; }
+.apple-btn-lg { padding: 14px 28px; font-size: 17px; }
+
+/* Card (frosted glass) */
+.apple-card {
+  background: var(--color-apple-card);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--color-apple-border);
+  border-radius: var(--radius-card);
+  padding: 28px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  transition: transform 0.3s var(--ease-apple), box-shadow 0.3s var(--ease-apple);
+}
+.apple-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+}
+
+/* Input */
+.apple-input {
+  width: 100%;
+  padding: 12px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--color-apple-text);
+  background: var(--color-apple-bg-2);
+  border: 1px solid var(--color-apple-border);
+  border-radius: var(--radius-input);
+  outline: none;
+  transition: border-color 0.2s var(--ease-apple), box-shadow 0.2s var(--ease-apple);
+}
+.apple-input:focus {
+  border-color: var(--color-apple-accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-apple-accent) 15%, transparent);
+}
+.apple-input::placeholder {
+  color: var(--color-apple-text-3);
+}
+
+/* Sticky frosted nav bar */
+.apple-navbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 max(24px, 5vw);
+  background: color-mix(in srgb, var(--color-apple-bg) 72%, transparent);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--color-apple-border);
+}
+
+/* Typography helpers */
+.apple-hero    { font-size: 48px; line-height: 1.08; letter-spacing: -0.003em; font-weight: 600; }
+.apple-title-1 { font-size: 32px; line-height: 1.12; letter-spacing: -0.002em; font-weight: 600; }
+.apple-title-2 { font-size: 24px; line-height: 1.16; letter-spacing: -0.001em; font-weight: 600; }
+.apple-title-3 { font-size: 20px; line-height: 1.20; font-weight: 600; }
+.apple-body    { font-size: 17px; line-height: 1.47; letter-spacing: -0.022em; font-weight: 400; }
+.apple-callout { font-size: 16px; line-height: 1.38; letter-spacing: -0.02em; font-weight: 400; }
+.apple-caption { font-size: 12px; line-height: 1.33; font-weight: 400; }
+
+/* 콘텐츠 max-width 헬퍼 */
+.apple-container       { max-width: 980px; margin: 0 auto; padding: 0 max(24px, 5vw); }
+.apple-container-wide  { max-width: 1200px; margin: 0 auto; padding: 0 max(24px, 5vw); }
+
+/* 상품 시트 풀스크린 모드 — sidebar / header 숨김 */
+body.sheet-fullscreen aside.app-sidebar,
+body.sheet-fullscreen header.app-header { display: none !important; }
+
+/* 엑셀 모드 시 시트 외 모든 보조 UI 숨김 */
+body.sheet-fullscreen .fs-hide-block { display: none !important; }
+
+/* AG Grid 셀 내 a/img native drag 비활성화 — link drag 모드로 휠 스크롤 막히는 문제 fix */
+.ag-cell a, .ag-cell img {
+  -webkit-user-drag: none;
+  user-drag: none;
 }

@@ -2,16 +2,20 @@
  * 상품 시트 localStorage 저장소.
  * 사용자가 수동 입력한 무게/구매가/배송비를 재방문 시 복원.
  */
+import { lookupKseShipping } from '../lib/marginCalc';
 
-/** 구성 옵션: 한 상품을 단품/세트/번들 등 여러 판매 형태로 등록하기 위한 하위 레코드. */
+/** 구성 옵션: 한 상품을 단품/세트/번들 등 여러 판매 형태로 등록하기 위한 하위 레코드.
+ *  큐텐 등록 시 옵션명 (예: "용량") 그룹 + 옵션값 (예: "30ml") list 로 변환. */
 export interface CompositionOption {
   id: string;
-  label: string;                    // 표시명 ("단품", "3개 세트", "5+1 세트" 등 자유)
+  label: string;                    // 표시명. 비우면 option_name + option_value 자동 fallback
+  option_name?: string;             // 옵션명 — 큐텐 옵션 그룹명 ("용량", "색상", "패키지")
+  option_value?: string;            // 옵션값 — 큐텐 옵션값 ("30ml", "빨강", "3개 세트")
   quantity: number;
   weight_g: number;                 // 총 무게 (세트 기준)
   item_price_krw: number;           // 총 상품가 (세트 기준, 할인가 포함 가능)
   domestic_shipping_krw: number;    // 국내배송비 (세트 기준 무게에 맞춰 사용자 기입)
-  shipping_packaging_krw: number;   // KSE 포장+배대지
+  shipping_packaging_krw: number;   // KSE 포장+배대지 — 무게 변경 시 lookupKseShipping 자동 set
   sell_price_jpy: number;           // 엔화 판매가 (세트별)
   is_mega?: boolean;                // 메가와리 적용 여부 (개별 구성)
   notes?: string;
@@ -68,7 +72,8 @@ export interface SheetRow {
   // 큐텐 SEO 콘텐츠 (Phase 4-B 자동 생성, 사장님 인플레이스 편집 가능)
   qoo10_title_jp?: string;          // 큐텐 등록용 일본어 상품명 (40자)
   qoo10_tags?: string[];            // 검색 태그 5~10개
-  qoo10_marketing?: string[];       // 마케팅 포인트 3~4개
+  qoo10_marketing?: string[];       // 마케팅 포인트 3~4개 (일본어)
+  qoo10_marketing_ko?: string[];    // H (5/3) 한글 번역 — qoo10_marketing 와 1:1 parallel array (사장님 검수용, 큐텐 등록 X)
   qoo10_option_name?: string;       // 옵션명 (단품/3個セット 등)
 
   // EEEE-1: JP 상세페이지 카피 (qoo10-jp-detail-master.md 가이드 + 한글 번역 jp+ko 쌍)
@@ -86,6 +91,20 @@ export interface SheetRow {
   //   사용처: 1) 영구 색깔 구분 (복사본 = 다른 배경)
   //          2) 정렬 시 원본 직후로 stick (그룹 동작)
   _parent_id?: string;
+
+  // E (5/3) [URL 재생성] 시 다운로드된 로컬 이미지 — image/{date}/{kr_name}/...
+  // /image 경로로 정적 서빙. 브라우저에서 표시 가능 (http://localhost:8000/image/...)
+  cover_local_path?: string;            // image/{date}/{folder}/cover.jpg
+  detail_local_paths?: string[];        // image/{date}/{folder}/detail_1.jpg, detail_2.jpg
+  image_folder?: string;                // image/{date}/{folder} (parent dir)
+
+  // S (5/3) 옵션 비교 — 3사 raw 옵션 (검수/원가 계산/큐텐 등록 옵션 결정용)
+  domestic_options?: { name: string; price_krw?: number; in_stock?: boolean }[];   // 한국 셀러 (네이버/쿠팡)
+  qoo10_options_raw?: { name: string; price_jpy?: number; in_stock?: boolean }[];  // 큐텐 경쟁자
+
+  // V (5/3) 큐텐 등록 카테고리 — Qoo10_CategoryInfo.csv 의 소카테고리 코드 + 표시 path
+  qoo10_category_code?: string;     // 소카테고리 코드 (예: 300002246)
+  qoo10_category_path?: string;     // 표시용 (예: "여성복 > 정장 > 정장 바지")
 
   // 하위 호환
   purchase_price_krw?: number;
@@ -129,17 +148,24 @@ function migrateRow(raw: any): SheetRow {
   return row;
 }
 
-/** 새 구성 옵션 생성. 메인 행 값을 기본으로 채움 (1단위). */
+/** 새 구성 옵션 생성. 메인 행 값을 기본으로 채움 (1단위). 무게→KSE 자동 계산. */
 export function newCompositionOption(row: SheetRow, partial: Partial<CompositionOption> = {}): CompositionOption {
   const qty = partial.quantity ?? 1;
+  const weight = partial.weight_g ?? (row.weight_g || 0) * qty;
+  // shipping_packaging_krw 미지정 시 무게 기반 자동 계산
+  const pkg = partial.shipping_packaging_krw ?? (
+    weight > 0 ? lookupKseShipping(weight) : (row.shipping_packaging_krw || 3000)
+  );
   return {
     id: (crypto as any).randomUUID?.() || String(Date.now() + Math.random()),
     label: partial.label ?? (qty === 1 ? '단품' : `${qty}개 세트`),
+    option_name: partial.option_name ?? '',
+    option_value: partial.option_value ?? '',
     quantity: qty,
-    weight_g: partial.weight_g ?? (row.weight_g || 0) * qty,
+    weight_g: weight,
     item_price_krw: partial.item_price_krw ?? (row.item_price_krw || 0) * qty,
     domestic_shipping_krw: partial.domestic_shipping_krw ?? (row.domestic_shipping_krw || 0),
-    shipping_packaging_krw: partial.shipping_packaging_krw ?? (row.shipping_packaging_krw || 3000),
+    shipping_packaging_krw: pkg,
     sell_price_jpy: partial.sell_price_jpy ?? (row.sell_price_jpy || 0) * qty,
     is_mega: partial.is_mega ?? false,
     notes: partial.notes ?? '',

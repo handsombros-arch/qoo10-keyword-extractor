@@ -187,6 +187,46 @@ export default function RecommendPage() {
     }
   };
   const handleColumnMoved = (e: any) => { if (e.source === 'uiColumnDragged' || e.finished) saveColState(); };
+
+  // 5/3 드래그 멀티 선택 — mousedown on row → drag → 사이 모든 행 selected
+  const dragAnchorRef = useRef<number | null>(null);
+  const isDraggingRef = useRef(false);
+  useEffect(() => {
+    const onUp = () => { isDraggingRef.current = false; dragAnchorRef.current = null; };
+    document.addEventListener('mouseup', onUp);
+    return () => document.removeEventListener('mouseup', onUp);
+  }, []);
+  const onCellMouseDown = (e: any) => {
+    // 좌클릭만
+    if (e.event?.button !== 0) return;
+    // link/button/input 클릭은 무시 (각자 동작 보장)
+    const tag = (e.event?.target as HTMLElement)?.tagName;
+    if (tag === 'A' || tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // checkbox 컬럼은 AG Grid 기본 동작 (단일 토글) — 드래그 안 막음
+    if (e.colDef?.checkboxSelection) {
+      // checkbox 컬럼에서도 드래그 가능하게 anchor 설정 (단 첫 토글은 AG Grid 가)
+      isDraggingRef.current = true;
+      dragAnchorRef.current = e.rowIndex;
+      return;
+    }
+    isDraggingRef.current = true;
+    dragAnchorRef.current = e.rowIndex;
+    // 시작 행 select (기존 선택 보존 — append)
+    e.node?.setSelected(true, false);
+  };
+  const onCellMouseOver = (e: any) => {
+    if (!isDraggingRef.current || dragAnchorRef.current == null || e.rowIndex == null) return;
+    const lo = Math.min(dragAnchorRef.current, e.rowIndex);
+    const hi = Math.max(dragAnchorRef.current, e.rowIndex);
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    api.forEachNodeAfterFilterAndSort((node: any) => {
+      if (node.rowIndex == null) return;
+      if (node.rowIndex >= lo && node.rowIndex <= hi) {
+        if (!node.isSelected()) node.setSelected(true, false);
+      }
+    });
+  };
   const handleSortChanged = () => saveColState();
   const handleGridReady = () => { restoreColState(); };
   const [keywords, setKeywords] = useState<Keyword[]>([]);
@@ -271,6 +311,9 @@ export default function RecommendPage() {
     return m;
   }, [keywords]);
 
+  // 5/3: 관심 풀 keyword_jp set — enriched 가 먼저 참조하므로 위로 이동 (선언 순서 보장)
+  const interestSet = useMemo(() => new Set(interestList.map(k => k.keyword_jp)), [interestList]);
+
   // 가공: kr_ratio, recommend_score 계산 + 기간/임계값 필터
   const enriched: (KeywordWithScore & { categories?: string[] })[] = useMemo(() => {
     const cmpDate = (d: string | undefined): boolean => {
@@ -298,12 +341,19 @@ export default function RecommendPage() {
         return { ...kw, kr_ratio, recommend_score };
       })
       .filter(kw => {
-        if ((kw.search_volume_weekly || 0) < minSearch) return false;
-        if (kw.kr_ratio < minKrRatio) return false;
-        const c = kw.competition_intensity || 0;
-        if (c < compMin || c > compMax) return false;
-        if (brandFilter === 'general' && isBrand(kw.keyword_jp)) return false;
-        if (brandFilter === 'brand' && !isBrand(kw.keyword_jp)) return false;
+        // 5/3: 관심 키워드는 임계값/브랜드 필터 무시 — 사장님이 일부러 추가한 것
+        const isInterest = interestSet.has(kw.keyword_jp);
+        if (isInterest) {
+          // 카테고리 / 일자 필터는 그대로 적용 (위에서 이미 cmpDate)
+          // 임계값 + 브랜드 필터만 우회
+        } else {
+          if ((kw.search_volume_weekly || 0) < minSearch) return false;
+          if (kw.kr_ratio < minKrRatio) return false;
+          const c = kw.competition_intensity || 0;
+          if (c < compMin || c > compMax) return false;
+          if (brandFilter === 'general' && isBrand(kw.keyword_jp)) return false;
+          if (brandFilter === 'brand' && !isBrand(kw.keyword_jp)) return false;
+        }
         // YYY-1: raw 큐텐 카테고리로 필터 (사장님 디폴트 종합/뷰티/식품 = raw)
         const rawCat = kw.category || '';
         if (selectedCategories.size > 0) {
@@ -355,7 +405,7 @@ export default function RecommendPage() {
     }
 
     return rows.sort((a, b) => b.recommend_score - a.recommend_score);
-  }, [keywords, mode, singleDate, fromDate, toDate, minSearch, minKrRatio, compMin, compMax, dedupe, brandFilter, selectedCategories, excludeOverlap, keywordAllCategoriesMap]);
+  }, [keywords, mode, singleDate, fromDate, toDate, minSearch, minKrRatio, compMin, compMax, dedupe, brandFilter, selectedCategories, excludeOverlap, keywordAllCategoriesMap, interestSet]);
 
   // YYY-1: raw 큐텐 카테고리 목록 (필터 버튼용)
   const availableCats = useMemo(() => {
@@ -374,9 +424,6 @@ export default function RecommendPage() {
   const numFmt = (p: any) => p.value == null ? '' : Number(p.value).toLocaleString();
   const pctFmt = (p: any) => p.value == null ? '' : `${Number(p.value).toFixed(1)}%`;
   const scoreFmt = (p: any) => p.value == null ? '' : Number(p.value).toFixed(2);
-
-  // YYY-1: 관심 풀 keyword_jp set (구분 컬럼용)
-  const interestSet = useMemo(() => new Set(interestList.map(k => k.keyword_jp)), [interestList]);
 
   const columnDefs: ColDef[] = useMemo(() => [
     {
@@ -507,7 +554,7 @@ export default function RecommendPage() {
     const selected: any[] = api.getSelectedRows?.() || [];
     if (selected.length === 0) { alert('키워드를 체크해주세요.'); return; }
     const today = new Date().toISOString().slice(0, 10);
-    const added = await mergeKeywordsToSheet(
+    const result = await mergeKeywordsToSheet(
       selected.map(r => ({
         keyword_jp: r.keyword_jp,
         keyword_kr: r.keyword_kr,
@@ -517,7 +564,7 @@ export default function RecommendPage() {
       })),
       `keyword:${today}`,
     );
-    alert(`✓ ${added}건 시트에 추가 (${selected.length} 중 중복 제외).\n/recommend-products 에서 한국 셀러 URL/원가 입력하세요.`);
+    alert(`✓ ${result.added}건${result.blacklisted ? ` (⛔ 블랙 ${result.blacklisted})` : ''} 시트에 추가 (${selected.length} 중 중복 제외).\n/recommend-products 에서 한국 셀러 URL/원가 입력하세요.`);
   };
 
   // R-7: 체크된 키워드를 시트에서 삭제 (keyword_jp 매칭)
@@ -605,7 +652,7 @@ export default function RecommendPage() {
       `진행?`
     );
     if (!ok) return;
-    const added = await mergeKeywordsToSheet(
+    const result = await mergeKeywordsToSheet(
       unique.map(k => ({
         keyword_jp: k.keyword_jp,
         keyword_kr: k.keyword_kr,
@@ -614,7 +661,7 @@ export default function RecommendPage() {
       })),
       `keyword:${dateStr}`,
     );
-    alert(`✓ ${dateStr} 추천 ${added}건 시트 추가 (${unique.length} 중 중복 제외).`);
+    alert(`✓ ${dateStr} 추천 ${result.added}건${result.blacklisted ? ` (⛔ 블랙 ${result.blacklisted})` : ''} 시트 추가 (${unique.length} 중 중복 제외).`);
   };
 
   // VV-3 관심 풀 → 시트로 직접 (전체 또는 선택)
@@ -623,7 +670,7 @@ export default function RecommendPage() {
     if (!items || !items.length) { alert('관심 키워드 풀이 비어있습니다.'); return; }
     if (!confirm(`관심 풀 전체 ${items.length}건을 시트에 추가합니다.`)) return;
     const today = new Date().toISOString().slice(0, 10);
-    const added = await mergeKeywordsToSheet(
+    const result = await mergeKeywordsToSheet(
       items.map(k => ({
         keyword_jp: k.keyword_jp,
         keyword_kr: k.keyword_kr,
@@ -632,7 +679,7 @@ export default function RecommendPage() {
       })),
       `interest:${today}`,
     );
-    alert(`✓ ${added}건 시트에 추가 (관심 풀 ${items.length} 중 중복 제외).`);
+    alert(`✓ ${result.added}건${result.blacklisted ? ` (⛔ 블랙 ${result.blacklisted})` : ''} 시트에 추가 (관심 풀 ${items.length} 중 중복 제외).`);
   };
 
   // XXX-1: 관심 풀 — 체크된 row 만 시트로
@@ -640,7 +687,7 @@ export default function RecommendPage() {
     const sel = interestList.filter(k => selectedInterests.has(k.keyword_jp));
     if (!sel.length) { alert('체크된 관심 키워드가 없습니다.'); return; }
     const today = new Date().toISOString().slice(0, 10);
-    const added = await mergeKeywordsToSheet(
+    const result = await mergeKeywordsToSheet(
       sel.map(k => ({
         keyword_jp: k.keyword_jp,
         keyword_kr: k.keyword_kr,
@@ -649,7 +696,7 @@ export default function RecommendPage() {
       })),
       `interest:${today}`,
     );
-    alert(`✓ ${added}건 시트에 추가 (선택 ${sel.length} 중 중복 제외).`);
+    alert(`✓ ${result.added}건${result.blacklisted ? ` (⛔ 블랙 ${result.blacklisted})` : ''} 시트에 추가 (선택 ${sel.length} 중 중복 제외).`);
     // 시트 보낸 후 선택 해제
     setSelectedInterests(new Set());
   };
@@ -1145,6 +1192,8 @@ export default function RecommendPage() {
             onColumnMoved={handleColumnMoved}
             onSortChanged={handleSortChanged}
             onGridReady={handleGridReady}
+            onCellMouseDown={onCellMouseDown}
+            onCellMouseOver={onCellMouseOver}
           />
         </div>
       </div>

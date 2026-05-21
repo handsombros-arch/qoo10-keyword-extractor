@@ -1,46 +1,65 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
+import {
+  LayoutDashboard, Sparkles, FileSpreadsheet, Ban, Target,
+  Calculator, ImageMinus,
+  Search, BarChart3, Link2, Settings,
+  Wrench, Calendar, FileEdit,
+  ChevronRight, ChevronDown,
+  type LucideIcon,
+} from 'lucide-react';
 
-const mainItems = [
-  { path: '/', label: '대시보드', icon: '📊' },
-  { path: '/recommend', label: '역직구 추천', icon: '⭐' },
-  { path: '/review', label: '검수', icon: '✅' },
-  { path: '/recommend-products', label: '상품 시트', icon: '📋' },
-  { path: '/shop-benchmark', label: '샵 벤치마크', icon: '🎯' },
-  { path: '/margin', label: '마진 계산기', icon: '💹' },
-  { path: '/image', label: '워터마크 제거', icon: '🎨' },
+type Item = { path: string; label: string; icon: LucideIcon };
+
+const mainItems: Item[] = [
+  { path: '/', label: '대시보드', icon: LayoutDashboard },
+  { path: '/recommend', label: '역직구 추천', icon: Sparkles },
+  { path: '/recommend-products', label: '상품 시트', icon: FileSpreadsheet },
+  { path: '/blacklist', label: '블랙리스트', icon: Ban },
+  { path: '/shop-benchmark', label: '샵 벤치마크', icon: Target },
+  { path: '/margin', label: '마진 계산기', icon: Calculator },
+  { path: '/image', label: '워터마크 제거', icon: ImageMinus },
 ];
 
-// RD (Raw Data) — 자주 사용 X, 데이터 직접 보고 싶을 때만
-const moreItems = [
-  { path: '/keywords', label: '키워드 추출 (RD)', icon: '🔬' },
-  { path: '/insights', label: '시계열 인사이트 (RD)', icon: '📈' },
-  { path: '/related-bulk', label: '연관 키워드 (RD)', icon: '🔗' },
-  { path: '/settings', label: 'AI 설정', icon: '⚙️' },
+const moreItems: Item[] = [
+  { path: '/keywords', label: '키워드 추출 (RD)', icon: Search },
+  { path: '/insights', label: '시계열 인사이트 (RD)', icon: BarChart3 },
+  { path: '/related-bulk', label: '연관 키워드 (RD)', icon: Link2 },
+  { path: '/settings', label: 'AI 설정', icon: Settings },
 ];
 
-// RD 외부 링크 — backend JSON / 작업 진행 / 로그 직접 (새 탭)
 const rdExternals = [
-  { href: '/api/tasks', label: '진행 task (RD)', icon: '⚙️', title: '모든 backend task list (running/completed/failed)' },
-  { href: '/api/review/' + new Date().toISOString().slice(0, 10), label: '오늘 자동화 결과 (JSON)', icon: '🌙', title: '자동화 snapshot raw + 매칭/콘텐츠 enrich' },
-  { href: '/api/sheet/corrections', label: '사장님 수정 사례 (RD)', icon: '✏️', title: '사장님이 swap/reject 한 사례 누적 — AI 매칭 정합도 학습 데이터' },
+  { href: '/api/tasks', label: '진행 task', icon: Wrench, title: '모든 backend task list' },
+  { href: '/api/review/' + new Date().toISOString().slice(0, 10), label: '오늘 자동화 결과', icon: Calendar, title: '자동화 snapshot raw' },
+  { href: '/api/sheet/corrections', label: '사장님 수정 사례', icon: FileEdit, title: '사장님 swap/reject 누적' },
 ];
 
 const MORE_STATE_KEY = 'sidebar.moreOpen.v1';
 
-function NavItem({ path, label, icon }: { path: string; label: string; icon: string }) {
+function NavItem({ path, label, icon: Icon }: Item) {
   return (
     <NavLink
       to={path}
       end={path === '/'}
       className={({ isActive }) =>
-        `flex items-center gap-2 px-3 py-2 rounded text-sm transition-colors ${
-          isActive ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-800'
-        }`
+        [
+          'flex items-center gap-3 px-3 py-2 rounded-lg text-[15px] transition-colors',
+          isActive
+            ? 'bg-apple-bg-2 text-apple-text font-semibold'
+            : 'text-apple-text-2 hover:bg-apple-bg-2 hover:text-apple-text',
+        ].join(' ')
       }
     >
-      <span>{icon}</span>
-      <span>{label}</span>
+      {({ isActive }) => (
+        <>
+          <Icon
+            size={18}
+            strokeWidth={isActive ? 2 : 1.75}
+            className={isActive ? 'text-apple-accent' : 'text-apple-text-3'}
+          />
+          <span className="tracking-tight">{label}</span>
+        </>
+      )}
     </NavLink>
   );
 }
@@ -57,38 +76,51 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="w-60 bg-gray-900 text-white min-h-screen p-4 flex flex-col">
-      <h1 className="text-lg font-bold mb-6 px-2">Qoo10 키워드 추출기</h1>
-      <nav className="flex flex-col gap-1">
-        {mainItems.map(item => <NavItem key={item.path} {...item} />)}
+    <aside
+      className="app-sidebar w-64 min-h-screen flex flex-col bg-apple-bg border-r"
+      style={{ borderRightColor: 'var(--color-apple-border)' }}
+    >
+      <div className="px-5 pt-7 pb-5">
+        <h1 className="text-[17px] font-semibold tracking-tight text-apple-text">
+          Qoo10 셀러
+        </h1>
+        <p className="text-[12px] text-apple-text-3 mt-1">키워드 RD · 자동화 · 시트</p>
+      </div>
 
+      <nav className="flex-1 px-3 flex flex-col gap-0.5">
+        {mainItems.map(item => <NavItem key={item.path} {...item} />)}
 
         <button
           onClick={toggleMore}
-          className="mt-3 flex items-center justify-between px-3 py-2 rounded text-xs text-gray-400 hover:bg-gray-800 border-t border-gray-800 pt-4"
+          className="mt-5 flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] text-apple-text-3 hover:bg-apple-bg-2 hover:text-apple-text-2 transition-colors mx-1 border-t pt-4"
+          style={{ borderTopColor: 'var(--color-apple-border)' }}
         >
-          <span>{moreOpen ? '▾' : '▸'} 더보기</span>
-          <span className="text-[10px]">{moreItems.length}</span>
+          {moreOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <span>더보기</span>
+          <span className="ml-auto text-[11px]">{moreItems.length}</span>
         </button>
 
         {moreOpen && (
-          <div className="flex flex-col gap-1 pl-2 mt-1">
+          <div className="flex flex-col gap-0.5 mt-1">
             {moreItems.map(item => <NavItem key={item.path} {...item} />)}
-            <div className="text-[10px] text-gray-500 px-3 mt-2 border-t border-gray-700 pt-2">진단 (외부)</div>
-            {rdExternals.map(item => (
-              <a
-                key={item.href}
-                href={item.href}
-                target="_blank"
-                rel="noreferrer"
-                title={item.title}
-                className="flex items-center gap-2 px-3 py-1.5 rounded text-xs text-gray-400 hover:bg-gray-800 hover:text-gray-200"
-              >
-                <span>{item.icon}</span>
-                <span>{item.label}</span>
-                <span className="text-[10px] ml-auto">↗</span>
-              </a>
-            ))}
+            <div className="text-[10px] text-apple-text-3 px-3 mt-3 mb-1 uppercase tracking-wider font-medium">진단 (외부)</div>
+            {rdExternals.map(item => {
+              const Icon = item.icon;
+              return (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={item.title}
+                  className="flex items-center gap-3 px-3 py-1.5 rounded-lg text-[13px] text-apple-text-3 hover:bg-apple-bg-2 hover:text-apple-text-2 transition-colors"
+                >
+                  <Icon size={16} strokeWidth={1.75} />
+                  <span className="flex-1 tracking-tight">{item.label}</span>
+                  <span className="text-[10px]">↗</span>
+                </a>
+              );
+            })}
           </div>
         )}
       </nav>
