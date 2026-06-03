@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Qoo10 Helper",
+  "name": "엘비텐 Helper (LV10)",
   "version": "0.2.0",
-  "description": "Qoo10 자동화 도우미 — Naver/Coupang 상세 수집 (백엔드 큐 폴링)",
+  "description": "엘비텐(LV10) 자동화 도우미 — Naver/Coupang 상세 수집 (백엔드 큐 폴링)",
 
   "permissions": [
     "tabs",
@@ -30,6 +30,6 @@
 
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "Qoo10 Helper"
+    "default_title": "엘비텐 Helper"
   }
 }

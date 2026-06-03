@@ -1,4 +1,4 @@
-# Qoo10 키워드 추출기 — 현재 상황 (2026-05-02)
+# 엘비텐 (LV10) — 현재 상황 (2026-05-02)
 
 VBA → Python(FastAPI) + React 재구축. 두 PC(메인 + Tailscale 노트북) 같은 Supabase 공유.
 실행: `start.pyw` 더블클릭 → `localhost:8000` (CMD 없음, --reload 없음).
