@@ -100,7 +100,7 @@ export default function Header() {
       }}
     >
       <div className="text-[13px] text-apple-text-3 tracking-tight">
-        Qoo10 Seller Management
+LV10 · 엘비텐
       </div>
 
       <div className="flex items-center gap-4">

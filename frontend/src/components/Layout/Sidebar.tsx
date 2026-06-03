@@ -82,7 +82,7 @@ export default function Sidebar() {
     >
       <div className="px-5 pt-7 pb-5">
         <h1 className="text-[17px] font-semibold tracking-tight text-apple-text">
-          Qoo10 셀러
+          엘비텐
         </h1>
         <p className="text-[12px] text-apple-text-3 mt-1">키워드 RD · 자동화 · 시트</p>
       </div>
