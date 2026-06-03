@@ -12,6 +12,7 @@ from app.db.connection import async_session
 from app.db.sqlite_repo import SQLiteKeywordRepository
 from app.scrapers.autocomplete import (
     qoo10_autocomplete,
+    google_suggest,
     amazon_autocomplete,
     amazon_related,
     yahoo_autocomplete,
@@ -34,6 +35,7 @@ class RelatedRequest(BaseModel):
     qoo10_ad_related: bool = True      # 큐텐 키워드광고 연관 (M05의 "유사")
     qoo10_autocomplete: bool = True    # 큐텐 자동완성
     qoo10_related: bool = True         # 큐텐 연관 (M05의 "연관")
+    google_suggest: bool = True        # Google 자동완성 (suggest 엔드포인트, 브라우저 불필요)
     amazon_autocomplete: bool = True   # 아마존재팬 자동완성 (#nav-flyout-searchAjax)
     amazon_related: bool = True        # 아마존재팬 관련검색
     yahoo_autocomplete: bool = True    # 야후재팬(웹) 자동완성 (search.yahoo.co.jp #assist)
@@ -75,7 +77,7 @@ async def collect_related(req: RelatedRequest):
         return {"error": "키워드가 비어 있습니다."}
 
     total_steps = len(jp_list) * sum([
-        req.qoo10_ad_related or req.qoo10_related, req.qoo10_autocomplete,
+        req.qoo10_ad_related or req.qoo10_related, req.qoo10_autocomplete, req.google_suggest,
         req.amazon_autocomplete, req.amazon_related,
         req.yahoo_autocomplete, req.yahoo_related,
         req.yahoo_shopping_autocomplete, req.yahoo_shopping_related,
@@ -101,6 +103,19 @@ async def collect_related(req: RelatedRequest):
                         continue
                     all_results.append(kw)
                 task_manager.update_progress(master_id, len(jp_list), f"큐텐 연관/유사 완료: {len(kws)}개")
+
+            # Google サジェスト — 브라우저 불필요 (httpx)
+            if req.google_suggest:
+                for kw in jp_list:
+                    try:
+                        sg = await google_suggest(kw)
+                        print(f"[google_suggest] {kw}: {len(sg)}개")
+                        for s in sg:
+                            if s:
+                                all_results.append(make_keyword_dict(s, "google_suggest"))
+                    except Exception as e:
+                        print(f"[google_suggest] {kw} ERROR: {e}")
+                    task_manager.update_progress(master_id, 1, f"구글 자동완성 '{kw}' 완료")
 
             page = None
             if (req.qoo10_autocomplete or req.amazon_autocomplete or req.amazon_related
@@ -207,7 +222,7 @@ async def collect_related(req: RelatedRequest):
                     kw for kw in all_results
                     if (kw.get("search_volume_weekly") or 0) > 0
                     or (kw.get("search_volume_daily") or 0) > 0
-                    or kw.get("classification") in ("자동완성", "아마존자동", "아마존연관", "야후자동", "야후연관", "야후쇼핑자동", "야후쇼핑연관")
+                    or kw.get("classification") in ("자동완성", "구글자동", "아마존자동", "아마존연관", "야후자동", "야후연관", "야후쇼핑자동", "야후쇼핑연관")
                     # 검색량 정보 없는 소스는 그대로 유지 (0 판정 불가)
                 ]
 

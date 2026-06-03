@@ -1,6 +1,11 @@
-"""자동완성/연관 키워드 수집 (큐텐, 야후재팬 쇼핑) — 모두 브라우저 기반."""
+"""자동완성/연관 키워드 수집 (큐텐, 아마존JP, 야후재팬/쇼핑, 구글).
+
+대부분 브라우저(page) 기반이나 google_suggest 만 httpx(브라우저 불필요).
+"""
 from datetime import date
 from typing import List, Dict
+
+import httpx
 
 
 async def _flexible_suggest(page, input_selectors: list[str], suggest_selectors: list[str], keyword: str) -> List[str]:
@@ -235,6 +240,31 @@ async def yahoo_related(page, keyword: str) -> List[str]:
     )
 
 
+async def google_suggest(keyword: str) -> List[str]:
+    """Google 자동완성(サジェスト) — 공개 suggest 엔드포인트(JSON). 브라우저 불필요.
+
+    소비자 리서치 의도(とは/使い方/おすすめ/現地でしか 등)까지 잡혀 마켓플레이스
+    자동완성과 상호보완. (page 인자 없음 — related.py 에서 별도 처리)
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                "https://suggestqueries.google.com/complete/search",
+                params={"client": "firefox", "hl": "ja", "q": keyword},
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            data = r.json()
+    except Exception:
+        return []
+    sugg = data[1] if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list) else []
+    out: List[str] = []
+    for t in sugg:
+        t = (t or "").strip()
+        if t and t != keyword and len(t) < 80 and t not in out:
+            out.append(t)
+    return out[:30]
+
+
 def make_keyword_dict(keyword_jp: str, source: str) -> Dict:
     """공통 키워드 딕셔너리."""
     cls = {
@@ -242,6 +272,7 @@ def make_keyword_dict(keyword_jp: str, source: str) -> Dict:
         "qoo10_similar": "유사",
         "qoo10_ad_related": "광고연관",
         "qoo10_autocomplete": "자동완성",
+        "google_suggest": "구글자동",
         "amazon_autocomplete": "아마존자동",
         "amazon_related": "아마존연관",
         "yahoo_autocomplete": "야후자동",
