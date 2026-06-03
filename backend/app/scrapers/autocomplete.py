@@ -127,6 +127,55 @@ async def yahoo_shopping_related(page, keyword: str) -> List[str]:
     return results[:30]
 
 
+async def yahoo_autocomplete(page, keyword: str) -> List[str]:
+    """야후재팬(웹, 쇼핑 아님) 자동완성 — 원본 VBA 방식 재현.
+
+    톱페이지가 아니라 검색결과 페이지(search.yahoo.co.jp/search?p=)로 진입해
+    키워드가 채워진 검색창(.SearchBox__searchInputWrap)을 클릭하면 #assist 에
+    자동완성이 뜬다. (2026-06 읽기전용 테스트로 검증)
+    """
+    try:
+        await page.goto(
+            f"https://search.yahoo.co.jp/search?p={keyword}",
+            wait_until="domcontentloaded", timeout=30000,
+        )
+        await page.wait_for_timeout(1000)
+    except Exception:
+        return []
+
+    # 검색창 클릭 → assist 드롭다운 열기
+    for sel in [".SearchBox__searchInputWrap", "input[name='p']", "[class*='SearchBox'] input"]:
+        el = await page.query_selector(sel)
+        if el:
+            try:
+                await el.click()
+                break
+            except Exception:
+                continue
+    await page.wait_for_timeout(1200)
+
+    # assist 항목 추출 + UI/광고 노이즈 제거
+    NOISE = ("設定", "Agent", "聞いて", "検索履歴")
+    results: List[str] = []
+    for sel in ["#assist li", "[class*='assist'] li"]:
+        try:
+            items = await page.query_selector_all(sel)
+            for it in items:
+                t = (await it.inner_text()).strip()
+                t = t.splitlines()[0].strip() if t else t
+                if not t or t == keyword or len(t) >= 80:
+                    continue
+                if any(n in t for n in NOISE) or t.endswith("へ"):
+                    continue
+                if t not in results:
+                    results.append(t)
+            if results:
+                return results[:30]
+        except Exception:
+            continue
+    return results[:30]
+
+
 def make_keyword_dict(keyword_jp: str, source: str) -> Dict:
     """공통 키워드 딕셔너리."""
     cls = {
@@ -134,6 +183,7 @@ def make_keyword_dict(keyword_jp: str, source: str) -> Dict:
         "qoo10_similar": "유사",
         "qoo10_ad_related": "광고연관",
         "qoo10_autocomplete": "자동완성",
+        "yahoo_autocomplete": "야후자동",
         "yahoo_shopping_autocomplete": "야후쇼핑자동",
         "yahoo_shopping_related": "야후쇼핑연관",
     }.get(source, source)

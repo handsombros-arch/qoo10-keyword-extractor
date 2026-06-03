@@ -12,6 +12,7 @@ from app.db.connection import async_session
 from app.db.sqlite_repo import SQLiteKeywordRepository
 from app.scrapers.autocomplete import (
     qoo10_autocomplete,
+    yahoo_autocomplete,
     yahoo_shopping_autocomplete,
     yahoo_shopping_related,
     make_keyword_dict,
@@ -30,6 +31,7 @@ class RelatedRequest(BaseModel):
     qoo10_ad_related: bool = True      # 큐텐 키워드광고 연관 (M05의 "유사")
     qoo10_autocomplete: bool = True    # 큐텐 자동완성
     qoo10_related: bool = True         # 큐텐 연관 (M05의 "연관")
+    yahoo_autocomplete: bool = True    # 야후재팬(웹) 자동완성 (search.yahoo.co.jp #assist)
     yahoo_shopping_autocomplete: bool = True
     yahoo_shopping_related: bool = True
     # 추가기능
@@ -68,7 +70,7 @@ async def collect_related(req: RelatedRequest):
 
     total_steps = len(jp_list) * sum([
         req.qoo10_ad_related or req.qoo10_related, req.qoo10_autocomplete,
-        req.yahoo_shopping_autocomplete, req.yahoo_shopping_related,
+        req.yahoo_autocomplete, req.yahoo_shopping_autocomplete, req.yahoo_shopping_related,
     ])
     master_id = task_manager.create_task(f"연관 키워드 수집 ({len(jp_list)}개)", max(1, total_steps))
     task_manager.start_task(master_id)
@@ -93,8 +95,8 @@ async def collect_related(req: RelatedRequest):
                 task_manager.update_progress(master_id, len(jp_list), f"큐텐 연관/유사 완료: {len(kws)}개")
 
             page = None
-            if (req.qoo10_autocomplete or req.yahoo_shopping_autocomplete
-                    or req.yahoo_shopping_related):
+            if (req.qoo10_autocomplete or req.yahoo_autocomplete
+                    or req.yahoo_shopping_autocomplete or req.yahoo_shopping_related):
                 page = await browser_manager.get_page()
 
             if req.qoo10_autocomplete and page:
@@ -107,6 +109,18 @@ async def collect_related(req: RelatedRequest):
                     except Exception as e:
                         print(f"[qoo10_autocomplete] {kw} ERROR: {e}")
                     task_manager.update_progress(master_id, 1, f"큐텐 자동완성 '{kw}' 완료")
+
+            if req.yahoo_autocomplete and page:
+                for kw in jp_list:
+                    try:
+                        suggests = await yahoo_autocomplete(page, kw)
+                        print(f"[yahoo_autocomplete] {kw}: {len(suggests)}개")
+                        for s in suggests:
+                            if s:
+                                all_results.append(make_keyword_dict(s, "yahoo_autocomplete"))
+                    except Exception as e:
+                        print(f"[yahoo_autocomplete] {kw} ERROR: {e}")
+                    task_manager.update_progress(master_id, 1, f"야후웹 자동완성 '{kw}' 완료")
 
             if req.yahoo_shopping_autocomplete and page:
                 for kw in jp_list:
@@ -148,7 +162,7 @@ async def collect_related(req: RelatedRequest):
                     kw for kw in all_results
                     if (kw.get("search_volume_weekly") or 0) > 0
                     or (kw.get("search_volume_daily") or 0) > 0
-                    or kw.get("classification") in ("자동완성", "야후쇼핑자동", "야후쇼핑연관")
+                    or kw.get("classification") in ("자동완성", "야후자동", "야후쇼핑자동", "야후쇼핑연관")
                     # 검색량 정보 없는 소스는 그대로 유지 (0 판정 불가)
                 ]
 

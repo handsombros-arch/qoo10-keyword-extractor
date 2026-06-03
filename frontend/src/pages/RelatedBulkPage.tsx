@@ -17,7 +17,7 @@ const LEFT_PLATFORMS: PlatformOpt[] = [
   { key: 'amazon_related', label: '아마존재팬 연관 키워드', enabled: false, defaultChecked: false },
 ];
 const MID_PLATFORMS: PlatformOpt[] = [
-  { key: 'yahoo_autocomplete', label: '야후재팬 자동완성 키워드', enabled: false, defaultChecked: false },
+  { key: 'yahoo_autocomplete', label: '야후재팬 자동완성 키워드', enabled: true, defaultChecked: true },
   { key: 'yahoo_related', label: '야후재팬 연관 키워드', enabled: false, defaultChecked: false },
   { key: 'yahoo_shopping_autocomplete', label: '야후재팬 쇼핑 자동완성 키워드', enabled: true, defaultChecked: true },
   { key: 'yahoo_shopping_related', label: '야후재팬 쇼핑 연관 키워드', enabled: true, defaultChecked: true },
@@ -61,6 +61,7 @@ export default function RelatedBulkPage() {
         qoo10_ad_related: platforms.qoo10_ad_related,
         qoo10_autocomplete: platforms.qoo10_autocomplete,
         qoo10_related: platforms.qoo10_related,
+        yahoo_autocomplete: platforms.yahoo_autocomplete,
         yahoo_shopping_autocomplete: platforms.yahoo_shopping_autocomplete,
         yahoo_shopping_related: platforms.yahoo_shopping_related,
         remove_zero_search: removeZero,
