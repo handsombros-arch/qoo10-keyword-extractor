@@ -96,35 +96,17 @@ async def yahoo_shopping_autocomplete(page, keyword: str) -> List[str]:
 
 
 async def yahoo_shopping_related(page, keyword: str) -> List[str]:
-    """야후재팬 쇼핑 검색 결과 페이지의 관련 키워드 섹션."""
+    """야후재팬 쇼핑 관련검색어 — 원본 방식: shopping.yahoo.co.jp/search?p= + #rel_mid1 li.
+
+    (기존 search.shopping.yahoo + RelatedKeyword 셀렉터는 DOM 변경으로 0개였음 — 원본 방식으로 교체)
+    """
     try:
-        url = f"https://search.shopping.yahoo.co.jp/search?p={keyword}"
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(2000)
+        await page.goto(f"https://shopping.yahoo.co.jp/search?p={keyword}",
+                        wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(1800)
     except Exception:
         return []
-
-    results: List[str] = []
-    for sel in [
-        "[class*='RelatedKeyword'] a",
-        "[class*='relatedKeyword'] a",
-        "[class*='Related'] a",
-        "a[data-action*='related']",
-        # 키워드 드릴다운 링크들
-        "nav a[href*='/search?p=']",
-    ]:
-        try:
-            items = await page.query_selector_all(sel)
-            for it in items:
-                t = (await it.inner_text()).strip()
-                t = t.splitlines()[0].strip() if t else t
-                if t and t != keyword and 1 <= len(t) <= 40 and t not in results:
-                    results.append(t)
-            if len(results) > 15:
-                break
-        except Exception:
-            continue
-    return results[:30]
+    return await _collect_items(page, ["#rel_mid1 li", "[id*='rel_mid'] li"], keyword)
 
 
 async def yahoo_autocomplete(page, keyword: str) -> List[str]:
@@ -176,6 +158,83 @@ async def yahoo_autocomplete(page, keyword: str) -> List[str]:
     return results[:30]
 
 
+NOISE_GENERIC = ("設定", "Agent", "聞いて", "検索履歴")
+
+
+async def _collect_items(page, selectors: list, keyword: str, noise: tuple = NOISE_GENERIC) -> List[str]:
+    """여러 셀렉터로 li/a 텍스트 수집 + UI/광고/질문형 노이즈 제거 (원본 공통 패턴)."""
+    results: List[str] = []
+    for sel in selectors:
+        try:
+            items = await page.query_selector_all(sel)
+            for it in items:
+                t = (await it.inner_text()).strip()
+                t = t.splitlines()[0].strip() if t else t
+                if not t or t == keyword or len(t) >= 80:
+                    continue
+                if any(n in t for n in noise) or t.endswith("？") or t.endswith("?") or t.endswith("へ"):
+                    continue
+                if t not in results:
+                    results.append(t)
+            if results:
+                return results[:30]
+        except Exception:
+            continue
+    return results[:30]
+
+
+async def amazon_autocomplete(page, keyword: str) -> List[str]:
+    """아마존재팬 자동완성 — 원본 방식: 검색 진입 → #twotabsearchtextbox 클릭 → #nav-flyout-searchAjax."""
+    try:
+        await page.goto(f"https://www.amazon.co.jp/s?k={keyword}&__mk_ja_JP=カタカナ",
+                        wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(1000)
+    except Exception:
+        return []
+    box = await page.query_selector("#twotabsearchtextbox")
+    if box:
+        try:
+            await box.click()
+            await page.wait_for_timeout(1200)
+        except Exception:
+            pass
+    return await _collect_items(
+        page,
+        ["#nav-flyout-searchAjax .s-suggestion-container", "[class*='s-suggestion']"],
+        keyword,
+    )
+
+
+async def amazon_related(page, keyword: str) -> List[str]:
+    """아마존재팬 검색결과의 관련 검색어 (원본 a-box 계열 → 현행 s-related-searches)."""
+    try:
+        await page.goto(f"https://www.amazon.co.jp/s?k={keyword}&__mk_ja_JP=カタカナ",
+                        wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(1200)
+    except Exception:
+        return []
+    return await _collect_items(
+        page,
+        ["[data-component-type='s-related-searches'] a", "[class*='related'] a"],
+        keyword,
+    )
+
+
+async def yahoo_related(page, keyword: str) -> List[str]:
+    """야후재팬(웹) 관련검색어 — 원본 방식: search.yahoo.co.jp + .Contents__innerGroupFooter li."""
+    try:
+        await page.goto(f"https://search.yahoo.co.jp/search?p={keyword}",
+                        wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(1200)
+    except Exception:
+        return []
+    return await _collect_items(
+        page,
+        [".Contents__innerGroupFooter li", "[class*='Contents__innerGroupFooter'] li"],
+        keyword,
+    )
+
+
 def make_keyword_dict(keyword_jp: str, source: str) -> Dict:
     """공통 키워드 딕셔너리."""
     cls = {
@@ -183,7 +242,10 @@ def make_keyword_dict(keyword_jp: str, source: str) -> Dict:
         "qoo10_similar": "유사",
         "qoo10_ad_related": "광고연관",
         "qoo10_autocomplete": "자동완성",
+        "amazon_autocomplete": "아마존자동",
+        "amazon_related": "아마존연관",
         "yahoo_autocomplete": "야후자동",
+        "yahoo_related": "야후연관",
         "yahoo_shopping_autocomplete": "야후쇼핑자동",
         "yahoo_shopping_related": "야후쇼핑연관",
     }.get(source, source)
