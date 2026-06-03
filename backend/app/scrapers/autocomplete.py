@@ -53,6 +53,10 @@ async def qoo10_autocomplete(page, keyword: str) -> List[str]:
             ".gnb_search input",
         ],
         suggest_selectors=[
+            # 2026-06 현재 큐텐 DOM (셀렉터 갱신 — 읽기전용 테스트로 31개 추출 검증)
+            "[class*='auto'] li a",
+            "[class*='auto'] li",
+            # 레거시 폴백
             "#auto_keyword li a",
             "#auto_keyword li",
             ".auto_keyword li",
