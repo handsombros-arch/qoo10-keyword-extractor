@@ -200,7 +200,9 @@ export default function KeywordPage() {
     try {
       const raw = localStorage.getItem(COL_STATE_KEY);
       if (!raw) return false;
-      const state = JSON.parse(raw);
+      // 너비·순서·표시여부만 복원하고 정렬(sort)은 제외 — 옛 정렬이 재적용돼
+      // "오름차순이 안 먹는 것처럼" 보이던 혼란 방지. 정렬은 항상 깨끗하게 시작.
+      const state = JSON.parse(raw).map((c: any) => ({ ...c, sort: null, sortIndex: null }));
       api.applyColumnState?.({ state, applyOrder: true });
       // 사용자 커스텀 너비가 있는 컬럼은 autoSize 대상에서 제외
       state.forEach((c: any) => { if (c.colId && c.width) resizedColsRef.current.add(c.colId); });
