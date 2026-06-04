@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api from '../api/client';
 import { calculateMargin } from '../api/endpoints';
+import { getCachedRate, fetchTodayRate, getRateMeta } from '../lib/exchangeRate';
 
 interface Scenario {
   weight_g: number;
@@ -106,7 +107,7 @@ export default function MarginPage() {
     purchase_price_krw: Number(params.get('purchase_krw') ?? 22200),
     shipping_packaging_krw: Number(params.get('shipping_krw') ?? 3000),
     sell_price_jpy: Number(params.get('sell_jpy') ?? 4300),
-    exchange_rate: Number(params.get('rate') ?? 9.5),
+    exchange_rate: Number(params.get('rate') ?? getCachedRate()),
     use_exact_rate: params.get('exact') === '1',
     shipping_mode: (params.get('shipping') ?? 'auto') as 'auto' | 'free_kse' | 'paid_tracx',
   });
@@ -115,6 +116,16 @@ export default function MarginPage() {
   const [compositions, setCompositions] = useState<{ compositions: Scenario[]; best_composition_label: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [rateMeta, setRateMeta] = useState(getRateMeta());
+
+  // 오늘 실시간 환율 워밍 — URL 로 rate 를 안 넘겼으면 폼 기본값을 오늘 환율로
+  useEffect(() => {
+    fetchTodayRate().then(r => {
+      setRateMeta(getRateMeta());
+      if (!params.get('rate') && r > 0) setForm(prev => ({ ...prev, exchange_rate: r }));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const runAll = async () => {
     setLoading(true);
@@ -195,6 +206,19 @@ export default function MarginPage() {
             <input type="number" step="0.01" value={form.exchange_rate}
               onChange={e => update('exchange_rate', +e.target.value)}
               className="w-full border rounded px-2 py-1.5" required />
+            {rateMeta.rate > 0 && (
+              <div className="text-[11px] text-gray-400 mt-1 flex items-center gap-1">
+                <span>
+                  오늘 {rateMeta.rate}원
+                  {rateMeta.source && rateMeta.source !== 'fallback' ? ` · ${rateMeta.source}` : ''}
+                  {rateMeta.as_of ? ` (${rateMeta.as_of})` : ''}
+                </span>
+                {Math.abs(form.exchange_rate - rateMeta.rate) > 0.001 && (
+                  <button type="button" onClick={() => update('exchange_rate', rateMeta.rate)}
+                    className="text-blue-600 hover:underline">적용</button>
+                )}
+              </div>
+            )}
           </label>
           <label className="text-sm">
             <div className="text-gray-600 mb-1">배송 모드</div>

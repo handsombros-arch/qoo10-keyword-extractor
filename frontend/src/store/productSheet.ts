@@ -3,6 +3,7 @@
  * 사용자가 수동 입력한 무게/구매가/배송비를 재방문 시 복원.
  */
 import { lookupKseShipping } from '../lib/marginCalc';
+import { getCachedRate } from '../lib/exchangeRate';
 
 /** 구성 옵션: 한 상품을 단품/세트/번들 등 여러 판매 형태로 등록하기 위한 하위 레코드.
  *  큐텐 등록 시 옵션명 (예: "용량") 그룹 + 옵션값 (예: "30ml") list 로 변환. */
@@ -206,7 +207,7 @@ export function newSheetRow(partial: Partial<SheetRow>): SheetRow {
     sell_price_jpy: 0,
     normal_sales_count: 0,
     mega_sales_count: 0,
-    exchange_rate: 9.5,
+    exchange_rate: getCachedRate(),
     shipping_mode: 'auto',
     qoo10_tags: [],
     qoo10_marketing: [],

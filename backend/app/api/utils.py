@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.connection import get_session
 from app.db.sqlite_repo import SQLiteKeywordRepository, SQLiteBidRepository, SQLiteProductRepository
-from app.services.exchange_rate import get_exchange_rate
+from app.services.exchange_rate import get_exchange_rate, get_exchange_rate_meta
 from app.services.translation import translate_batch, translate_papago
 
 router = APIRouter(prefix="/api/utils", tags=["utils"])
@@ -22,8 +22,8 @@ class TranslateRequest(BaseModel):
 
 @router.get("/exchange-rate")
 async def exchange_rate(currency: str = "JPY"):
-    rate = await get_exchange_rate(currency)
-    return {"currency": currency, "rate": rate}
+    # rate = 1단위당 원화 (JPY → 1엔당 ~9.x), source/as_of 포함 (하루1회 캐시)
+    return await get_exchange_rate_meta(currency)
 
 
 @router.post("/translate")
