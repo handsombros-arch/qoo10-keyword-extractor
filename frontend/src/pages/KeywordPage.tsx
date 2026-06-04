@@ -318,7 +318,7 @@ export default function KeywordPage() {
     }
   }, [filteredKeywords]);
   const numFmt = (p: any) => p.value == null ? '' : Number(p.value).toLocaleString();
-  const pctFmt = (p: any) => p.value == null ? '' : `${Number(p.value).toFixed(1)}%`;
+  const pctFmt = (p: any) => p.value == null ? '' : `${Math.round(Number(p.value))}%`;
 
   const krRatioGetter = (p: any) => {
     const total = p.data?.total_products || 0;

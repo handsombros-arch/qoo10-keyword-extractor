@@ -280,8 +280,8 @@ body.sheet-fullscreen .fs-hide-block { display: none !important; }
   user-drag: none;
 }
 
-/* AG Grid 헤더 정렬 화살표(오름/내림차순) 기존 대비 50% 축소 */
-.ag-header-cell .ag-sort-indicator-icon .ag-icon {
+/* AG Grid 헤더 필터/메뉴 버튼(≡) 기존 대비 50% 축소 (정렬 화살표는 원래대로) */
+.ag-header-cell .ag-header-icon .ag-icon {
   transform: scale(0.5);
   transform-origin: center;
 }
