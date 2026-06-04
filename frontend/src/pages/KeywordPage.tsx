@@ -210,6 +210,7 @@ export default function KeywordPage() {
   const [activeClass, setActiveClass] = useState<string | null>(null);
   const [activeZone, setActiveZone] = useState<string | null>(null);
   const [slotOnly, setSlotOnly] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);  // 수집/삭제 도구 접기 (시트 풀화면용)
   type DateMode = 'all' | 'single' | 'range';
   const [dateMode, setDateMode] = useState<DateMode>('all');
   const [singleDate, setSingleDate] = useState('');
@@ -444,6 +445,15 @@ export default function KeywordPage() {
         </div>
       )}
 
+      {/* 수집·삭제 도구 토글 (접으면 시트가 화면을 꽉 채움) */}
+      <button
+        onClick={() => setToolsOpen(o => !o)}
+        className="mb-3 text-sm px-3 py-1.5 rounded border bg-white text-gray-600 hover:bg-gray-50"
+      >
+        {toolsOpen ? '▾ 키워드 수집·삭제 도구 접기' : '▸ 키워드 수집·삭제 도구 (트렌드 가져오기 · 일자별 삭제)'}
+      </button>
+
+      {toolsOpen && (<>
       {/* 트렌드 키워드 수집 */}
       <div className="bg-white rounded-lg shadow p-5 mb-4">
         <h3 className="font-semibold mb-3">트렌드 키워드 가져오기</h3>
@@ -551,6 +561,7 @@ export default function KeywordPage() {
           </button>
         </div>
       </div>
+      </>)}
 
       {/* 키워드 테이블 (AG Grid) */}
       <div className="bg-white rounded-lg shadow p-2">
@@ -700,7 +711,7 @@ export default function KeywordPage() {
             행 왼쪽 체크박스로 선택 · 컬럼 헤더 우측 ≡ 메뉴로 필터
           </span>
         </div>
-        <div style={{ height: 600, width: '100%' }}>
+        <div style={{ height: toolsOpen ? 'calc(100vh - 200px)' : 'calc(100vh - 150px)', minHeight: 520, width: '100%' }}>
           <AgGridReact
             ref={gridRef}
             theme={myTheme}
