@@ -51,11 +51,18 @@ export default function KeywordPage() {
   const [dates, setDates] = useState<{ lookup_date: string; count: number }[]>([]);
   const [deleteDate, setDeleteDate] = useState('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const didInitDate = useRef(false);
 
   const fetchDates = async () => {
     try {
       const res = await listKeywordDates();
       setDates(res.data);
+      // 기본 뷰 = 최신 날짜 1개 (전 날짜 8900행 무차별 로드 방지 → 정렬 정상, 원본=시트 한 장 기준)
+      if (!didInitDate.current && res.data.length) {
+        const latest = res.data.map(d => d.lookup_date).filter(Boolean).sort().slice(-1)[0];
+        if (latest) { setSingleDate(latest); setDateMode('single'); }
+        didInitDate.current = true;
+      }
     } catch { /* ignore */ }
   };
 
