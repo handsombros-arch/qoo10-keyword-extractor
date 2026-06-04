@@ -216,6 +216,17 @@ export default function KeywordPage() {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
 
+  // 날짜 이동 헬퍼 — 데이터가 실제 있는 수집일만 오름차순으로 (◀▶ 로 하루씩 이동)
+  const sortedDates = useMemo(
+    () => dates.map(d => d.lookup_date).filter(Boolean).sort(),
+    [dates],
+  );
+  const dateCount = (d: string) => dates.find(x => x.lookup_date === d)?.count ?? 0;
+  const dateIdx = sortedDates.indexOf(singleDate);
+  const goPrevDay = () => { if (dateIdx > 0) { setDateMode('single'); setSingleDate(sortedDates[dateIdx - 1]); } };
+  const goNextDay = () => { if (dateIdx >= 0 && dateIdx < sortedDates.length - 1) { setDateMode('single'); setSingleDate(sortedDates[dateIdx + 1]); } };
+  const goLatestDay = () => { if (sortedDates.length) { setDateMode('single'); setSingleDate(sortedDates[sortedDates.length - 1]); } };
+
   const uniqueCats = useMemo(() => {
     const s = new Set<string>();
     keywords.forEach(k => k.category && s.add(k.category));
@@ -325,10 +336,7 @@ export default function KeywordPage() {
   };
 
   const columnDefs: ColDef[] = useMemo(() => [
-    {
-      headerName: '선택', width: 60, pinned: 'left', sortable: false, filter: false,
-      checkboxSelection: true, headerCheckboxSelection: true, headerCheckboxSelectionFilteredOnly: true,
-    },
+    // (선택 체크박스 컬럼은 rowSelection 신 API가 자동 생성 — selectionColumnDef로 제어)
     // ── 원본 listKeyword 컬럼 순서 (좌→우, 큐텐 키워드 추출기 v1.4.3 기준) ──
     { field: 'lookup_date', headerName: '조회날짜', width: 110 },
     { field: 'category', headerName: '카테고리', width: 130 },
@@ -550,22 +558,45 @@ export default function KeywordPage() {
         <div className="px-2 pt-2 pb-2 border-b border-gray-100 space-y-2">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-gray-600 w-16">날짜</span>
-            <button
-              onClick={() => { setDateMode('all'); setSingleDate(''); setFromDate(''); setToDate(''); }}
-              className={`px-2 py-0.5 text-xs rounded border ${dateMode === 'all' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
-            >전체</button>
-            <button
-              onClick={() => setDateMode('single')}
-              className={`px-2 py-0.5 text-xs rounded border ${dateMode === 'single' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
-            >특정일</button>
-            {dateMode === 'single' && (
+
+            {/* 하루씩 선택 (기본 · 가장 최신일) */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={goPrevDay}
+                disabled={dateMode !== 'single' || dateIdx <= 0}
+                title="이전 수집일"
+                className="px-2 py-1 text-sm rounded border bg-white text-gray-700 disabled:opacity-30 hover:bg-gray-50"
+              >◀</button>
               <input
                 type="date"
-                value={singleDate}
-                onChange={e => setSingleDate(e.target.value)}
-                className="border rounded px-2 py-0.5 text-xs"
+                value={dateMode === 'single' ? singleDate : ''}
+                min={sortedDates[0]}
+                max={sortedDates[sortedDates.length - 1]}
+                onChange={e => { setDateMode('single'); setSingleDate(e.target.value); }}
+                className={`border rounded px-2 py-1 text-sm ${dateMode === 'single' ? 'border-blue-500 ring-1 ring-blue-200 text-gray-900' : 'border-gray-300 text-gray-400'}`}
               />
-            )}
+              <button
+                onClick={goNextDay}
+                disabled={dateMode !== 'single' || dateIdx < 0 || dateIdx >= sortedDates.length - 1}
+                title="다음 수집일"
+                className="px-2 py-1 text-sm rounded border bg-white text-gray-700 disabled:opacity-30 hover:bg-gray-50"
+              >▶</button>
+              <button
+                onClick={goLatestDay}
+                title="가장 최신 수집일로"
+                className="px-2 py-1 text-xs rounded border bg-white text-gray-600 hover:bg-gray-50"
+              >최신</button>
+              {dateMode === 'single' && singleDate && (
+                <span className="text-xs text-gray-400 ml-1">{dateCount(singleDate).toLocaleString()}개</span>
+              )}
+            </div>
+
+            <span className="mx-1 text-gray-300">|</span>
+
+            <button
+              onClick={() => { setDateMode('all'); setFromDate(''); setToDate(''); }}
+              className={`px-2 py-0.5 text-xs rounded border ${dateMode === 'all' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+            >전체</button>
             <button
               onClick={() => setDateMode('range')}
               className={`px-2 py-0.5 text-xs rounded border ${dateMode === 'range' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
@@ -575,6 +606,8 @@ export default function KeywordPage() {
                 <input
                   type="date"
                   value={fromDate}
+                  min={sortedDates[0]}
+                  max={sortedDates[sortedDates.length - 1]}
                   onChange={e => setFromDate(e.target.value)}
                   className="border rounded px-2 py-0.5 text-xs"
                 />
@@ -582,6 +615,8 @@ export default function KeywordPage() {
                 <input
                   type="date"
                   value={toDate}
+                  min={sortedDates[0]}
+                  max={sortedDates[sortedDates.length - 1]}
                   onChange={e => setToDate(e.target.value)}
                   className="border rounded px-2 py-0.5 text-xs"
                 />
@@ -673,7 +708,8 @@ export default function KeywordPage() {
             rowData={filteredKeywords}
             columnDefs={columnDefs}
             defaultColDef={defaultColDef}
-            rowSelection={{ mode: 'multiRow' }}
+            rowSelection={{ mode: 'multiRow', selectAll: 'filtered' }}
+            selectionColumnDef={{ pinned: 'left', width: 50, suppressMovable: true, lockPosition: true }}
             animateRows={true}
             pagination={true}
             paginationPageSize={2000}
