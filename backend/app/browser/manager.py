@@ -12,14 +12,21 @@ from app.config import settings
 def _find_chrome_path() -> Optional[str]:
     """시스템에 설치된 Chrome 경로 찾기"""
     candidates = [
+        # Windows
         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
         str(Path.home() / r"AppData\Local\Google\Chrome\Application\chrome.exe"),
+        # macOS (맥북 24h 서버용)
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        str(Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        # Linux
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
     ]
     for path in candidates:
         if Path(path).exists():
             return path
-    found = shutil.which("chrome") or shutil.which("google-chrome")
+    found = shutil.which("chrome") or shutil.which("google-chrome") or shutil.which("chromium")
     return found
 
 
