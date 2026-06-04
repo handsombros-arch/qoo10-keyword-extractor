@@ -39,23 +39,34 @@ const CATEGORIES = [
   { value: 12, label: '서플리먼트&다이어트' },
 ];
 
-// ── "좋은 키워드" 신호 ──
-// 존: 검색수 50 / 상품수 200 기준 (황금존 = 수요 있고 공급 적음)
-function zoneOf(k: any): string {
+// ── "좋은 키워드" 5대 기준 (각 독립 토글, 선택한 것들의 AND 조합) ──
+// 경쟁강도 = 전체상품수 ÷ 검색수(주평). 저장값이 비었거나 0(검색수 누락/반올림)이면 재계산.
+function compVal(k: any): number | null {
+  const ci = k?.competition_intensity;
+  if (ci != null && Number(ci) > 0) return Number(ci);
   const sv = Number(k?.search_volume_weekly) || 0;
-  const tp = Number(k?.total_products) || 0;
-  if (sv >= 50 && tp <= 200) return '황금존';
-  if (sv >= 50) return '레드오션';
-  if (tp <= 200) return '데드존';
-  return '포화';
+  const tp = k?.total_products;
+  if (sv > 0 && tp != null) return Number(tp) / sv;
+  return null;
 }
-// 구좌 열림: 낙찰수 ≤ 3 (들어가면 바로 상위 노출). null(미수집)은 제외.
+function krRatioOf(k: any): number | null {
+  const tp = Number(k?.total_products) || 0;
+  const kr = Number(k?.products_kr) || 0;
+  return tp > 0 ? kr / tp : null;
+}
+// 구좌 열림: 낙찰수 ≤ 3 (들어가면 바로 상위 노출). null(미수집)은 컬럼 표시상 제외.
 function slotOpen(k: any): boolean {
   return k?.bid_count != null && Number(k.bid_count) <= 3;
 }
-const ZONE_COLOR: Record<string, string> = {
-  '황금존': '#fde68a', '레드오션': '#fecaca', '데드존': '#e5e7eb', '포화': '#ddd6fe',
-};
+
+type GoodKey = 'comp' | 'sv' | 'tp' | 'krr' | 'slot';
+const GOOD_CRITERIA: { key: GoodKey; label: string; desc: string; test: (k: any) => boolean }[] = [
+  { key: 'comp', label: '경쟁강도', desc: '경쟁강도 ≤ 2.0  (전체상품수 ÷ 검색수)', test: (k) => { const c = compVal(k); return c != null && c <= 2.0; } },
+  { key: 'sv',   label: '검색수',   desc: '검색수(주평) ≥ 50', test: (k) => (Number(k?.search_volume_weekly) || 0) >= 50 },
+  { key: 'tp',   label: '상품수',   desc: '전체상품수 ≤ 500', test: (k) => { const t = Number(k?.total_products) || 0; return t > 0 && t <= 500; } },
+  { key: 'krr',  label: '한국비율', desc: '한국상품수 ÷ 전체상품수 ≥ 10%', test: (k) => { const r = krRatioOf(k); return r != null && r >= 0.10; } },
+  { key: 'slot', label: '구좌',     desc: '낙찰 빈 구좌 (낙찰수 ≤ 3, 데이터 없으면 통과)', test: (k) => k?.bid_count == null || Number(k.bid_count) <= 3 },
+];
 
 // 빈값(null/undefined/'')은 정렬 방향과 무관하게 항상 맨 아래로.
 // ag-grid 기본은 오름차순에서 null을 맨 위로 올려, 경쟁강도/낙찰가처럼 빈값 많은 컬럼은
@@ -229,8 +240,12 @@ export default function KeywordPage() {
   // 빠른 필터: 카테고리/분류/날짜 (state 기반 — rowData를 직접 필터링해 1-click 즉시 반영)
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [activeClass, setActiveClass] = useState<string | null>(null);
-  const [activeZone, setActiveZone] = useState<string | null>(null);
-  const [slotOnly, setSlotOnly] = useState(false);
+  const [goodFilters, setGoodFilters] = useState<Set<GoodKey>>(new Set());
+  const toggleGood = (key: GoodKey) => setGoodFilters(prev => {
+    const n = new Set(prev);
+    if (n.has(key)) n.delete(key); else n.add(key);
+    return n;
+  });
   const [toolsOpen, setToolsOpen] = useState(false);  // 수집/삭제 도구 접기 (시트 풀화면용)
   const [fullscreen, setFullscreen] = useState(false); // 시트 전체화면 (사이드바까지 덮음, ESC 닫기)
   type DateMode = 'all' | 'single' | 'range';
@@ -277,8 +292,9 @@ export default function KeywordPage() {
     return keywords.filter(k => {
       if (activeCat && k.category !== activeCat) return false;
       if (activeClass && k.classification !== activeClass) return false;
-      if (activeZone && zoneOf(k) !== activeZone) return false;
-      if (slotOnly && !slotOpen(k)) return false;
+      for (const c of GOOD_CRITERIA) {
+        if (goodFilters.has(c.key) && !c.test(k)) return false;
+      }
       const d = k.lookup_date;
       if (dateMode === 'single' && singleDate) {
         if (d !== singleDate) return false;
@@ -288,7 +304,7 @@ export default function KeywordPage() {
       }
       return true;
     });
-  }, [keywords, activeCat, activeClass, activeZone, slotOnly, dateMode, singleDate, fromDate, toDate]);
+  }, [keywords, activeCat, activeClass, goodFilters, dateMode, singleDate, fromDate, toDate]);
 
   // 데이터가 바뀌면 사용자가 조정 안 한 컬럼만 자동 크기 조정
   useEffect(() => {
@@ -419,12 +435,6 @@ export default function KeywordPage() {
     { field: 'bid_price_1', headerName: '낙찰종가', width: 100, type: 'numericColumn', valueFormatter: numFmt, headerTooltip: '1위 낙찰가 (최고가)' },
     { field: 'volume_change_flag', headerName: '전날대비증감', width: 110 },
     // ── 엘비텐 분석 보조 (원본에 없음 · 헤더 드래그로 원하는 위치로 이동 가능) ──
-    {
-      colId: 'zone', headerName: '존', width: 90,
-      valueGetter: (p: any) => zoneOf(p.data),
-      cellStyle: (p: any) => ({ backgroundColor: ZONE_COLOR[p.value] || '', fontWeight: p.value === '황금존' ? 700 : 400 }),
-      headerTooltip: '검색수 50 / 상품수 200 기준 (황금존=수요O·공급적음)',
-    },
     {
       colId: 'slot', headerName: '구좌', width: 72,
       valueGetter: (p: any) => slotOpen(p.data) ? '열림' : '',
@@ -695,25 +705,20 @@ export default function KeywordPage() {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-gray-600 w-16">좋은키워드</span>
             <button
-              onClick={() => { setActiveZone(null); setSlotOnly(false); }}
-              className={`px-2 py-0.5 text-xs rounded border ${activeZone === null && !slotOnly ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+              onClick={() => setGoodFilters(new Set())}
+              className={`px-2 py-0.5 text-xs rounded border ${goodFilters.size === 0 ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
             >전체</button>
-            {['황금존', '레드오션', '데드존', '포화'].map(z => (
+            {GOOD_CRITERIA.map(c => (
               <button
-                key={z}
-                onClick={() => setActiveZone(prev => prev === z ? null : z)}
-                className={`px-2 py-0.5 text-xs rounded border ${activeZone === z ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-              >{z}</button>
+                key={c.key}
+                onClick={() => toggleGood(c.key)}
+                title={c.desc}
+                className={`px-2 py-0.5 text-xs rounded border ${goodFilters.has(c.key) ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+              >{c.label}</button>
             ))}
-            <button
-              onClick={() => setSlotOnly(v => !v)}
-              className={`px-2 py-0.5 text-xs rounded border ${slotOnly ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-            >구좌(낙찰≤3)</button>
-            <button
-              onClick={() => { setActiveZone('황금존'); setSlotOnly(true); }}
-              className="px-2 py-0.5 text-xs rounded bg-amber-500 text-white hover:bg-amber-600"
-              title="황금존 + 구좌 열림(낙찰≤3)"
-            >⭐ 좋은 키워드</button>
+            {goodFilters.size > 0 && (
+              <span className="text-xs text-gray-400">{goodFilters.size}개 기준 동시 충족(AND)</span>
+            )}
           </div>
         </div>
         <div className={`px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap ${fullscreen ? 'shrink-0' : ''}`}>
