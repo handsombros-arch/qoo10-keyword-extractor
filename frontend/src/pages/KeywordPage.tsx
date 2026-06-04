@@ -211,6 +211,7 @@ export default function KeywordPage() {
   const [activeZone, setActiveZone] = useState<string | null>(null);
   const [slotOnly, setSlotOnly] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);  // 수집/삭제 도구 접기 (시트 풀화면용)
+  const [fullscreen, setFullscreen] = useState(false); // 시트 전체화면 (사이드바까지 덮음, ESC 닫기)
   type DateMode = 'all' | 'single' | 'range';
   const [dateMode, setDateMode] = useState<DateMode>('all');
   const [singleDate, setSingleDate] = useState('');
@@ -227,6 +228,14 @@ export default function KeywordPage() {
   const goPrevDay = () => { if (dateIdx > 0) { setDateMode('single'); setSingleDate(sortedDates[dateIdx - 1]); } };
   const goNextDay = () => { if (dateIdx >= 0 && dateIdx < sortedDates.length - 1) { setDateMode('single'); setSingleDate(sortedDates[dateIdx + 1]); } };
   const goLatestDay = () => { if (sortedDates.length) { setDateMode('single'); setSingleDate(sortedDates[sortedDates.length - 1]); } };
+
+  // 전체화면 중 ESC 로 닫기
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
 
   const uniqueCats = useMemo(() => {
     const s = new Set<string>();
@@ -563,9 +572,9 @@ export default function KeywordPage() {
       </div>
       </>)}
 
-      {/* 키워드 테이블 (AG Grid) */}
-      <div className="bg-white rounded-lg shadow p-2">
-        <div className="px-2 pt-2 pb-2 border-b border-gray-100 space-y-2">
+      {/* 키워드 테이블 (AG Grid) — fullscreen 시 사이드바까지 덮는 고정 오버레이 + flex(헤더 고정, 그리드만 스크롤) */}
+      <div className={fullscreen ? 'fixed inset-0 z-50 bg-white flex flex-col p-2 overflow-hidden' : 'bg-white rounded-lg shadow p-2'}>
+        <div className={`px-2 pt-2 pb-2 border-b border-gray-100 space-y-2 ${fullscreen ? 'shrink-0' : ''}`}>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-gray-600 w-16">날짜</span>
 
@@ -685,7 +694,7 @@ export default function KeywordPage() {
             >⭐ 좋은 키워드</button>
           </div>
         </div>
-        <div className="px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap">
+        <div className={`px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap ${fullscreen ? 'shrink-0' : ''}`}>
           <span>표시 {filteredKeywords.length.toLocaleString()} / 총 {keywords.length.toLocaleString()}개</span>
           <button
             onClick={sendSelectedToSheet}
@@ -707,11 +716,23 @@ export default function KeywordPage() {
           >
             📋 상품 시트
           </Link>
-          <span className="text-xs text-gray-400 ml-auto">
+          <button
+            onClick={() => setFullscreen(f => !f)}
+            className="px-3 py-1 bg-gray-800 text-white text-xs rounded hover:bg-black ml-auto"
+            title="시트만 전체화면 — 사이드바 숨김, 세로 스크롤 1개. ESC 로 닫기"
+          >
+            {fullscreen ? '✕ 전체화면 닫기 (ESC)' : '⛶ 전체화면'}
+          </button>
+          <span className="text-xs text-gray-400">
             행 왼쪽 체크박스로 선택 · 컬럼 헤더 우측 ≡ 메뉴로 필터
           </span>
         </div>
-        <div style={{ height: toolsOpen ? 'calc(100vh - 200px)' : 'calc(100vh - 150px)', minHeight: 520, width: '100%' }}>
+        <div
+          className={fullscreen ? 'flex-1 min-h-0' : ''}
+          style={fullscreen
+            ? { width: '100%' }
+            : { height: toolsOpen ? 'calc(100vh - 200px)' : 'calc(100vh - 150px)', minHeight: 520, width: '100%' }}
+        >
           <AgGridReact
             ref={gridRef}
             theme={myTheme}
