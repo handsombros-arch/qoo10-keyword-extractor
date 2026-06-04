@@ -34,7 +34,7 @@ class TrendKeywordRequest(BaseModel):
     categories: list[int] | None = None  # 다중 선택 (예: [1,3,5]) — 비어있거나 0 포함이면 전체
     fill_total_products: bool = True
     translate: bool = True
-    collect_bids: bool = False  # 광고 경매 낙찰가 수집 여부 (오래 걸림 — 기본 OFF)
+    collect_bids: bool = True  # 광고 경매 낙찰가 수집 — 데이터 불러올 때 같이(사장님 6/4). 느리면 false로
 
 
 class RelatedKeywordRequest(BaseModel):

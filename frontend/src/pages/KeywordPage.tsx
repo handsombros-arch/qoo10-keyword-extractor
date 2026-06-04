@@ -44,7 +44,7 @@ export default function KeywordPage() {
   const [selectedCats, setSelectedCats] = useState<number[]>([1]);
   const [translate, setTranslate] = useState(true);
   const [fillTotal, setFillTotal] = useState(true);
-  const [collectBids, setCollectBids] = useState(false);
+  const [collectBids, setCollectBids] = useState(true);  // 낙찰가도 같이 수집 (기본 ON, 6/4)
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [relatedInput, setRelatedInput] = useState('');
