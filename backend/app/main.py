@@ -17,7 +17,7 @@ from app.db.connection import engine
 from app.db.models import Base
 from app.services.auto_login import auto_login_on_startup
 
-from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data, automation, extension, blacklist, qoo10_categories, kr_trend
+from app.api import auth, keywords, competition, bid, products, tracking, bestsellers, tasks, utils, insights, image, price_compare, related, margin, recommendations, user_data, automation, extension, qoo10_categories, kr_trend
 
 # 프론트엔드 빌드 경로
 FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
@@ -170,7 +170,6 @@ app.include_router(recommendations.router)
 app.include_router(user_data.router)
 app.include_router(automation.router)
 app.include_router(extension.router)
-app.include_router(blacklist.router)
 app.include_router(qoo10_categories.router)
 app.include_router(kr_trend.router)
 

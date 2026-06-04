@@ -2150,39 +2150,6 @@ function ProductSheet({ rows, setRows }: {
             saveSheet(next);
             setRows(next);
           }}
-          // K (5/3) 블랙리스트 — 백엔드 등록 + 시트에서 제거
-          onBlacklist={async () => {
-            const kw = (detailRow.keyword_jp || '').trim();
-            const nm = (detailRow.product_name || '').trim();
-            if (!kw && !nm) {
-              alert('keyword_jp 또는 product_name 둘 다 비어있어 블랙리스트 추가 불가');
-              return;
-            }
-            const reason = window.prompt(
-              `블랙리스트에 추가:\n  keyword_jp: ${kw || '(빈)'}\n  product_name: ${nm || '(빈)'}\n\n사유 (선택, 비워도 됨):`,
-              ''
-            );
-            if (reason === null) return; // cancel
-            try {
-              const r = await api.post<any>('/blacklist/add', {
-                keyword_jp: kw || undefined,
-                product_name: nm || undefined,
-                reason: reason || undefined,
-                source: 'manual',
-              });
-              if (r.data.added) {
-                // 시트에서 제거
-                const next = rows.filter(r2 => r2.id !== detailRow.id);
-                saveSheet(next);
-                setRows(next);
-                onCloseDetailPanel();
-              } else {
-                alert(`블랙리스트 추가 안 됨: ${r.data.reason}`);
-              }
-            } catch (e: any) {
-              alert(`블랙리스트 호출 실패: ${e?.response?.data?.detail || e.message}`);
-            }
-          }}
         />
       )}
 

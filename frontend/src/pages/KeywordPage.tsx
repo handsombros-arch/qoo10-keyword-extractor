@@ -330,7 +330,6 @@ export default function KeywordPage() {
     alert(
       `✓ ${result.added}건 시트에 추가 (${selected.length} 중)\n` +
       (result.deduped > 0 ? `- 중복 ${result.deduped}건\n` : '') +
-      (result.blacklisted > 0 ? `⛔ 블랙리스트 ${result.blacklisted}건 차단\n` : '') +
       `\n/recommend-products 에서 확인 — URL/원가 직접 입력하세요.`
     );
   };

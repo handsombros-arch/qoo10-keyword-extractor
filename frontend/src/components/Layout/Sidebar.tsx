@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
-  LayoutDashboard, FileSpreadsheet, Ban, Target,
+  LayoutDashboard, FileSpreadsheet, Target,
   Calculator, ImageMinus,
   Search, BarChart3, Link2, Settings,
   Wrench, Calendar, FileEdit,
@@ -15,7 +15,6 @@ const mainItems: Item[] = [
   { path: '/keywords', label: '키워드 추출 (RD)', icon: Search },
   { path: '/', label: '대시보드', icon: LayoutDashboard },
   { path: '/recommend-products', label: '상품 시트', icon: FileSpreadsheet },
-  { path: '/blacklist', label: '블랙리스트', icon: Ban },
   { path: '/shop-benchmark', label: '샵 벤치마크', icon: Target },
   { path: '/margin', label: '마진 계산기', icon: Calculator },
   { path: '/image', label: '워터마크 제거', icon: ImageMinus },

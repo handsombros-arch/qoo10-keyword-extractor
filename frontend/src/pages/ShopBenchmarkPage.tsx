@@ -198,21 +198,16 @@ export default function ShopBenchmarkPage() {
       if (picks.length > 0) byShop.set(shop.shop_id, picks);
     }
     let totalAdded = 0;
-    let totalBlocked = 0;
     for (const [shopId, products] of byShop) {
       const shop = results.find(s => s.shop_id === shopId)!;
       const before = loadSheet().length;
       await addProductsToSheet(shop, products);
       const after = loadSheet().length;
       totalAdded += after - before;
-      totalBlocked += products.length - (after - before);
     }
     setSelectedKeys(new Set());
     refreshAddedKeys();
-    setToast(
-      `${totalAdded}개 시트에 추가됨` +
-      (totalBlocked > 0 ? ` (블랙리스트 ${totalBlocked} 차단)` : '')
-    );
+    setToast(`${totalAdded}개 시트에 추가됨`);
   };
 
   const addProductsToSheet = async (shop: ShopResult, products: ShopProduct[]) => {
@@ -227,22 +222,7 @@ export default function ShopBenchmarkPage() {
       translations = products.map(() => '');
     }
 
-    // 블랙리스트 batch 체크
-    let blockedSet = new Set<string>();
-    try {
-      const r = await api.post<any>('/blacklist/check-batch', {
-        items: products.map(p => ({ product_name: p.product_name })),
-      });
-      for (const res of r.data.results || []) {
-        if (res.blacklisted && res.product_name) blockedSet.add(res.product_name);
-      }
-    } catch (e) {
-      console.warn('[shop-benchmark] blacklist check 실패, skip:', e);
-    }
-
-    const filtered = products
-      .map((p, i) => ({ p, i }))
-      .filter(({ p }) => !blockedSet.has(p.product_name));
+    const filtered = products.map((p, i) => ({ p, i }));
 
     if (filtered.length === 0) return;
 

@@ -49,14 +49,13 @@ type Props = {
   onClose: () => void;
   onSave: (updated: Partial<SheetRow>) => void;
   onReject?: () => void;
-  onBlacklist?: () => void;   // K (5/3): 블랙리스트 추가 + 행 삭제 (부모에서 구현)
 };
 
 export type SheetRowDetailPanelProps = Props;
 
 type AltSku = NonNullable<RowMeta['alt_skus']>[number];
 
-export default function SheetRowDetailPanel({ row, onClose, onSave, onReject, onBlacklist }: Props) {
+export default function SheetRowDetailPanel({ row, onClose, onSave, onReject }: Props) {
   const [meta, setMeta] = useState<RowMeta | null>(null);
   const [loading, setLoading] = useState(false);
   const [edit, setEdit] = useState<Partial<SheetRow>>({
@@ -1048,15 +1047,6 @@ export default function SheetRowDetailPanel({ row, onClose, onSave, onReject, on
           }}
             className="px-3 bg-gray-200 hover:bg-gray-300 py-1.5 rounded text-xs">
             거부
-          </button>
-        )}
-        {onBlacklist && (
-          <button
-            onClick={onBlacklist}
-            className="px-3 bg-red-50 text-red-700 border border-red-200 py-1.5 rounded text-xs hover:bg-red-100"
-            title="이 상품/키워드를 블랙리스트에 추가하고 시트에서 제거. 자동화에서 더 이상 추가 안 됨."
-          >
-            ⛔ 블랙리스트
           </button>
         )}
         <button onClick={onClose}

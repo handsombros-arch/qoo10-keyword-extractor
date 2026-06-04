@@ -1022,12 +1022,6 @@ async def send_to_sheet(target_date: str, req: SendToSheetRequest):
             skipped += 1
             continue
 
-        # K (5/3) 블랙리스트 사전 차단 — keyword_jp 또는 product_name 매칭 시 시트 추가 안 함
-        from app.api.blacklist import is_blacklisted as _is_blk
-        if await _is_blk(keyword_jp=kw_jp, product_name=product_name):
-            skipped += 1
-            continue
-
         margin = c.get("margin") or {}
         margin_rate_pct = (margin.get("margin_rate") or 0) * 100
 
