@@ -218,6 +218,12 @@ export default function KeywordPage() {
   };
   const handleColumnMoved = (e: any) => { if (e.source === 'uiColumnDragged' || e.finished) saveColState(); };
   const handleSortChanged = () => saveColState();
+  // 모든 컬럼 정렬 해제 (저장상태에 남은 다중정렬 등 즉시 클리어)
+  const resetSort = () => {
+    const api = gridRef.current?.api as any;
+    api?.applyColumnState?.({ defaultState: { sort: null, sortIndex: null } });
+    saveColState();
+  };
   const handleGridReady = () => { restoreColState(); };
 
   // 빠른 필터: 카테고리/분류/날짜 (state 기반 — rowData를 직접 필터링해 1-click 즉시 반영)
@@ -712,6 +718,13 @@ export default function KeywordPage() {
         </div>
         <div className={`px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap ${fullscreen ? 'shrink-0' : ''}`}>
           <span>표시 {filteredKeywords.length.toLocaleString()} / 총 {keywords.length.toLocaleString()}개</span>
+          <button
+            onClick={resetSort}
+            className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded border hover:bg-gray-200"
+            title="모든 컬럼 정렬 해제 (카테고리·분류 등 남은 다중정렬 클리어)"
+          >
+            ↕ 정렬 초기화
+          </button>
           <button
             onClick={sendSelectedToSheet}
             className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
