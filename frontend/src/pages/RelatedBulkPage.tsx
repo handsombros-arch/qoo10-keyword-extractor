@@ -156,13 +156,13 @@ export default function RelatedBulkPage() {
             <input type="checkbox" checked={removeZero} onChange={e => setRemoveZero(e.target.checked)} />
             검색수 0 키워드 제거
           </label>
-          <label className="flex items-center gap-2 text-gray-400">
-            <input type="checkbox" checked={runCompetition} onChange={e => setRunCompetition(e.target.checked)} disabled />
-            경쟁강도 분석 이어서 하기 (미구현)
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={runCompetition} onChange={e => setRunCompetition(e.target.checked)} />
+            경쟁강도(상품수·국가) 같이 분석
           </label>
-          <label className="flex items-center gap-2 text-gray-400">
-            <input type="checkbox" checked={runBid} onChange={e => setRunBid(e.target.checked)} disabled />
-            경매낙찰가 분석 이어서 하기 (미구현)
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={runBid} onChange={e => setRunBid(e.target.checked)} />
+            경매 낙찰가 같이 분석 <span className="text-amber-600">(느림)</span>
           </label>
         </div>
       </div>

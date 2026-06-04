@@ -216,6 +216,31 @@ async def collect_related(req: RelatedRequest):
                 deduped.append(kw)
             all_results = deduped
 
+            # 큐텐 검증 1 — 경쟁강도(M03): 연관어를 큐텐 검색해 상품수·국가별·경쟁강도 채움.
+            # (검색수는 M02 ADPlus 트렌드 전용이라 여기선 미산출 → competition 은 0/None 가능, 상품수는 채워짐)
+            if req.run_competition and all_results:
+                try:
+                    from app.scrapers.m03_competition import CompetitionScraper
+                    uniq_jp = list(dict.fromkeys(
+                        kw.get("keyword_jp") for kw in all_results if kw.get("keyword_jp")
+                    ))
+                    comp_in = [{"keyword_jp": k, "search_volume_weekly": 0} for k in uniq_jp]
+                    comp_res = await CompetitionScraper(browser_manager, task_manager).run(keywords=comp_in)
+                    comp_map = {r.get("keyword_jp"): r for r in (comp_res.get("results") or [])}
+                    for kw in all_results:
+                        r = comp_map.get(kw.get("keyword_jp"))
+                        if not r:
+                            continue
+                        for f in ("total_products", "products_jp", "products_kr",
+                                  "products_cn", "products_other"):
+                            if r.get(f) is not None:
+                                kw[f] = r[f]
+                        if r.get("competition_intensity"):
+                            kw["competition_intensity"] = r["competition_intensity"]
+                except Exception as e:
+                    traceback.print_exc()
+                    print(f"[related run_competition] ERROR: {e}")
+
             # 검색수 0 제거 옵션
             if req.remove_zero_search:
                 all_results = [
@@ -230,6 +255,24 @@ async def collect_related(req: RelatedRequest):
             async with async_session() as session:
                 repo = SQLiteKeywordRepository(session)
                 await repo.save_keywords(all_results)
+
+            # 큐텐 검증 2 — 경매 낙찰가(M04): BidHistory 적재(RD 그리드가 keyword_jp 로 조인해 표시).
+            # ⚠️ 느림 — 키워드마다 QSM 경매 페이지 조회.
+            if req.run_bid and all_results:
+                try:
+                    from app.scrapers.m04_bid_results import BidResultScraper
+                    from app.db.sqlite_repo import SQLiteBidRepository
+                    uniq_jp = list(dict.fromkeys(
+                        kw.get("keyword_jp") for kw in all_results if kw.get("keyword_jp")
+                    ))
+                    bid_res = await BidResultScraper(browser_manager, task_manager).run(keywords=uniq_jp)
+                    records = bid_res.get("results") or []
+                    if records:
+                        async with async_session() as session:
+                            await SQLiteBidRepository(session).replace_bid_history(date.today(), records)
+                except Exception as e:
+                    traceback.print_exc()
+                    print(f"[related run_bid] ERROR: {e}")
 
             task_manager.complete_task(master_id, f"연관 키워드 {len(all_results)}개 적재 완료")
             return {"saved": len(all_results)}
