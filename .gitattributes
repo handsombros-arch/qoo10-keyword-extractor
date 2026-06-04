@@ -1,0 +1,5 @@
+# 맥/리눅스에서 실행되는 스크립트·plist 는 항상 LF (CRLF면 'bash: \r' 에러)
+*.sh text eol=lf
+*.plist text eol=lf
+*.plist.tmpl text eol=lf
+automation/mac/** text eol=lf
