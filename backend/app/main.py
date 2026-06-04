@@ -6,6 +6,14 @@ from pathlib import Path
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+# stdout/stderr 을 UTF-8(errors=replace)로 강제 — 일본어 print(M02/연관 디버그 로그)가
+# cp949 콘솔/리다이렉트에서 UnicodeEncodeError 로 스크래퍼를 죽이는 것 방지.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    except Exception:
+        pass
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
