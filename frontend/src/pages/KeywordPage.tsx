@@ -57,6 +57,19 @@ const ZONE_COLOR: Record<string, string> = {
   '황금존': '#fde68a', '레드오션': '#fecaca', '데드존': '#e5e7eb', '포화': '#ddd6fe',
 };
 
+// 빈값(null/undefined/'')은 정렬 방향과 무관하게 항상 맨 아래로.
+// ag-grid 기본은 오름차순에서 null을 맨 위로 올려, 경쟁강도/낙찰가처럼 빈값 많은 컬럼은
+// "오름차순이 안 먹는 것처럼"(빈 행이 화면을 덮음) 보임. → 빈값을 항상 바닥으로.
+function sortNullsLast(a: any, b: any, _na: any, _nb: any, isDescending: boolean): number {
+  const ea = a === null || a === undefined || a === '';
+  const eb = b === null || b === undefined || b === '';
+  if (ea && eb) return 0;
+  if (ea) return isDescending ? -1 : 1;
+  if (eb) return isDescending ? 1 : -1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  return String(a).localeCompare(String(b), 'ja');
+}
+
 export default function KeywordPage() {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [selectedCats, setSelectedCats] = useState<number[]>([1]);
@@ -430,6 +443,7 @@ export default function KeywordPage() {
     suppressMovable: false,
     floatingFilter: false,
     minWidth: 60,
+    comparator: sortNullsLast,  // 빈값 항상 바닥 → 오름차순도 정상 동작
   }), []);
 
   const handleDelete = async (id: number) => {
