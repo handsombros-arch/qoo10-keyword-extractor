@@ -58,9 +58,53 @@ def _normalize_naver_link(url: str) -> str:
 class NaverShoppingScraper(BaseScraper):
     """M08: 네이버 쇼핑 검색 (공식 API + 의미 매칭)."""
 
+    def _build_from_ext(self, keyword: str, raw: list, max_results: int) -> list:
+        """확장 검색 파서 결과 → m08 출력 형식(배송비 포함) + 의미필터 + 가격순."""
+        names = [(p.get("product_name") or "") for p in raw]
+        if semantic_available():
+            matches = match_candidates(keyword, names, threshold=_SIM_THRESHOLD)
+            idxs = [i for i, _ in matches]
+            sel = [raw[i] for i in idxs] if idxs else raw
+        else:
+            sel = raw
+        sel = [p for p in sel if (p.get("price") or 0) > 0]
+        sel.sort(key=lambda p: p.get("price") or 0)
+        today = date.today()
+        out = []
+        for p in sel[:max_results]:
+            sf = p.get("shipping_fee")
+            out.append({
+                "source": "naver",
+                "search_keyword": keyword,
+                "product_name": p.get("product_name") or "",
+                "price_krw": p.get("price") or 0,
+                "shipping_fee": sf if sf is not None else "",   # int(원), 0=무료, ""=미상
+                "origin": "",
+                "cover_image_url": p.get("image_url") or "",
+                "product_url": p.get("product_url") or "",
+                "lookup_date": today,
+            })
+        return out
+
     async def run(self, keyword: str, max_results: int = 30, **params) -> dict:
         task_id = self.tasks.create_task("네이버 쇼핑 검색", 1)
         self.tasks.start_task(task_id)
+
+        # R-9: 확장(진짜 Chrome) 검색 우선 — __NEXT_DATA__ 파싱으로 배송비까지 확보.
+        # 확장 미가용/0건/실패 시 아래 네이버 API 로 폴백.
+        if os.getenv("EXT_USE_EXTENSION", "").strip().lower() == "true":
+            try:
+                from app.services.ext_client import search_one
+                self.tasks.update_progress(task_id, 0, f"'{keyword}' 확장 검색(배송비 포함)")
+                r = await search_one(keyword)
+                raw = r.get("products") or []
+                if raw:
+                    products = self._build_from_ext(keyword, raw, max_results)
+                    self.tasks.complete_task(task_id, f"확장 검색 {len(products)}개 (배송비 포함)")
+                    return {"task_id": task_id, "products": products}
+                self.tasks.update_progress(task_id, 0, f"확장 0건 → API 폴백 ({r.get('error','')})")
+            except Exception as e:
+                self.tasks.update_progress(task_id, 0, f"확장 실패({e}) → API 폴백")
 
         client_id = os.getenv("NAVER_CLIENT_ID", "").strip()
         client_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()

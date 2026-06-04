@@ -100,6 +100,56 @@ async def fetch_one(
         return {"error": f"extension timeout after {timeout_seconds}s"}
 
 
+async def search_one(
+    keyword: str,
+    *,
+    timeout_seconds: int = 90,
+    poll_interval: float = 2.0,
+) -> dict:
+    """확장으로 네이버 검색결과 1건 수집 → {"products": [...]} (배송비 포함, R-9).
+
+    확장이 search.shopping.naver.com 검색결과의 __NEXT_DATA__ 를 떠오면 백엔드가
+    parse_naver_search_dump 로 파싱해 results[url].parsed_products 에 저장한다.
+    timeout/실패 시 {"error": ...} → 호출측이 API 폴백.
+    """
+    from urllib.parse import quote
+    url = f"https://search.shopping.naver.com/search/all?query={quote(keyword)}"
+    job_id = f"search_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:6]}"
+    payload = {
+        "job_id": job_id,
+        "urls": [{"url": url}],
+        "config": {"active_tab": True, "probe": "naver_search", "delay_min_ms": 0, "delay_max_ms": 0},
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            r = await client.post(f"{BACKEND_URL}/api/ext/queue", json=payload)
+            r.raise_for_status()
+        except Exception as e:
+            return {"error": f"queue register fail: {e}"}
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout_seconds
+        while loop.time() < deadline:
+            try:
+                r = await client.get(f"{BACKEND_URL}/api/ext/status", params={"job_id": job_id})
+                r.raise_for_status()
+                data = r.json()
+                summary = data.get("summary") or {}
+                if summary.get("status") in ("completed", "failed"):
+                    results = data.get("results") or {}
+                    if not results:
+                        return {"error": "no result"}
+                    res = next(iter(results.values()))
+                    if res.get("status") == "success":
+                        return {"products": res.get("parsed_products") or []}
+                    return {"error": res.get("error") or "extension error"}
+            except Exception as e:
+                logger.warning(f"[ext_client] search poll fail: {e}")
+            await asyncio.sleep(poll_interval)
+
+        return {"error": f"extension timeout after {timeout_seconds}s"}
+
+
 def _to_naver_fetch_schema(ext_data: dict) -> dict:
     """확장 응답 → naver_fetch_v2 호환 dict.
 
