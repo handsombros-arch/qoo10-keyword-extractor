@@ -25,12 +25,23 @@ class Settings:
     QOO10_ADPLUS_URL: str = "https://qsm.qoo10.jp/GMKT.INC.Gsm.Web/ADPlus/"
     QOO10_BESTSELLER_URL: str = "https://www.qoo10.jp/gmkt.inc/Bestsellers/"
     PAPAGO_URL: str = "https://papago.naver.com/"
+    # Papago NCP(네이버 클라우드) NMT API — 유료. 크리덴셜 있으면 Papago, 없으면 Google 폴백.
+    PAPAGO_API_URL: str = "https://naveropenapi.apigw.ntruss.com/nmt/v1/translation"
+    PAPAGO_CLIENT_ID: str = ""
+    PAPAGO_CLIENT_SECRET: str = ""
     COUPANG_SEARCH_URL: str = "https://www.coupang.com/np/search"
     NAVER_SHOPPING_URL: str = "https://search.shopping.naver.com/search/all"
 
     def __init__(self):
         self.DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.SESSION_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Papago NCP 크리덴셜 (.env). 비어있으면 Google 폴백.
+        self.PAPAGO_CLIENT_ID = os.getenv("PAPAGO_CLIENT_ID", "").strip()
+        self.PAPAGO_CLIENT_SECRET = os.getenv("PAPAGO_CLIENT_SECRET", "").strip()
+        _papago_url = os.getenv("PAPAGO_API_URL", "").strip()
+        if _papago_url:
+            self.PAPAGO_API_URL = _papago_url
 
         env_url = os.getenv("DATABASE_URL", "").strip()
         if env_url:
