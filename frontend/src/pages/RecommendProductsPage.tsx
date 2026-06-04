@@ -2987,11 +2987,11 @@ function InterestKeywordBlock({ onAddRows }: { onAddRows: (rows: SheetRow[]) => 
         </div>
       </div>
       <div className="text-xs text-gray-500 mb-2">
-        역직구 추천에서 키워드 선택 → <b>상품 수집</b> 수 분 대기 → <b>시트에 추가</b>로 국내최저가+큐텐평균가 기반 행 생성
+        키워드 추출(RD)에서 키워드 선택 → <b>상품 수집</b> 수 분 대기 → <b>시트에 추가</b>로 국내최저가+큐텐평균가 기반 행 생성
       </div>
       {items.length === 0 ? (
         <div className="text-gray-400 text-xs py-3 text-center">
-          <Link to="/recommend" className="text-blue-600 underline">역직구 추천</Link>에서 키워드를 선택하세요.
+          <Link to="/keywords" className="text-blue-600 underline">키워드 추출</Link>에서 키워드를 선택하세요.
         </div>
       ) : (
         <div className="flex flex-wrap gap-1">

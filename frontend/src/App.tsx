@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import MainLayout from './components/Layout/MainLayout';
 import DashboardPage from './pages/DashboardPage';
 import KeywordPage from './pages/KeywordPage';
-import RecommendPage from './pages/RecommendPage';
 import InsightsPage from './pages/InsightsPage';
 import ImagePage from './pages/ImagePage';
 import RelatedBulkPage from './pages/RelatedBulkPage';
@@ -24,7 +23,6 @@ function App() {
           <Route element={<MainLayout />}>
             <Route path="/" element={<DashboardPage />} />
             <Route path="/keywords" element={<KeywordPage />} />
-            <Route path="/recommend" element={<RecommendPage />} />
             <Route path="/insights" element={<InsightsPage />} />
             <Route path="/image" element={<ImagePage />} />
             <Route path="/related-bulk" element={<RelatedBulkPage />} />

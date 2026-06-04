@@ -649,16 +649,10 @@ export default function KeywordPage() {
           <button
             onClick={addSelectedToInterest}
             className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700"
-            title="선택한(체크된) 행을 관심 키워드로 북마크 — /recommend 페이지에서 확인"
+            title="선택한(체크된) 행을 관심 키워드로 북마크 (상품 시트에서 활용)"
           >
-            🔖 관심 키워드로 (북마크)
+            🔖 관심 키워드 (북마크) ({interestCount})
           </button>
-          <Link
-            to="/recommend"
-            className="px-3 py-1 bg-amber-500 text-white text-xs rounded hover:bg-amber-600"
-          >
-            ⭐ 역직구 추천 ({interestCount})
-          </Link>
           <Link
             to="/recommend-products"
             className="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700"
