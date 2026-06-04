@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
@@ -261,31 +261,12 @@ export default function KeywordPage() {
   }, [filteredKeywords]);
   const numFmt = (p: any) => p.value == null ? '' : Number(p.value).toLocaleString();
   const pctFmt = (p: any) => p.value == null ? '' : `${Number(p.value).toFixed(1)}%`;
-  const scoreFmt = (p: any) => p.value == null ? '' : Number(p.value).toFixed(2);
 
   const krRatioGetter = (p: any) => {
     const total = p.data?.total_products || 0;
     const kr = p.data?.products_kr || 0;
     return total > 0 ? (kr / total) * 100 : 0;
   };
-
-  const recommendScoreGetter = (p: any) => {
-    const sw = p.data?.search_volume_weekly || 0;
-    const total = p.data?.total_products || 0;
-    const kr = p.data?.products_kr || 0;
-    const comp = p.data?.competition_intensity || 0;
-    if (sw <= 0 || total <= 0) return 0;
-    const ratio = kr / total;
-    const compFactor = Math.max(comp, 0.1);
-    return (Math.log10(sw + 1) * ratio) / compFactor;
-  };
-
-  const sortByRecommendation = useCallback(() => {
-    gridRef.current?.api?.applyColumnState({
-      state: [{ colId: 'recommend_score', sort: 'desc' }],
-      defaultState: { sort: null },
-    });
-  }, []);
 
   // 관심 키워드 북마크
   const [interestCount, setInterestCount] = useState<number>(() => getInterestKeywords().length);
@@ -414,12 +395,6 @@ export default function KeywordPage() {
     { field: 'products_kr', headerName: '한국', width: 100, type: 'numericColumn', valueFormatter: numFmt },
     { field: 'products_cn', headerName: '중국', width: 100, type: 'numericColumn', valueFormatter: numFmt },
     { field: 'products_other', headerName: '그외', width: 100, type: 'numericColumn', valueFormatter: numFmt },
-    {
-      colId: 'recommend_score', headerName: '역직구 추천점수', width: 130, type: 'numericColumn',
-      valueGetter: recommendScoreGetter, valueFormatter: scoreFmt,
-      cellStyle: { fontWeight: 600, backgroundColor: '#ecfeff' },
-      headerTooltip: '검색량 × 한국비율 ÷ 경쟁강도. 클수록 역직구 유망',
-    },
     {
       headerName: '', width: 70, sortable: false, filter: false, resizable: false, suppressMovable: true,
       cellRenderer: (p: any) => (
@@ -664,12 +639,6 @@ export default function KeywordPage() {
         </div>
         <div className="px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap">
           <span>표시 {filteredKeywords.length.toLocaleString()} / 총 {keywords.length.toLocaleString()}개</span>
-          <button
-            onClick={sortByRecommendation}
-            className="px-3 py-1 bg-amber-500 text-white text-xs rounded hover:bg-amber-600"
-          >
-            ⭐ 역직구 추천 정렬
-          </button>
           <button
             onClick={sendSelectedToSheet}
             className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
