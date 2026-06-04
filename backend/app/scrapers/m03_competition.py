@@ -84,14 +84,27 @@ class CompetitionScraper(BaseScraper):
         return 0
 
     async def _get_country_products(self, page) -> tuple:
-        """국가별 상품수 추출 (VBA: data-nation_code)"""
+        """국가별 상품수 추출 — 원본 VBA 방식 그대로.
+
+        원본(keyword_vba.txt L3706~): 컨테이너 `#div_global_domestic_tab` 안의
+        각 `.tab` 에서 `.local` 의 `data-nation_code`(국가코드) + `.num` 텍스트('(1,234)').
+        (구현 버그: 기존엔 `.local`[data-nation_code] 의 inner_text 를 읽어 국가명만 잡혀
+         숫자가 없어 전부 0 이었음. 숫자는 형제 `.num` 에 있음.)
+        nation 코드 빈 탭 = 총합(전체상품수는 _get_total_products 로 별도 취득).
+        """
         jp, kr, cn, other = 0, 0, 0, 0
 
         try:
-            tabs = await page.query_selector_all("[data-nation_code]")
+            tabs = await page.query_selector_all("#div_global_domestic_tab .tab")
             for tab in tabs:
-                nation = await tab.get_attribute("data-nation_code")
-                text = await tab.inner_text()
+                local = await tab.query_selector(".local")
+                if not local:
+                    continue
+                nation = await local.get_attribute("data-nation_code")
+                if not nation:
+                    continue  # 총합 탭 (국가코드 없음)
+                num_el = await tab.query_selector(".num")
+                text = await num_el.inner_text() if num_el else ""
                 count = int(re.sub(r"[^\d]", "", text)) if re.search(r"\d", text) else 0
 
                 if nation == "JP":
