@@ -26,7 +26,7 @@ class Settings:
     QOO10_BESTSELLER_URL: str = "https://www.qoo10.jp/gmkt.inc/Bestsellers/"
     PAPAGO_URL: str = "https://papago.naver.com/"
     # Papago NCP(네이버 클라우드) NMT API — 유료. 크리덴셜 있으면 Papago, 없으면 Google 폴백.
-    PAPAGO_API_URL: str = "https://naveropenapi.apigw.ntruss.com/nmt/v1/translation"
+    PAPAGO_API_URL: str = "https://papago.apigw.ntruss.com/nmt/v1/translation"
     PAPAGO_CLIENT_ID: str = ""
     PAPAGO_CLIENT_SECRET: str = ""
     COUPANG_SEARCH_URL: str = "https://www.coupang.com/np/search"
