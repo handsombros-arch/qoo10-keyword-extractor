@@ -9,6 +9,7 @@ Playwright(실 Chrome)로 구동.
 - 여러 줄을 한 번에 번역(줄바꿈 구분) → 결과도 줄바꿈으로 분리(배치 효율).
 - 결과 셀렉터: #txtTarget (원본 driver.FindElementsById("txtTarget")).
 """
+import re
 from urllib.parse import quote
 
 _RESULT_SEL = "#txtTarget"
@@ -49,6 +50,7 @@ async def papago_translate_batch(
         # 줄 수 불일치 = 매핑 신뢰 불가 → None (구글 폴백)
         if len(lines) != len(texts):
             return None
-        return [ln.strip() for ln in lines]
+        # 원본처럼 끝에 붙는 마침표 제거 (papago 가 "예예." 식으로 점 붙임)
+        return [re.sub(r"\.+$", "", ln.strip()).strip() for ln in lines]
     except Exception:
         return None
