@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
+import DataDatePicker from '../components/DataDatePicker';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 
 const myTheme = themeQuartz.withParams({
@@ -384,7 +385,7 @@ export default function KeywordPage() {
   const columnDefs: ColDef[] = useMemo(() => [
     // (선택 체크박스 컬럼은 rowSelection 신 API가 자동 생성 — selectionColumnDef로 제어)
     // ── 원본 listKeyword 컬럼 순서 (좌→우, 큐텐 키워드 추출기 v1.4.3 기준) ──
-    { field: 'lookup_date', headerName: '조회날짜', width: 110 },
+    { field: 'lookup_date', headerName: '조회날짜', width: 78, valueFormatter: (p: any) => p.value ? String(p.value).slice(5) : '' },
     { field: 'category', headerName: '카테고리', width: 130 },
     { field: 'classification', headerName: '분류', width: 90 },
     { field: 'rank', headerName: '순위', width: 70, type: 'numericColumn' },
@@ -618,13 +619,11 @@ export default function KeywordPage() {
                 title="이전 수집일"
                 className="px-2 py-1 text-sm rounded border bg-white text-gray-700 disabled:opacity-30 hover:bg-gray-50"
               >◀</button>
-              <input
-                type="date"
+              <DataDatePicker
                 value={dateMode === 'single' ? singleDate : ''}
-                min={sortedDates[0]}
-                max={sortedDates[sortedDates.length - 1]}
-                onChange={e => { setDateMode('single'); setSingleDate(e.target.value); }}
-                className={`border rounded px-2 py-1 text-sm ${dateMode === 'single' ? 'border-blue-500 ring-1 ring-blue-200 text-gray-900' : 'border-gray-300 text-gray-400'}`}
+                availableDates={sortedDates}
+                active={dateMode === 'single'}
+                onChange={(d) => { setDateMode('single'); setSingleDate(d); }}
               />
               <button
                 onClick={goNextDay}
