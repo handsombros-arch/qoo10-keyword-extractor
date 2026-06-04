@@ -157,49 +157,66 @@ async function processNext() {
     // 사이트별 dispatch — naver = page world dump + naver-smartstore.js,
     //                    coupang = DOM-only (PRELOADED_STATE 없음) + coupang.js
     const site = detectSite(item.url);
+    const isNaverSearch = site === "naver" && /\/search\//.test(item.url);
 
-    let pageDump = null;
-    if (site === "naver") {
-      // 1) page world 에서 JSON-LD + __PRELOADED_STATE__ 직접 dump
+    if (isNaverSearch) {
+      // ── 네이버 검색결과 프로브 (R-9): page world dump 만, content parse 스킵 ──
       try {
         const [exec] = await chrome.scripting.executeScript({
           target: { tabId },
           world: "MAIN",
-          func: pageWorldDump,
+          func: naverSearchDump,
         });
-        pageDump = exec?.result || null;
+        result = exec?.result || null;
+        if (result) result.mode = "naver_search";
+        else err = "search dump 빈 결과";
       } catch (e) {
-        console.warn("[Qoo10 Helper] page world dump fail:", e.message);
+        err = "search dump fail: " + e.message;
       }
-    } else if (site === "coupang") {
-      // Coupang 은 hydration 이 빠른 SSR. 약간 wait + 스크롤 트리거
-      await sleep(1500);
-    }
+    } else {
+      let pageDump = null;
+      if (site === "naver") {
+        // 1) page world 에서 JSON-LD + __PRELOADED_STATE__ 직접 dump
+        try {
+          const [exec] = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: "MAIN",
+            func: pageWorldDump,
+          });
+          pageDump = exec?.result || null;
+        } catch (e) {
+          console.warn("[Qoo10 Helper] page world dump fail:", e.message);
+        }
+      } else if (site === "coupang") {
+        // Coupang 은 hydration 이 빠른 SSR. 약간 wait + 스크롤 트리거
+        await sleep(1500);
+      }
 
-    // 2) content.js 주입 (isolated world) — site 별 다른 스크립트
-    const contentFiles = site === "coupang"
-      ? ["content-scripts/common.js", "content-scripts/coupang.js"]
-      : ["content-scripts/common.js", "content-scripts/naver-smartstore.js"];
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: contentFiles,
-    });
-    result = await sendMessageToTab(
-      tabId,
-      {
-        type: "EXTRACT",
-        config: {
-          extract_detail_images: cfg.extract_detail_images ?? true,
-          max_detail_images: cfg.max_detail_images ?? 20,
+      // 2) content.js 주입 (isolated world) — site 별 다른 스크립트
+      const contentFiles = site === "coupang"
+        ? ["content-scripts/common.js", "content-scripts/coupang.js"]
+        : ["content-scripts/common.js", "content-scripts/naver-smartstore.js"];
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: contentFiles,
+      });
+      result = await sendMessageToTab(
+        tabId,
+        {
+          type: "EXTRACT",
+          config: {
+            extract_detail_images: cfg.extract_detail_images ?? true,
+            max_detail_images: cfg.max_detail_images ?? 20,
+          },
+          page_dump: pageDump,
+          site,
         },
-        page_dump: pageDump,
-        site,
-      },
-      EXTRACTION_TIMEOUT_MS,
-    );
-    if (!result || result.error) {
-      err = result?.error || "no result";
-      result = null;
+        EXTRACTION_TIMEOUT_MS,
+      );
+      if (!result || result.error) {
+        err = result?.error || "no result";
+        result = null;
+      }
     }
   } catch (e) {
     err = e.message || String(e);
@@ -547,6 +564,78 @@ async function pageWorldDump() {
   } catch (e) {
     out.preloaded_dump_error = String(e);
   }
+  return out;
+}
+
+// ──── 네이버 검색결과 프로브 (R-9) — 구조 파악용 1회 덤프 ────
+// 검색결과 페이지의 state 컨테이너(__NEXT_DATA__/__PRELOADED_STATE__ 등) + '배송' 포함
+// 카드 DOM 샘플을 떠서, 배송비가 어디 있는지 백엔드에서 분석 가능하게 한다.
+async function naverSearchDump() {
+  const out = {
+    mode: "naver_search",
+    page_url: location.href,
+    page_title: document.title,
+    is_login_redirect: /nidlogin|nid\.naver\.com\/nidlogin/.test(location.href),
+  };
+
+  // 리스트 lazy-load 트리거: 스크롤 + '배송' 등장까지 polling (최대 ~14초)
+  const hasShip = () => /배송/.test(document.body ? document.body.innerText : "");
+  for (let i = 0; i < 14; i++) {
+    if (hasShip() && i >= 2) break;
+    try { window.scrollTo(0, document.body.scrollHeight * (0.25 + 0.12 * i)); } catch (_) {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  try { window.scrollTo(0, 0); } catch (_) {}
+
+  // 1) __NEXT_DATA__ (Next.js) — 검색결과 데이터가 여기 있을 가능성 큼
+  try {
+    const nd = document.getElementById("__NEXT_DATA__");
+    if (nd) {
+      out.next_data_len = nd.textContent.length;
+      if (nd.textContent.length < 2_500_000) {
+        out.next_data = JSON.parse(nd.textContent);
+        out.next_data_keys = Object.keys(out.next_data || {});
+      } else {
+        out.next_data_keys = ["(too large — full omitted)"];
+      }
+    }
+  } catch (e) {
+    out.next_data_error = String(e);
+  }
+
+  // 2) window 전역 state 후보 키
+  try {
+    out.global_keys = Object.keys(window)
+      .filter((k) => /^__|STATE|APOLLO|PRELOAD|INITIAL/i.test(k))
+      .slice(0, 40);
+  } catch (_) {}
+  try { if (window.__PRELOADED_STATE__) out.preloaded_keys = Object.keys(window.__PRELOADED_STATE__).slice(0, 40); } catch (_) {}
+  try { if (window.__APOLLO_STATE__) out.apollo_keys = Object.keys(window.__APOLLO_STATE__).slice(0, 40); } catch (_) {}
+
+  // 3) DOM 샘플 — '배송' 포함 + 가격(숫자) 있는 카드 상위 6개 (클래스명 힌트 포함)
+  const samples = [];
+  try {
+    const els = document.querySelectorAll("li, div");
+    for (const el of els) {
+      if (samples.length >= 6) break;
+      const t = (el.innerText || "").trim();
+      if (t.length < 12 || t.length > 300) continue;
+      if (!t.includes("배송") || !/[0-9],?[0-9]/.test(t)) continue;
+      const a = el.querySelector("a[href]");
+      samples.push({
+        lines: t.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 14),
+        el_class: String(el.className).slice(0, 140),
+        link: a ? a.href : null,
+        child_classes: Array.from(el.querySelectorAll("[class]"))
+          .map((x) => String(x.className))
+          .filter((v, i, s) => v && s.indexOf(v) === i)
+          .slice(0, 24),
+      });
+    }
+  } catch (e) {
+    out.dom_sample_error = String(e);
+  }
+  out.dom_samples = samples;
   return out;
 }
 

@@ -310,6 +310,33 @@ async def register_job(body: dict) -> dict:
     }
 
 
+@router.post("/naver-search-probe")
+async def naver_search_probe(keyword: str = "시카크림") -> dict:
+    """R-9 진단: 네이버 검색결과 페이지 구조 덤프 잡 등록.
+
+    확장이 진짜 Chrome으로 search.shopping.naver.com 검색결과를 열어 state/DOM 을 떠서
+    backend/logs/naver_search_probe_*.json 에 저장 → 배송비 위치 분석용.
+    """
+    from urllib.parse import quote
+    url = f"https://search.shopping.naver.com/search/all?query={quote(keyword)}"
+    job_id = f"probe_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    job = ScrapeJob(
+        job_id=job_id,
+        urls=[{"url": url}],
+        config={"active_tab": True, "probe": "naver_search", "delay_min_ms": 0, "delay_max_ms": 0},
+        url_statuses={url: UrlStatus.PENDING},
+    )
+    async with _lock:
+        _jobs[job_id] = job
+        _pending_order.append(job_id)
+    await _save_job(job)
+    return {
+        "job_id": job_id,
+        "url": url,
+        "msg": "확장 reload(OFF→ON) 후 자동 처리 또는 popup '즉시 폴링'. 결과: backend/logs/naver_search_probe_*.json",
+    }
+
+
 # ──── API: 확장이 다음 작업 폴링 ─────────────────────────────────
 @router.get("/queue/next")
 async def next_job() -> Response:
@@ -346,12 +373,24 @@ async def result_url(body: dict) -> dict:
             raise HTTPException(404, f"unknown job_id {job_id}")
         if status == "success":
             job.url_statuses[url] = UrlStatus.SUCCESS
+            data = body.get("data") or {}
             job.results[url] = {
                 "status": "success",
-                "data": body.get("data") or {},
+                "data": data,
                 "elapsed_ms": body.get("elapsed_ms"),
                 "received_at": datetime.now().isoformat(),
             }
+            # R-9 진단: 네이버 검색결과 프로브 덤프는 파일로 저장 (구조 분석용)
+            if isinstance(data, dict) and data.get("mode") == "naver_search":
+                try:
+                    import json as _j
+                    probe_dir = Path(settings.BASE_DIR) / "logs"
+                    probe_dir.mkdir(parents=True, exist_ok=True)
+                    fp = probe_dir / f"naver_search_probe_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                    fp.write_text(_j.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    logger.info(f"[ext.probe] naver_search 덤프 저장: {fp}")
+                except Exception as e:
+                    logger.warning(f"[ext.probe] 덤프 저장 실패: {e}")
         else:
             job.url_statuses[url] = UrlStatus.ERROR
             err = body.get("error") or "unknown error"
