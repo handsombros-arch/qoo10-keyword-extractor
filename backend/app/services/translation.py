@@ -1,7 +1,10 @@
-"""번역 — Papago(NCP, 유료) 우선 + Google(무료) 폴백 + 캐시.
+"""번역 — Papago 웹(무료, 원본 방식) 우선 + Google 폴백 + 캐시.
 
-- 크리덴셜(PAPAGO_CLIENT_ID/SECRET in .env) 있으면 Papago, 없으면 Google 자동 폴백.
-- TranslationCache 로 같은 원문 재번역 방지 → 호출/비용 최소화 (no-API 로드맵 정합).
+- translate_batch(키워드 경로): 캐시 → **papago.naver.com 실Chrome 배치** → 구글 폴백 → 캐시.
+  원본 키워드 추출기와 동일하게 무료로 브랜드 음역까지 정확(마스크/제모/아스타리프트 등).
+  브라우저 미가용 시 자동으로 구글로 폴백(깨지지 않음).
+- translate_text(단건): 캐시 → Papago NCP API(크리덴셜 시) → 구글. (recommendations/related 등)
+- TranslationCache 로 재번역 방지 → 호출 최소화 (no-API 로드맵 정합).
 """
 import asyncio
 
@@ -99,17 +102,72 @@ async def translate_text(text: str, source: str = "ja", target: str = "ko") -> s
     return out or text
 
 
+async def _papago_web_batch(texts: list[str], source: str, target: str) -> list[str | None] | None:
+    """papago.naver.com(실 Chrome) 배치 번역 — 원본 키워드 추출기와 동일 무료 고품질 경로.
+    브라우저 미가용/실패 시 None → 호출측 구글 폴백. 청크별 실패는 해당 칸만 None."""
+    try:
+        from app.browser.manager import browser_manager
+        from app.scrapers.papago_web import papago_translate_batch
+    except Exception:
+        return None
+    try:
+        page = await browser_manager.new_page()
+    except Exception:
+        return None  # 브라우저 없음 → 구글 폴백
+    try:
+        out: list[str | None] = []
+        CHUNK = 20
+        for s in range(0, len(texts), CHUNK):
+            chunk = texts[s:s + CHUNK]
+            r = await papago_translate_batch(page, chunk, source, target)
+            if r is None or len(r) != len(chunk):
+                out.extend([None] * len(chunk))
+            else:
+                out.extend(v or None for v in r)
+        return out
+    finally:
+        try:
+            await page.close()
+        except Exception:
+            pass
+
+
 async def translate_batch(
     texts: list[str], source: str = "ja", target: str = "ko", concurrency: int = 5
 ) -> list[str]:
-    """여러 문자열 동시 번역 (각 항목 캐시/Papago/Google 거침)."""
-    sem = asyncio.Semaphore(concurrency)
+    """캐시 → Papago 웹(배치) → 구글 폴백 → 캐시. 브라우저 없으면 캐시→구글.
 
-    async def one(t: str) -> str:
-        async with sem:
-            return await translate_text(t, source, target)
+    원본 키워드 추출기처럼 papago.naver.com 을 구동해 브랜드 음역까지 정확히.
+    """
+    results: list = [None] * len(texts)
+    uncached: list[int] = []
+    for i, t in enumerate(texts):
+        if not t:
+            results[i] = ""
+            continue
+        c = await _cache_get(t, source, target)
+        if c is not None:
+            results[i] = c
+        else:
+            uncached.append(i)
 
-    return await asyncio.gather(*(one(t) for t in texts))
+    if uncached:
+        unc_texts = [texts[i] for i in uncached]
+        papago = await _papago_web_batch(unc_texts, source, target)
+        for j, i in enumerate(uncached):
+            v = papago[j] if papago and j < len(papago) else None
+            if v:
+                results[i] = v
+                await _cache_put(texts[i], source, target, v, "papago_web")
+        # papago 실패/빈값 → 구글 폴백
+        for i in uncached:
+            if results[i] is None:
+                v = await translate_google(texts[i], source, target)
+                results[i] = v
+                if v and v != texts[i]:
+                    await _cache_put(texts[i], source, target, v, "google")
+
+    return results
 
 
 # 하위 호환 별칭 — 이제 캐시+Papago+Google폴백 단일 경로

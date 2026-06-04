@@ -26,6 +26,25 @@ async def exchange_rate(currency: str = "JPY"):
     return await get_exchange_rate_meta(currency)
 
 
+@router.post("/papago-test")
+async def papago_test(req: dict):
+    """Papago 웹 번역 검증용 (임시). texts 배치를 papago.naver.com 으로 번역."""
+    from app.browser.manager import browser_manager
+    from app.scrapers.papago_web import papago_translate_batch
+    texts = req.get("texts") or []
+    source = req.get("source", "ja")
+    target = req.get("target", "ko")
+    page = await browser_manager.new_page()
+    try:
+        out = await papago_translate_batch(page, texts, source, target)
+        return {"input": texts, "papago": out}
+    finally:
+        try:
+            await page.close()
+        except Exception:
+            pass
+
+
 @router.post("/translate")
 async def translate(req: TranslateRequest):
     result = await translate_papago(req.text, req.source, req.target)

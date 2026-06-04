@@ -148,6 +148,13 @@ class BrowserManager:
             await self.initialize()
         return self._page
 
+    async def new_page(self) -> Page:
+        """별도 작업용 새 탭 (예: Papago 번역). 호출측이 close() 책임.
+        QSM 메인 페이지를 건드리지 않음."""
+        if not self._is_alive():
+            await self.initialize()
+        return await self._context.new_page()
+
     async def save_session(self) -> None:
         if self._context:
             try:
