@@ -279,3 +279,9 @@ body.sheet-fullscreen .fs-hide-block { display: none !important; }
   -webkit-user-drag: none;
   user-drag: none;
 }
+
+/* AG Grid 헤더 정렬 화살표(오름/내림차순) 기존 대비 50% 축소 */
+.ag-header-cell .ag-sort-indicator-icon .ag-icon {
+  transform: scale(0.5);
+  transform-origin: center;
+}
