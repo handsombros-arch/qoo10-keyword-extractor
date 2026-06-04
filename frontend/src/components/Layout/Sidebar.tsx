@@ -12,6 +12,7 @@ import {
 type Item = { path: string; label: string; icon: LucideIcon };
 
 const mainItems: Item[] = [
+  { path: '/keywords', label: '키워드 추출 (RD)', icon: Search },
   { path: '/', label: '대시보드', icon: LayoutDashboard },
   { path: '/recommend-products', label: '상품 시트', icon: FileSpreadsheet },
   { path: '/blacklist', label: '블랙리스트', icon: Ban },
@@ -21,7 +22,6 @@ const mainItems: Item[] = [
 ];
 
 const moreItems: Item[] = [
-  { path: '/keywords', label: '키워드 추출 (RD)', icon: Search },
   { path: '/insights', label: '시계열 인사이트 (RD)', icon: BarChart3 },
   { path: '/related-bulk', label: '연관 키워드 (RD)', icon: Link2 },
   { path: '/settings', label: 'AI 설정', icon: Settings },

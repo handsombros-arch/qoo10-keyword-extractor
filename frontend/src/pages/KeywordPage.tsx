@@ -171,7 +171,7 @@ export default function KeywordPage() {
 
   const gridRef = useRef<AgGridReact>(null);
   const resizedColsRef = useRef<Set<string>>(new Set());
-  const COL_STATE_KEY = 'keywordPage.colState';
+  const COL_STATE_KEY = 'keywordPage.colState.v2'; // v2: 원본 listKeyword 컬럼 순서 적용 (옛 저장상태 무시)
 
   const saveColState = () => {
     const api = gridRef.current?.api as any;
@@ -329,7 +329,10 @@ export default function KeywordPage() {
       headerName: '선택', width: 60, pinned: 'left', sortable: false, filter: false,
       checkboxSelection: true, headerCheckboxSelection: true, headerCheckboxSelectionFilteredOnly: true,
     },
+    // ── 원본 listKeyword 컬럼 순서 (좌→우, 큐텐 키워드 추출기 v1.4.3 기준) ──
     { field: 'lookup_date', headerName: '조회날짜', width: 110 },
+    { field: 'category', headerName: '카테고리', width: 130 },
+    { field: 'classification', headerName: '분류', width: 90 },
     { field: 'rank', headerName: '순위', width: 70, type: 'numericColumn' },
     {
       field: 'keyword_jp', headerName: '키워드(일본어)', width: 180,
@@ -357,13 +360,27 @@ export default function KeywordPage() {
         );
       },
     },
-    {
-      colId: 'kr_ratio', headerName: '한국비율(%)', width: 110, type: 'numericColumn',
-      valueGetter: krRatioGetter, valueFormatter: pctFmt,
-      cellStyle: (p: any) => p.value >= 30 ? { backgroundColor: '#fef3c7' } : null,
-    },
-    { field: 'category', headerName: '카테고리', width: 130 },
-    { field: 'classification', headerName: '분류', width: 90 },
+    { field: 'competition_intensity', headerName: '경쟁강도', width: 100, type: 'numericColumn' },
+    { field: 'search_volume_weekly', headerName: '검색수(주평)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'search_volume_daily', headerName: '검색수(전날)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'total_products', headerName: '전체상품수', width: 120, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'products_jp', headerName: '일본', width: 100, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'products_kr', headerName: '한국', width: 100, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'products_cn', headerName: '중국', width: 100, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'products_other', headerName: '그외', width: 100, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_count', headerName: '낙찰수', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_10', headerName: '낙찰시가', width: 100, type: 'numericColumn', valueFormatter: numFmt, headerTooltip: '전체 낙찰 중 최저가 (가장 낮은 순위의 낙찰가)' },
+    { field: 'bid_price_9', headerName: '9위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_8', headerName: '8위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_7', headerName: '7위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_6', headerName: '6위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_5', headerName: '5위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_4', headerName: '4위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_3', headerName: '3위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_2', headerName: '2위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
+    { field: 'bid_price_1', headerName: '낙찰종가', width: 100, type: 'numericColumn', valueFormatter: numFmt, headerTooltip: '1위 낙찰가 (최고가)' },
+    { field: 'volume_change_flag', headerName: '전날대비증감', width: 110 },
+    // ── 엘비텐 분석 보조 (원본에 없음 · 헤더 드래그로 원하는 위치로 이동 가능) ──
     {
       colId: 'zone', headerName: '존', width: 90,
       valueGetter: (p: any) => zoneOf(p.data),
@@ -376,25 +393,11 @@ export default function KeywordPage() {
       cellStyle: (p: any) => p.value ? { backgroundColor: '#bbf7d0', fontWeight: 700 } : undefined,
       headerTooltip: '낙찰수 ≤ 3 — 들어가면 바로 상위 노출 가능',
     },
-    { field: 'search_volume_weekly', headerName: '검색수(주평)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'search_volume_daily', headerName: '검색수(전날)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_count', headerName: '낙찰수', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_10', headerName: '낙찰시가', width: 100, type: 'numericColumn', valueFormatter: numFmt, headerTooltip: '전체 낙찰 중 최저가 (가장 낮은 순위의 낙찰가)' },
-    { field: 'bid_price_9', headerName: '9위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_8', headerName: '8위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_7', headerName: '7위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_6', headerName: '6위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_5', headerName: '5위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_4', headerName: '4위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_3', headerName: '3위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_2', headerName: '2위', width: 80, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'bid_price_1', headerName: '낙찰종가', width: 100, type: 'numericColumn', valueFormatter: numFmt, headerTooltip: '1위 낙찰가 (최고가)' },
-    { field: 'competition_intensity', headerName: '경쟁강도', width: 100, type: 'numericColumn' },
-    { field: 'total_products', headerName: '전체상품수', width: 120, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'products_jp', headerName: '일본', width: 100, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'products_kr', headerName: '한국', width: 100, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'products_cn', headerName: '중국', width: 100, type: 'numericColumn', valueFormatter: numFmt },
-    { field: 'products_other', headerName: '그외', width: 100, type: 'numericColumn', valueFormatter: numFmt },
+    {
+      colId: 'kr_ratio', headerName: '한국비율(%)', width: 110, type: 'numericColumn',
+      valueGetter: krRatioGetter, valueFormatter: pctFmt,
+      cellStyle: (p: any) => p.value >= 30 ? { backgroundColor: '#fef3c7' } : null,
+    },
     {
       headerName: '', width: 70, sortable: false, filter: false, resizable: false, suppressMovable: true,
       cellRenderer: (p: any) => (
