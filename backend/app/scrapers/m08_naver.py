@@ -92,7 +92,7 @@ class NaverShoppingScraper(BaseScraper):
 
         # R-9: 확장(진짜 Chrome) 검색 우선 — __NEXT_DATA__ 파싱으로 배송비까지 확보.
         # 확장 미가용/0건/실패 시 아래 네이버 API 로 폴백.
-        if os.getenv("EXT_USE_EXTENSION", "").strip().lower() == "true":
+        if os.getenv("EXT_USE_EXTENSION", "true").strip().lower() == "true":
             try:
                 from app.services.ext_client import search_one
                 self.tasks.update_progress(task_id, 0, f"'{keyword}' 확장 검색(배송비 포함)")
