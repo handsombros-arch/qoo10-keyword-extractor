@@ -20,7 +20,8 @@ cd "$BE"
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+# RD 전용 슬림 목록 (torch/sentence-transformers/ollama/gemini 제외 — 맥 Intel·py3.14 호환)
+pip install -r requirements-mac.txt
 python -m playwright install chromium   # 실 Chrome 없을 때 폴백용
 
 echo "==> 3) .env 확인"
