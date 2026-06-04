@@ -328,3 +328,24 @@ class Brand(Base):
     source = Column(String, default="auto")
     confidence = Column(Float, default=1.0)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class KrTrendRanking(Base):
+    """한국 트렌드 랭킹 — 올리브영/다이소 카테고리별 일일 베스트 (R-9, 2026-06-04).
+
+    큐텐 데이터만 보면 반 발짝 늦어, 한국 라이징 트렌드(올영/다이소)를 동시에 본다.
+    날짜별 누적 — **과거 데이터 삭제 금지** (올리브영 랭킹은 과거 복구 불가).
+    """
+    __tablename__ = "kr_trend_rankings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String, nullable=False, index=True)   # oliveyoung / daiso
+    category_code = Column(String)                        # fltDispCatNo (올영)
+    category_name = Column(String)
+    rank = Column(Integer)
+    brand = Column(String)
+    product_name = Column(String)
+    price = Column(Integer)                               # 원 (콤마 제거 파싱), 없으면 null
+    price_text = Column(String)                           # 원문 가격 표기
+    lookup_date = Column(Date, default=date.today, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
