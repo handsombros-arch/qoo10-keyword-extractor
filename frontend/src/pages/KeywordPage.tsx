@@ -39,6 +39,24 @@ const CATEGORIES = [
   { value: 12, label: '서플리먼트&다이어트' },
 ];
 
+// ── "좋은 키워드" 신호 ──
+// 존: 검색수 50 / 상품수 200 기준 (황금존 = 수요 있고 공급 적음)
+function zoneOf(k: any): string {
+  const sv = Number(k?.search_volume_weekly) || 0;
+  const tp = Number(k?.total_products) || 0;
+  if (sv >= 50 && tp <= 200) return '황금존';
+  if (sv >= 50) return '레드오션';
+  if (tp <= 200) return '데드존';
+  return '포화';
+}
+// 구좌 열림: 낙찰수 ≤ 3 (들어가면 바로 상위 노출). null(미수집)은 제외.
+function slotOpen(k: any): boolean {
+  return k?.bid_count != null && Number(k.bid_count) <= 3;
+}
+const ZONE_COLOR: Record<string, string> = {
+  '황금존': '#fde68a', '레드오션': '#fecaca', '데드존': '#e5e7eb', '포화': '#ddd6fe',
+};
+
 export default function KeywordPage() {
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [selectedCats, setSelectedCats] = useState<number[]>([1]);
@@ -190,6 +208,8 @@ export default function KeywordPage() {
   // 빠른 필터: 카테고리/분류/날짜 (state 기반 — rowData를 직접 필터링해 1-click 즉시 반영)
   const [activeCat, setActiveCat] = useState<string | null>(null);
   const [activeClass, setActiveClass] = useState<string | null>(null);
+  const [activeZone, setActiveZone] = useState<string | null>(null);
+  const [slotOnly, setSlotOnly] = useState(false);
   type DateMode = 'all' | 'single' | 'range';
   const [dateMode, setDateMode] = useState<DateMode>('all');
   const [singleDate, setSingleDate] = useState('');
@@ -215,6 +235,8 @@ export default function KeywordPage() {
     return keywords.filter(k => {
       if (activeCat && k.category !== activeCat) return false;
       if (activeClass && k.classification !== activeClass) return false;
+      if (activeZone && zoneOf(k) !== activeZone) return false;
+      if (slotOnly && !slotOpen(k)) return false;
       const d = k.lookup_date;
       if (dateMode === 'single' && singleDate) {
         if (d !== singleDate) return false;
@@ -224,7 +246,7 @@ export default function KeywordPage() {
       }
       return true;
     });
-  }, [keywords, activeCat, activeClass, dateMode, singleDate, fromDate, toDate]);
+  }, [keywords, activeCat, activeClass, activeZone, slotOnly, dateMode, singleDate, fromDate, toDate]);
 
   // 데이터가 바뀌면 사용자가 조정 안 한 컬럼만 자동 크기 조정
   useEffect(() => {
@@ -361,6 +383,18 @@ export default function KeywordPage() {
     },
     { field: 'category', headerName: '카테고리', width: 130 },
     { field: 'classification', headerName: '분류', width: 90 },
+    {
+      colId: 'zone', headerName: '존', width: 90,
+      valueGetter: (p: any) => zoneOf(p.data),
+      cellStyle: (p: any) => ({ backgroundColor: ZONE_COLOR[p.value] || '', fontWeight: p.value === '황금존' ? 700 : 400 }),
+      headerTooltip: '검색수 50 / 상품수 200 기준 (황금존=수요O·공급적음)',
+    },
+    {
+      colId: 'slot', headerName: '구좌', width: 72,
+      valueGetter: (p: any) => slotOpen(p.data) ? '열림' : '',
+      cellStyle: (p: any) => p.value ? { backgroundColor: '#bbf7d0', fontWeight: 700 } : undefined,
+      headerTooltip: '낙찰수 ≤ 3 — 들어가면 바로 상위 노출 가능',
+    },
     { field: 'search_volume_weekly', headerName: '검색수(주평)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
     { field: 'search_volume_daily', headerName: '검색수(전날)', width: 120, type: 'numericColumn', valueFormatter: numFmt },
     { field: 'bid_count', headerName: '낙찰수', width: 80, type: 'numericColumn', valueFormatter: numFmt },
@@ -603,6 +637,29 @@ export default function KeywordPage() {
                 className={`px-2 py-0.5 text-xs rounded border ${activeClass === c ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
               >{c}</button>
             ))}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold text-gray-600 w-16">좋은키워드</span>
+            <button
+              onClick={() => { setActiveZone(null); setSlotOnly(false); }}
+              className={`px-2 py-0.5 text-xs rounded border ${activeZone === null && !slotOnly ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'}`}
+            >전체</button>
+            {['황금존', '레드오션', '데드존', '포화'].map(z => (
+              <button
+                key={z}
+                onClick={() => setActiveZone(prev => prev === z ? null : z)}
+                className={`px-2 py-0.5 text-xs rounded border ${activeZone === z ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+              >{z}</button>
+            ))}
+            <button
+              onClick={() => setSlotOnly(v => !v)}
+              className={`px-2 py-0.5 text-xs rounded border ${slotOnly ? 'bg-green-600 text-white border-green-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+            >구좌(낙찰≤3)</button>
+            <button
+              onClick={() => { setActiveZone('황금존'); setSlotOnly(true); }}
+              className="px-2 py-0.5 text-xs rounded bg-amber-500 text-white hover:bg-amber-600"
+              title="황금존 + 구좌 열림(낙찰≤3)"
+            >⭐ 좋은 키워드</button>
           </div>
         </div>
         <div className="px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap">
