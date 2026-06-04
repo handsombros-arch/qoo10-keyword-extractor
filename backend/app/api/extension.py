@@ -380,17 +380,16 @@ async def result_url(body: dict) -> dict:
                 "elapsed_ms": body.get("elapsed_ms"),
                 "received_at": datetime.now().isoformat(),
             }
-            # R-9 진단: 네이버 검색결과 프로브 덤프는 파일로 저장 (구조 분석용)
+            # R-9: 네이버 검색결과 덤프 → 파서로 상품(배송비 포함) 추출해 결과에 저장
             if isinstance(data, dict) and data.get("mode") == "naver_search":
                 try:
-                    import json as _j
-                    probe_dir = Path(settings.BASE_DIR) / "logs"
-                    probe_dir.mkdir(parents=True, exist_ok=True)
-                    fp = probe_dir / f"naver_search_probe_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                    fp.write_text(_j.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"[ext.probe] naver_search 덤프 저장: {fp}")
+                    from app.services.naver_search_ext import parse_naver_search_dump
+                    products = parse_naver_search_dump(data)
+                    job.results[url]["parsed_products"] = products
+                    job.results[url]["data"] = {"mode": "naver_search", "count": len(products)}  # 거대 덤프는 버림
+                    logger.info(f"[ext.naver-search] {url}: {len(products)}개 파싱 (배송비 포함)")
                 except Exception as e:
-                    logger.warning(f"[ext.probe] 덤프 저장 실패: {e}")
+                    logger.warning(f"[ext.naver-search] 파싱 실패: {e}")
         else:
             job.url_statuses[url] = UrlStatus.ERROR
             err = body.get("error") or "unknown error"
