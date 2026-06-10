@@ -49,13 +49,14 @@ export type MarginMode = 'markup' | 'target';
 export interface MarginRowInput {
   qty: number;                 // 개수 (세트 구성)
   weightG: number;             // 실제 무게(g, 1개 기준)
-  purchaseKrw: number;         // 구매가(원, 1개 기준)
-  domesticShipKrw: number;     // 국내 배송비+포장비(원, 1개 기준)
+  purchaseKrw: number;         // 구매가(원, 1개 기준) = 상품원가 + 국내배송비
+  domesticShipKrw: number;     // KSE 배대지까지 배송비+포장비(원, 1개 기준)
   mode: MarginMode;
   markup: number;              // 원가 배수 (markup 모드, 예 1.4)
   targetMargin: number;        // 목표 마진율 (target 모드, 예 0.30) — 상시 기준
-  kseOverrideKrw: number | null; // KSE 배송비 직접 입력(원). null 이면 자동
+  kseOverrideKrw: number | null; // KSE 해상운임 직접 입력(원). null 이면 자동
   megaDiscount: number;        // 메가와리 할인율 (예 0.10)
+  shipPaidByBuyer: boolean;    // 유료배송(바이어가 운임 부담) → 셀러 운임 부담 0
 }
 
 export interface MarginRowResult {
@@ -86,28 +87,30 @@ export function computeMarginRow(inp: MarginRowInput, rate: number): MarginRowRe
   const costKrw = ((inp.purchaseKrw || 0) + (inp.domesticShipKrw || 0)) * qty;
   const kseAutoKrw = lookupKseShipping(effWeightG);
   const kseShipKrw = inp.kseOverrideKrw != null ? inp.kseOverrideKrw : kseAutoKrw;
+  // 유료배송이면 운임은 바이어 부담 → 셀러 마진 계산에서 KSE 제외 (운임 자체는 표시용으로 유지)
+  const kseForMargin = inp.shipPaidByBuyer ? 0 : kseShipKrw;
 
   // 목표 원화 판매가 P
   let P: number;
   if (inp.mode === 'target') {
     const denom = PROFIT_COEF - (inp.targetMargin || 0);
     // 목표마진이 비현실적으로 높으면(>이익계수) 음수/발산 → 0 방어
-    P = denom > 0 ? (costKrw + QOO10_COMMISSION * kseShipKrw) / denom : 0;
+    P = denom > 0 ? (costKrw + QOO10_COMMISSION * kseForMargin) / denom : 0;
   } else {
     P = costKrw * (inp.markup || 1.4);
   }
 
-  // 상시: S = W*R = P*1.135 + KSE
-  const S = P * (1 + QOO10_COMMISSION) + kseShipKrw;
+  // 상시: S = W*R = P*1.135 + KSE(셀러부담분)
+  const S = P * (1 + QOO10_COMMISSION) + kseForMargin;
   const listJpy = R > 0 ? S / R : 0;
   const commissionKrw = S * QOO10_COMMISSION;
-  const profitKrw = S - costKrw - commissionKrw - kseShipKrw;
+  const profitKrw = S - costKrw - commissionKrw - kseForMargin;
   const marginRate = P > 0 ? profitKrw / P : 0;
 
   // 메가와리: 등록가 ×(1-할인). 판매가↓ → 이익↓
   const megaListJpy = listJpy * (1 - (inp.megaDiscount || 0));
   const megaS = megaListJpy * R;
-  const megaProfitKrw = megaS - costKrw - megaS * QOO10_COMMISSION - kseShipKrw;
+  const megaProfitKrw = megaS - costKrw - megaS * QOO10_COMMISSION - kseForMargin;
   const megaMarginRate = P > 0 ? megaProfitKrw / P : 0;
 
   return {

@@ -24,12 +24,22 @@ const won = (p: any) => (p.value == null || p.value === '' ? '' : Math.round(Num
 const jpy = (p: any) => (p.value == null || p.value === '' ? '' : `¥${Math.round(Number(p.value)).toLocaleString()}`);
 const pct = (p: any) => (p.value == null || p.value === '' ? '' : `${(Number(p.value) * 100).toFixed(1)}%`);
 
-function toInput(r: MarginRow): MarginRowInput {
+// 입력=흰색, 자동계산=옅은 회색, 등록가·마진율만 강조색.
+const CALC_BG = { backgroundColor: '#f1f5f9' };
+
+// 간소화: 배수/목표마진/메가할인은 행 컬럼이 아니라 상단 전역 설정값을 사용.
+// 구매가 = 상품원가 + 국내배송비 (자동합산). 구버전 행 호환: purchase_krw 폴백.
+function rowPurchaseKrw(r: any): number {
+  const sum = (r.goods_cost_krw || 0) + (r.inbound_ship_krw || 0);
+  return sum > 0 ? sum : (r.purchase_krw || 0);
+}
+function toInput(r: MarginRow, s: MarginSheetSettings): MarginRowInput {
   return {
-    qty: r.qty, weightG: r.weight_g, purchaseKrw: r.purchase_krw,
-    domesticShipKrw: r.domestic_ship_krw, mode: r.mode, markup: r.markup,
-    targetMargin: r.target_margin, kseOverrideKrw: r.kse_override_krw,
-    megaDiscount: r.mega_discount,
+    qty: r.qty, weightG: r.weight_g, purchaseKrw: rowPurchaseKrw(r),
+    domesticShipKrw: r.domestic_ship_krw, mode: r.mode,
+    markup: s.default_markup, targetMargin: s.default_target_margin,
+    kseOverrideKrw: r.kse_override_krw, megaDiscount: s.default_mega_discount,
+    shipPaidByBuyer: r.ship_mode === 'paid',
   };
 }
 
@@ -38,9 +48,20 @@ export default function MarginSheetPage() {
   const [settings, setSettings] = useState<MarginSheetSettings>(() => loadSettings());
   const [rateLoading, setRateLoading] = useState(false);
   const [tick, setTick] = useState(0);            // 재계산/경고 갱신
+  const [fullscreen, setFullscreen] = useState(false);  // 시트 전체화면 (사이드바까지 덮음)
   const gridRef = useRef<AgGridReact>(null);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const rowsRef = useRef(rows);   // 최신 rows (메모된 cellRenderer 의 stale 클로저 방지)
+  rowsRef.current = rows;
+
+  // 전체화면 중 ESC 로 닫기
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
 
   // 마운트 시 클라우드에서 시트/설정 가져오기 + 환율 자동 조회(미설정 시)
   useEffect(() => {
@@ -85,7 +106,7 @@ export default function MarginSheetPage() {
 
   // 입력 변경 후: 저장 + 계산열/경고 갱신
   const persist = () => {
-    saveRows(rows);
+    saveRows(rowsRef.current);
     setTick(t => t + 1);
     gridRef.current?.api?.refreshCells({ force: true });
   };
@@ -97,7 +118,7 @@ export default function MarginSheetPage() {
   };
 
   const addRow = () => {
-    const next = [...rows, newMarginRow({}, settingsRef.current)];
+    const next = [...rows, newMarginRow({})];
     setRows(next); saveRows(next);
   };
   const deleteSelected = () => {
@@ -122,11 +143,11 @@ export default function MarginSheetPage() {
     void tick;
     const min = settings.mega_min_margin;
     return rows.filter(r => {
-      const res = computeMarginRow(toInput(r), rate);
+      const res = computeMarginRow(toInput(r, settings), rate);
       return res.targetPriceKrw > 0 && res.megaMarginRate < min;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, settings.mega_min_margin, rate, tick]);
+  }, [rows, settings, rate, tick]);
 
   const onCellValueChanged = (e: any) => {
     // 퍼센트 입력 컬럼은 valueSetter 에서 분수로 저장됨. 여기선 저장만.
@@ -144,22 +165,14 @@ export default function MarginSheetPage() {
     return { backgroundColor: '#fef3c7' };
   };
 
-  const pctSetter = (field: 'target_margin' | 'mega_discount') => (p: any) => {
-    const n = Number(String(p.newValue).replace('%', ''));
-    if (isNaN(n)) return false;
-    p.data[field] = n > 1 ? n / 100 : n;   // 30 또는 0.3 모두 허용
-    return true;
-  };
-
   const columnDefs: ColDef[] = useMemo(() => {
-    const cg = (r: any) => computeMarginRow(toInput(r), settingsRef.current.exchange_rate);
+    const cg = (r: any) => computeMarginRow(toInput(r, settingsRef.current), settingsRef.current.exchange_rate);
     return [
-      { headerName: '등록', width: 56, pinned: 'left', editable: false, sortable: false, filter: false,
-        cellRenderer: (p: any) => (
-          <input type="checkbox" checked={!!p.data?.registered}
-            onChange={() => { p.data.registered = !p.data.registered; persist(); }} />
-        ) },
-      { field: 'source_keyword', headerName: '출처 키워드', width: 130, editable: true, pinned: 'left',
+      { field: 'registered_date', headerName: '등록일', width: 76, editable: true, pinned: 'left',
+        cellEditor: 'agDateStringCellEditor',
+        valueFormatter: (p: any) => { if (!p.value) return ''; const s = String(p.value).split('-'); return s.length === 3 ? `${Number(s[1])}/${Number(s[2])}` : p.value; },
+        headerTooltip: '큐텐에 등록한 날짜. 더블클릭 → 달력에서 선택(오타 방지). 표시는 월/일. 대시보드 캘린더와 연동됩니다.' },
+      { field: 'source_keyword', headerName: '출처 키워드', width: 130, editable: true, pinned: 'left',        headerTooltip: '키워드(RD)에서 보낸 출처 키워드. 클릭 시 일본어로 큐텐 검색. (표시는 한국어)',
         cellRenderer: (p: any) => {
           if (!p.value) return '';
           const jp = p.data?.source_keyword_jp || p.value;
@@ -167,48 +180,67 @@ export default function MarginSheetPage() {
             ? <a href={`https://www.qoo10.jp/s/?keyword=${encodeURIComponent(jp)}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline" title={`큐텐 검색: ${jp}`}>{p.value}</a>
             : <span>{p.value}</span>;
         } },
-      { field: 'product_name', headerName: '상품명', width: 200, editable: true, pinned: 'left' },
-      { field: 'option_label', headerName: '구성', width: 90, editable: true },
-      { field: 'buy_site', headerName: '구매사이트', width: 100, editable: true },
-      { field: 'url', headerName: 'URL', width: 150, editable: true,
+      { field: 'product_name', headerName: '상품명', width: 190, editable: true, pinned: 'left',        headerTooltip: '소싱할 국내 상품명' },
+      { field: 'option_label', headerName: '구성', width: 88, editable: true,        headerTooltip: '구성/세트 라벨 (예: 1개입 / 2개 세트). 세트 복제 버튼으로 자동 생성' },
+      { field: 'url', headerName: 'URL', width: 70, editable: true,        headerTooltip: '국내 상품 페이지 URL (입력하면 "링크" 로 표시)',
         cellRenderer: (p: any) => p.value
           ? <a href={p.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">링크</a> : '' },
-      { field: 'qty', headerName: '개수', width: 64, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor' },
-      { field: 'weight_g', headerName: '무게(g)', width: 80, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor' },
-      { field: 'purchase_krw', headerName: '구매가', width: 90, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won },
-      { field: 'domestic_ship_krw', headerName: '국내배송+포장', width: 110, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won },
-      { field: 'mode', headerName: '방식', width: 92, editable: true,
-        cellEditor: 'agSelectCellEditor', cellEditorParams: { values: ['markup', 'target'] },
-        valueFormatter: (p: any) => p.value === 'target' ? '목표마진' : '원가배수' },
-      { field: 'markup', headerName: '배수', width: 70, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',
-        cellStyle: (p: any) => p.data?.mode === 'markup' ? undefined : { color: '#9ca3af' } },
-      { field: 'target_margin', headerName: '목표마진', width: 80, editable: true, type: 'numericColumn',
-        valueFormatter: pct, valueSetter: pctSetter('target_margin'),
-        cellStyle: (p: any) => p.data?.mode === 'target' ? undefined : { color: '#9ca3af' } },
-      { field: 'kse_override_krw', headerName: 'KSE직접입력', width: 100, editable: true, type: 'numericColumn',
-        cellEditor: 'agNumberCellEditor', valueFormatter: (p: any) => p.value == null ? '(자동)' : won(p) },
-      { field: 'mega_discount', headerName: '메가할인', width: 76, editable: true, type: 'numericColumn',
-        valueFormatter: pct, valueSetter: pctSetter('mega_discount') },
+      { field: 'qty', headerName: '개수', width: 60, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',        headerTooltip: '세트 개수. 개수만큼 무게·상품원가·국내배송·KSE배대지가 곱해짐' },
+      { field: 'weight_g', headerName: '무게(g)', width: 78, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',        headerTooltip: '상품 1개 실제 무게(g). 포장 100g 가산 후 KSE 해상 요금표 자동조회. 무료/유료 모두 운임 산정에 사용.' },
+      { field: 'goods_cost_krw', headerName: '상품원가', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품 자체 가격(1개)' },
+      { field: 'inbound_ship_krw', headerName: '국내배송비', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품을 내(배대지)에게 받기까지의 배송비(1개). 놓치기 쉬우니 별도 입력 → 구매가에 자동 합산.' },
+      { headerName: '구매가', width: 90, type: 'numericColumn', cellStyle: CALC_BG, valueGetter: (p: any) => p.data && rowPurchaseKrw(p.data), valueFormatter: won,        headerTooltip: '상품원가 + 국내배송비 자동 합산. (자동계산)' },
+      { field: 'domestic_ship_krw', headerName: 'KSE배대지 배송+포장', width: 130, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '한국 KSE 배대지(포워더)까지 보내는 국내 배송비 + 포장비(1개). (큐텐 해상 KSE 운임과는 별개)' },
+      { field: 'mode', headerName: '방식', width: 96,
+        headerTooltip: '클릭해서 선택. 원가배수=구매가×배수, 목표마진=목표 마진율 역산. 배수/목표마진/메가할인 값은 상단 설정에서 일괄 적용.',
+        cellRenderer: (p: any) => (
+          <select value={p.data?.mode || 'markup'} onChange={e => { p.data.mode = e.target.value; persist(); }}
+            style={{ width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit' }}>
+            <option value="markup">원가배수</option>
+            <option value="target">목표마진</option>
+          </select>
+        ) },
+      { field: 'ship_mode', headerName: '배송', width: 80,
+        headerTooltip: '클릭해서 선택. 무료배송=셀러가 KSE 운임 부담(고객 무부담). 유료배송=고객이 운임 부담→셀러 운임 0. 둘 다 마진에 반영.',
+        cellRenderer: (p: any) => (
+          <select value={p.data?.ship_mode || 'free'} onChange={e => { p.data.ship_mode = e.target.value; persist(); }}
+            style={{ width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', font: 'inherit' }}>
+            <option value="free">무료</option>
+            <option value="paid">유료</option>
+          </select>
+        ) },
+      { headerName: 'KSE운임', width: 100, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',
+        headerTooltip: '큐텐 KSE 해상운임(한국→일본). 무게로 자동 계산되며 직접 입력해 덮어쓸 수 있음(예외 조정). 비우면 다시 자동. 유료배송이면 고객 부담이라 셀러 마진에서 제외.',
+        valueGetter: (p: any) => p.data ? (p.data.kse_override_krw != null ? p.data.kse_override_krw : cg(p.data).kseAutoKrw) : null,
+        valueSetter: (p: any) => {
+          const n = p.newValue;
+          p.data.kse_override_krw = (n === '' || n == null || isNaN(Number(n))) ? null : Number(n);
+          return true;
+        },
+        valueFormatter: won,
+        cellStyle: (p: any): any => p.data?.kse_override_krw != null ? { backgroundColor: '#fde68a' } : { color: '#94a3b8' } },
 
       // ── 계산 (read-only) ──
-      { headerName: '발송무게', width: 84, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).effWeightG, valueFormatter: (p: any) => p.value ? `${p.value}g` : '' },
-      { headerName: 'KSE배송비', width: 92, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).kseShipKrw, valueFormatter: won },
-      { headerName: '판매가(원)', width: 96, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).targetPriceKrw, valueFormatter: won },
+      { headerName: '발송무게', width: 82, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '무게×개수 + 포장 100g', valueGetter: (p: any) => p.data && cg(p.data).effWeightG, valueFormatter: (p: any) => p.value ? `${p.value}g` : '' },
+      { headerName: '판매가(원)', width: 96, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '원화 목표 판매가 P (마진 기준값)', valueGetter: (p: any) => p.data && cg(p.data).targetPriceKrw, valueFormatter: won },
       // 상시
-      { headerName: '상시 등록가(¥)', width: 110, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).listJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#eff6ff' } },
-      { headerName: '상시 이익', width: 92, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).profitKrw, valueFormatter: won },
-      { headerName: '상시 마진율', width: 96, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).marginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).marginRate) },
+      { headerName: '상시 등록가(¥)', width: 108, type: 'numericColumn', headerTooltip: '할인 없는 상시 큐텐 등록가(엔). 작성 당일 환율로 산출', valueGetter: (p: any) => p.data && cg(p.data).listJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#dbeafe', fontWeight: 700 } },
+      { headerName: '상시 이익', width: 90, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '상시가 기준 순이익(원)', valueGetter: (p: any) => p.data && cg(p.data).profitKrw, valueFormatter: won },
+      { headerName: '상시 마진율', width: 92, type: 'numericColumn', headerTooltip: '상시 이익 ÷ 판매가(원)', valueGetter: (p: any) => p.data && cg(p.data).marginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).marginRate) },
       // 메가와리
-      { headerName: '메가 등록가(¥)', width: 112, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).megaListJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#fdf4ff' } },
-      { headerName: '메가 이익', width: 92, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).megaProfitKrw, valueFormatter: won },
-      { headerName: '메가 마진율', width: 96, type: 'numericColumn', valueGetter: (p: any) => p.data && cg(p.data).megaMarginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).megaMarginRate) },
-      { headerName: '평가', width: 70, valueGetter: (p: any) => p.data && marginVerdict(cg(p.data).marginRate) },
-      { headerName: '메모', field: 'memo', width: 140, editable: true },
+      { headerName: '메가 등록가(¥)', width: 110, type: 'numericColumn', headerTooltip: '메가와리(빅프로모션) 할인 적용 등록가(엔)', valueGetter: (p: any) => p.data && cg(p.data).megaListJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#f3e8ff', fontWeight: 700 } },
+      { headerName: '메가 이익', width: 90, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '메가와리 할인 적용 시 순이익(원). 음수면 역마진', valueGetter: (p: any) => p.data && cg(p.data).megaProfitKrw, valueFormatter: won },
+      { headerName: '메가 마진율', width: 92, type: 'numericColumn', headerTooltip: '메가 이익 ÷ 판매가(원). 상단 메가 최소마진 미달 시 경고', valueGetter: (p: any) => p.data && cg(p.data).megaMarginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).megaMarginRate) },
+      { headerName: '평가', width: 64, cellStyle: CALC_BG, headerTooltip: '상시 마진율 정성 평가', valueGetter: (p: any) => p.data && marginVerdict(cg(p.data).marginRate) },
+      { field: 'memo', headerName: '메모', width: 130, editable: true, headerTooltip: '자유 메모' },
     ];
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const defaultColDef: ColDef = useMemo(() => ({ sortable: true, resizable: true, suppressMovable: false, minWidth: 50 }), []);
+  const defaultColDef: ColDef = useMemo(() => ({
+    sortable: true, resizable: true, suppressMovable: false, minWidth: 48,
+    wrapHeaderText: true, autoHeaderHeight: true,   // 컬럼명 너비 따라 2줄까지
+  }), []);
 
   return (
     <div>
@@ -247,37 +279,50 @@ export default function MarginSheetPage() {
         <div className="bg-rose-50 border border-rose-300 text-rose-800 rounded-lg p-3 mb-3 text-sm">
           ⚠️ <b>메가와리 최소마진({Math.round(settings.mega_min_margin * 100)}%) 미달 {megaWarnings.length}건</b> —
           메가와리(빅프로모션) 할인 적용 시 마진이 부족하거나 역마진입니다. 판매가·구성·배송비를 조정하세요.
-          {megaWarnings.some(r => computeMarginRow(toInput(r), rate).megaMarginRate < 0) &&
+          {megaWarnings.some(r => computeMarginRow(toInput(r, settings), rate).megaMarginRate < 0) &&
             <span className="ml-1 font-bold">(역마진 포함)</span>}
         </div>
       )}
 
-      {/* 툴바 */}
-      <div className="flex items-center gap-2 mb-2 text-sm flex-wrap">
-        <button onClick={addRow} className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">+ 행 추가</button>
-        <button onClick={() => duplicateComposition(2)} className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700" title="체크한 행을 2개 세트 구성으로 복제">2개 세트 복제</button>
-        <button onClick={() => duplicateComposition(3)} className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700">3개 세트 복제</button>
-        <button onClick={deleteSelected} className="px-3 py-1 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200">선택 삭제</button>
-        <span className="text-xs text-gray-400 ml-auto">총 {rows.length}행 · 셀 더블클릭 편집 · 방식(원가배수/목표마진) 셀에서 선택</span>
-      </div>
+      {/* 툴바 + 그리드 (전체화면 시 사이드바까지 덮는 고정 오버레이) */}
+      <div className={fullscreen ? 'fixed inset-0 z-50 bg-white flex flex-col p-2 overflow-hidden' : ''}>
+        <div className={`flex items-center gap-2 mb-2 text-sm flex-wrap ${fullscreen ? 'shrink-0' : ''}`}>
+          <button onClick={addRow} className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">+ 행 추가</button>
+          <button onClick={() => duplicateComposition(2)} className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700" title="체크한 행을 2개 세트 구성으로 복제">2개 세트 복제</button>
+          <button onClick={() => duplicateComposition(3)} className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700">3개 세트 복제</button>
+          <button onClick={deleteSelected} className="px-3 py-1 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200">선택 삭제</button>
+          <span className="text-xs text-gray-400">방식·배송 = 클릭 선택 · 등록가·마진율만 색상 · 총 {rows.length}행 · 헤더에 마우스=설명</span>
+          <button
+            onClick={() => setFullscreen(f => !f)}
+            className="px-3 py-1 bg-gray-800 text-white text-xs rounded hover:bg-black ml-auto"
+            title="시트만 전체화면 — 사이드바 숨김. ESC 로 닫기"
+          >
+            {fullscreen ? '✕ 전체화면 닫기 (ESC)' : '⛶ 전체화면'}
+          </button>
+        </div>
 
-      <div style={{ height: 'calc(100vh - 230px)', minHeight: 480, width: '100%' }}>
-        <AgGridReact
-          ref={gridRef}
-          theme={theme}
-          rowData={rows}
-          columnDefs={columnDefs}
-          defaultColDef={defaultColDef}
-          rowSelection={{ mode: 'multiRow', selectAll: 'filtered', enableClickSelection: false }}
-          selectionColumnDef={{ pinned: 'left', width: 44 }}
-          singleClickEdit={false}
-          stopEditingWhenCellsLoseFocus={true}
-          onCellValueChanged={onCellValueChanged}
-          getRowId={(p: any) => p.data.id}
-          rowClassRules={{
-            'mega-loss-row': (p: any) => p.data && computeMarginRow(toInput(p.data), settingsRef.current.exchange_rate).megaMarginRate < 0,
-          }}
-        />
+        <div
+          className={fullscreen ? 'flex-1 min-h-0' : ''}
+          style={fullscreen ? { width: '100%' } : { height: 'calc(100vh - 230px)', minHeight: 480, width: '100%' }}
+        >
+          <AgGridReact
+            ref={gridRef}
+            theme={theme}
+            rowData={rows}
+            columnDefs={columnDefs}
+            defaultColDef={defaultColDef}
+            tooltipShowDelay={300}
+            rowSelection={{ mode: 'multiRow', selectAll: 'filtered', enableClickSelection: false }}
+            selectionColumnDef={{ pinned: 'left', width: 44 }}
+            singleClickEdit={false}
+            stopEditingWhenCellsLoseFocus={true}
+            onCellValueChanged={onCellValueChanged}
+            getRowId={(p: any) => p.data.id}
+            rowClassRules={{
+              'mega-loss-row': (p: any) => p.data && computeMarginRow(toInput(p.data, settingsRef.current), settingsRef.current.exchange_rate).megaMarginRate < 0,
+            }}
+          />
+        </div>
       </div>
       <style>{`.mega-loss-row { background-color: #fff1f2 !important; }`}</style>
     </div>

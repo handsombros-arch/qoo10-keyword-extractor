@@ -20,14 +20,13 @@ export interface MarginRow {
   option_label?: string;       // 구성 라벨 (예: 1개입 / 2개 세트)
   qty: number;                 // 개수
   weight_g: number;            // 실제 무게(1개)
-  purchase_krw: number;        // 구매가(1개)
-  domestic_ship_krw: number;   // 국내 배송비+포장비(1개)
-  mode: MarginMode;            // 'markup' | 'target'
-  markup: number;              // 배수 (markup 모드)
-  target_margin: number;       // 목표 마진율 (target 모드)
-  kse_override_krw: number | null; // KSE 배송비 직접입력(null=자동)
-  mega_discount: number;       // 메가와리 할인율
-  registered: boolean;         // 등록 완료 체크
+  goods_cost_krw: number;      // 상품 원가(1개)
+  inbound_ship_krw: number;    // 국내 배송비(상품이 나에게 오는 비용, 1개)
+  domestic_ship_krw: number;   // KSE 배대지까지 배송비+포장비(1개)
+  ship_mode: 'free' | 'paid';  // 무료배송(셀러 운임부담) | 유료배송(바이어 운임부담)
+  mode: MarginMode;            // 'markup' | 'target' (배수/목표마진 값은 전역 설정)
+  kse_override_krw: number | null; // KSE 해상운임 직접입력(null=무게로 자동)
+  registered_date?: string;    // 등록일 (월/일, 예 '6/11')
   memo?: string;
 }
 
@@ -56,21 +55,20 @@ export function newId(prefix = 'r'): string {
   return `${prefix}_${_seq}_${performance.now().toString(36).replace('.', '')}`;
 }
 
-export function newMarginRow(partial: Partial<MarginRow> = {}, s = DEFAULT_SETTINGS): MarginRow {
+export function newMarginRow(partial: Partial<MarginRow> = {}): MarginRow {
   const id = newId();
   return {
     id,
     group_id: partial.group_id || id,
     qty: 1,
     weight_g: 0,
-    purchase_krw: 0,
+    goods_cost_krw: 0,
+    inbound_ship_krw: 0,
     domestic_ship_krw: 3000,
+    ship_mode: 'free',
     mode: 'markup',
-    markup: s.default_markup,
-    target_margin: s.default_target_margin,
     kse_override_krw: null,
-    mega_discount: s.default_mega_discount,
-    registered: false,
+    registered_date: '',
     ...partial,
   };
 }
@@ -108,12 +106,11 @@ export function saveSettings(s: MarginSheetSettings): void {
 export function seedRowsFromKeywords(
   keywords: { keyword_jp?: string; keyword_kr?: string | null }[],
 ): number {
-  const s = loadSettings();
   const cur = loadRows();
   const seeded = keywords
     .map(k => ({ disp: (k.keyword_kr || k.keyword_jp || '').trim(), jp: (k.keyword_jp || '').trim() }))
     .filter(x => x.disp)
-    .map(x => newMarginRow({ source_keyword: x.disp, source_keyword_jp: x.jp || undefined }, s));
+    .map(x => newMarginRow({ source_keyword: x.disp, source_keyword_jp: x.jp || undefined }));
   if (!seeded.length) return 0;
   saveRows([...cur, ...seeded]);
   return seeded.length;
@@ -127,6 +124,6 @@ export function duplicateAsComposition(row: MarginRow, qty: number, label?: stri
     group_id: row.group_id,
     qty,
     option_label: label || `${qty}개 세트`,
-    registered: false,
+    registered_date: '',
   });
 }

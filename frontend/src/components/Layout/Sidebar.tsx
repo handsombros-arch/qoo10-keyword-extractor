@@ -12,8 +12,8 @@ import {
 type Item = { path: string; label: string; icon: LucideIcon };
 
 const mainItems: Item[] = [
-  { path: '/keywords', label: '키워드 추출 (RD)', icon: Search },
   { path: '/', label: '대시보드', icon: LayoutDashboard },
+  { path: '/keywords', label: '키워드 추출 (RD)', icon: Search },
   { path: '/margin-sheet', label: '마진 시트', icon: FileSpreadsheet },
   { path: '/shop-benchmark', label: '샵 벤치마크', icon: Target },
   { path: '/margin', label: '마진 계산기', icon: Calculator },
