@@ -159,7 +159,14 @@ export default function MarginSheetPage() {
           <input type="checkbox" checked={!!p.data?.registered}
             onChange={() => { p.data.registered = !p.data.registered; persist(); }} />
         ) },
-      { field: 'source_keyword', headerName: '출처 키워드', width: 130, editable: true, pinned: 'left' },
+      { field: 'source_keyword', headerName: '출처 키워드', width: 130, editable: true, pinned: 'left',
+        cellRenderer: (p: any) => {
+          if (!p.value) return '';
+          const jp = p.data?.source_keyword_jp || p.value;
+          return jp
+            ? <a href={`https://www.qoo10.jp/s/?keyword=${encodeURIComponent(jp)}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline" title={`큐텐 검색: ${jp}`}>{p.value}</a>
+            : <span>{p.value}</span>;
+        } },
       { field: 'product_name', headerName: '상품명', width: 200, editable: true, pinned: 'left' },
       { field: 'option_label', headerName: '구성', width: 90, editable: true },
       { field: 'buy_site', headerName: '구매사이트', width: 100, editable: true },

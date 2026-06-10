@@ -12,7 +12,8 @@ const SETTINGS_KEY = 'marginSheet.settings.v1';
 export interface MarginRow {
   id: string;
   group_id: string;            // 같은 상품의 구성들을 묶는 키
-  source_keyword?: string;     // 출처 키워드(RD)
+  source_keyword?: string;     // 출처 키워드(RD, 표시용 — 한국어 우선)
+  source_keyword_jp?: string;  // 출처 키워드 일본어 (큐텐 검색 링크용)
   buy_site?: string;           // 구매사이트
   url?: string;
   product_name?: string;
@@ -110,9 +111,9 @@ export function seedRowsFromKeywords(
   const s = loadSettings();
   const cur = loadRows();
   const seeded = keywords
-    .map(k => (k.keyword_kr || k.keyword_jp || '').trim())
-    .filter(Boolean)
-    .map(kw => newMarginRow({ source_keyword: kw }, s));
+    .map(k => ({ disp: (k.keyword_kr || k.keyword_jp || '').trim(), jp: (k.keyword_jp || '').trim() }))
+    .filter(x => x.disp)
+    .map(x => newMarginRow({ source_keyword: x.disp, source_keyword_jp: x.jp || undefined }, s));
   if (!seeded.length) return 0;
   saveRows([...cur, ...seeded]);
   return seeded.length;

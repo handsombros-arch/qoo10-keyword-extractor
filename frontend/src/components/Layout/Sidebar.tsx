@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, FileSpreadsheet, Target,
-  Calculator, ImageMinus,
-  Search, BarChart3, Link2, Settings,
+  Calculator,
+  Search, Link2, Settings,
   Wrench, Calendar, FileEdit,
   ChevronRight, ChevronDown,
   type LucideIcon,
@@ -17,11 +17,9 @@ const mainItems: Item[] = [
   { path: '/margin-sheet', label: '마진 시트', icon: FileSpreadsheet },
   { path: '/shop-benchmark', label: '샵 벤치마크', icon: Target },
   { path: '/margin', label: '마진 계산기', icon: Calculator },
-  { path: '/image', label: '워터마크 제거', icon: ImageMinus },
 ];
 
 const moreItems: Item[] = [
-  { path: '/insights', label: '시계열 인사이트 (RD)', icon: BarChart3 },
   { path: '/related-bulk', label: '연관 키워드 (RD)', icon: Link2 },
   { path: '/settings', label: 'AI 설정', icon: Settings },
 ];
