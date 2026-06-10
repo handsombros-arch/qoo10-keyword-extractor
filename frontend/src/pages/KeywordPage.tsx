@@ -21,6 +21,8 @@ import CheckboxSetFilter from '../components/Grid/CheckboxSetFilter';
 import TaskProgressPanel from '../components/common/TaskProgressPanel';
 import { addInterestKeywords, getInterestKeywords, removeInterestEntry, clearInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
 import { fetchCloud } from '../store/cloudSync';
+import { seedRowsFromKeywords } from '../store/marginSheet';
+import { useNavigate } from 'react-router-dom';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -79,6 +81,19 @@ const SIMPLE_VIEW_HIDE = [
 // 관심만 보기 ON 시 기본 숨김 — 분류/순위 (스냅샷 무의미)
 const INTEREST_HIDE = ['classification', 'rank'];
 
+// 색상 강약(컬러 스케일) 적용 가능한 숫자 컬럼
+const COLOR_COL_LIST = [
+  'competition_intensity', 'search_volume_weekly', 'search_volume_daily', 'total_products',
+  'products_jp', 'products_kr', 'products_cn', 'products_other',
+  'bid_count', 'bid_price_10', 'bid_price_9', 'bid_price_8', 'bid_price_7', 'bid_price_6',
+  'bid_price_5', 'bid_price_4', 'bid_price_3', 'bid_price_2', 'bid_price_1', 'kr_ratio',
+];
+const COLOR_COLS = new Set(COLOR_COL_LIST);
+// 컬럼마다 고유 색상(hue) — 황금각(137.5°)으로 분산해 인접 컬럼도 서로 다른 색
+const COLOR_HUE: Record<string, number> = {};
+COLOR_COL_LIST.forEach((c, i) => { COLOR_HUE[c] = Math.round((i * 137.508) % 360); });
+
+
 // 빈값(null/undefined/'')은 정렬 방향과 무관하게 항상 맨 아래로.
 // ag-grid 기본은 오름차순에서 null을 맨 위로 올려, 경쟁강도/낙찰가처럼 빈값 많은 컬럼은
 // "오름차순이 안 먹는 것처럼"(빈 행이 화면을 덮음) 보임. → 빈값을 항상 바닥으로.
@@ -93,6 +108,7 @@ function sortNullsLast(a: any, b: any, _na: any, _nb: any, isDescending: boolean
 }
 
 export default function KeywordPage() {
+  const navigate = useNavigate();
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [selectedCats, setSelectedCats] = useState<number[]>([1]);
   const [translate, setTranslate] = useState(true);
@@ -440,6 +456,14 @@ export default function KeywordPage() {
   };
 
   // 그리드 행(__interest)의 keyword_jp + 날짜(lookup_date) 1건만 해제
+  const sendSelectedToMargin = () => {
+    const api = gridRef.current?.api as any;
+    const selected: any[] = api?.getSelectedRows?.() || [];
+    if (selected.length === 0) { alert('키워드 행을 체크해주세요.'); return; }
+    const n = seedRowsFromKeywords(selected.map((r: any) => ({ keyword_jp: r.keyword_jp, keyword_kr: r.keyword_kr })));
+    if (confirm(`${n}개 키워드를 마진 시트로 보냈습니다. 지금 이동할까요?`)) navigate('/margin-sheet');
+  };
+
   const handleRemoveInterest = (jp: string, addedAt?: string | null) => {
     removeInterestEntry(jp, addedAt);
     setInterestTick(t => t + 1);
@@ -466,6 +490,120 @@ export default function KeywordPage() {
     api.setColumnsVisible(INTEREST_HIDE, !interestOnly);
   };
   useEffect(() => { applyColumnVisibility(); }, [simpleView, interestOnly]);
+
+  // ── 색상 강약(컬러 스케일) ──
+  // colorColsRef: 색상 켠 컬럼 / colorStatsRef: 컬럼별 현재 보이는 행의 min~max.
+  // 필터(빠른필터=rowData 교체 + ag-grid 컬럼필터) 변동 시 보이는 뷰 기준으로 실시간 재계산.
+  const colorColsRef = useRef<Set<string>>(new Set());
+  const colorStatsRef = useRef<Record<string, { min: number; max: number }>>({});
+  const lastStatsSigRef = useRef('');
+  const [colorVer, setColorVer] = useState(0);   // 툴바 재렌더용
+  // 헤더 우클릭 메뉴 (색상 강약 토글)
+  const [colorMenu, setColorMenu] = useState<{ colId: string; x: number; y: number } | null>(null);
+  const openColorMenu = (colId: string, x: number, y: number) => setColorMenu({ colId, x, y });
+  // 그리드 헤더에서 우클릭 시 → 해당 컬럼 색상 메뉴 (ag-grid 헤더셀의 col-id 속성 이용)
+  const handleGridContextMenu = (e: any) => {
+    const cell = (e.target as HTMLElement).closest('.ag-header-cell') as HTMLElement | null;
+    if (!cell) return;                                  // 헤더가 아니면 기본(크롬) 메뉴 허용
+    const colId = cell.getAttribute('col-id') || '';
+    if (!COLOR_COLS.has(colId)) return;                 // 색상 대상 아닌 컬럼도 기본 메뉴
+    e.preventDefault();
+    openColorMenu(colId, e.clientX, e.clientY);
+  };
+  useEffect(() => {
+    if (!colorMenu) return;
+    const close = () => setColorMenu(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setColorMenu(null); };
+    window.addEventListener('click', close);
+    window.addEventListener('resize', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [colorMenu]);
+
+  const cellNum = (colId: string, data: any): number | null => {
+    if (!data) return null;
+    if (colId === 'kr_ratio') {
+      const tot = Number(data.total_products) || 0;
+      const kr = Number(data.products_kr) || 0;
+      return tot > 0 ? (kr / tot) * 100 : null;
+    }
+    const v = data[colId];
+    if (v == null || v === '') return null;
+    const n = Number(v);
+    return isNaN(n) ? null : n;
+  };
+
+  // 보이는(필터 통과) 행만으로 컬럼별 min/max 재계산
+  const recomputeColorStats = () => {
+    const api = gridRef.current?.api as any;
+    const cols = [...colorColsRef.current];
+    if (!api || cols.length === 0) { colorStatsRef.current = {}; return; }
+    const acc: Record<string, { min: number; max: number }> = {};
+    cols.forEach(c => { acc[c] = { min: Infinity, max: -Infinity }; });
+    api.forEachNodeAfterFilter((node: any) => {
+      const d = node.data;
+      if (!d) return;
+      cols.forEach(c => {
+        const v = cellNum(c, d);
+        if (v == null) return;
+        const s = acc[c];
+        if (v < s.min) s.min = v;
+        if (v > s.max) s.max = v;
+      });
+    });
+    cols.forEach(c => { if (acc[c].min === Infinity) acc[c] = { min: 0, max: 0 }; });
+    colorStatsRef.current = acc;
+  };
+
+  // 필터/모델 변동 시 호출 — 통계가 바뀐 경우에만 셀 새로고침 (루프 방지)
+  const refreshColorScales = () => {
+    if (colorColsRef.current.size === 0) return;
+    recomputeColorStats();
+    const sig = JSON.stringify(colorStatsRef.current);
+    if (sig === lastStatsSigRef.current) return;
+    lastStatsSigRef.current = sig;
+    gridRef.current?.api?.refreshCells({ force: true, columns: [...colorColsRef.current] });
+  };
+
+  const toggleColorCol = (colId: string) => {
+    const s = colorColsRef.current;
+    if (s.has(colId)) s.delete(colId); else s.add(colId);
+    lastStatsSigRef.current = '';
+    recomputeColorStats();
+    const api = gridRef.current?.api as any;
+    api?.refreshHeader();
+    api?.refreshCells({ force: true });
+    setColorVer(v => v + 1);
+  };
+  const clearAllColors = () => {
+    colorColsRef.current.clear();
+    colorStatsRef.current = {};
+    lastStatsSigRef.current = '';
+    const api = gridRef.current?.api as any;
+    api?.refreshHeader();
+    api?.refreshCells({ force: true });
+    setColorVer(v => v + 1);
+  };
+
+  // 컬럼 셀 배경 — 활성 시 값 위치(t)에 따라 컬럼 고유 색의 음영 강약. 기존 cellStyle 보존.
+  // ※ ag-grid 는 새 style 에 backgroundColor 키가 없으면 이전 배경을 안 지움 → 끌 때 항상 '' 로 명시.
+  const colorCellStyle = (colId: string, base?: (p: any) => any) => (p: any) => {
+    const baseStyle = (base ? base(p) : undefined) || {};
+    const off = { ...baseStyle, backgroundColor: (baseStyle as any).backgroundColor ?? '' };
+    if (!colorColsRef.current.has(colId)) return off;
+    const v = cellNum(colId, p.data);
+    if (v == null) return off;
+    const st = colorStatsRef.current[colId];
+    if (!st || st.max === st.min) return off;
+    const t = Math.max(0, Math.min(1, (v - st.min) / (st.max - st.min)));
+    const a = (0.1 + 0.5 * t).toFixed(3);
+    const hue = COLOR_HUE[colId] ?? 210;
+    return { ...baseStyle, backgroundColor: `hsla(${hue}, 75%, 50%, ${a})` };
+  };
 
   const columnDefs: ColDef[] = useMemo(() => [
     // (선택 체크박스 컬럼은 rowSelection 신 API가 자동 생성 — selectionColumnDef로 제어)
@@ -532,7 +670,6 @@ export default function KeywordPage() {
     {
       colId: 'kr_ratio', headerName: '한국비율(%)', width: 110, type: 'numericColumn',
       valueGetter: krRatioGetter, valueFormatter: pctFmt,
-      cellStyle: (p: any) => p.value >= 30 ? { backgroundColor: '#fef3c7' } : null,
     },
     {
       headerName: '', width: 70, sortable: false, filter: false, resizable: false, suppressMovable: true,
@@ -544,6 +681,19 @@ export default function KeywordPage() {
       ),
     },
   ], []);
+
+  // 색상 대상 컬럼에 🎨 헤더 토글 + 컬러 스케일 cellStyle 주입 (기존 cellStyle 보존).
+  // columnDefs 본체는 재생성 안 하므로 너비/순서/가시성 로직과 충돌 없음.
+  const columnDefsWithColor: ColDef[] = useMemo(() => columnDefs.map(def => {
+    const colId = (def as any).colId || (def as any).field;
+    if (!colId || !COLOR_COLS.has(colId)) return def;
+    const base = (def as any).cellStyle;
+    const baseFn = typeof base === 'function' ? base : (base ? () => base : undefined);
+    return {
+      ...def,
+      cellStyle: colorCellStyle(colId, baseFn),
+    } as ColDef;
+  }), [columnDefs]);
 
   const defaultColDef: ColDef = useMemo(() => ({
     sortable: true,
@@ -834,6 +984,13 @@ export default function KeywordPage() {
             🔖 관심 담기 ({interestCount})
           </button>
           <button
+            onClick={sendSelectedToMargin}
+            className="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700"
+            title="선택한(체크된) 키워드를 마진 시트로 보내기 (출처 키워드로 빈 후보행 생성)"
+          >
+            📋 마진 시트로
+          </button>
+          <button
             onClick={() => setInterestOnly(v => !v)}
             className={`px-3 py-1 text-xs rounded border ${interestOnly ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
             title="북마크한 관심 키워드만 (저장된 스냅샷 그대로) 보기 ↔ 전체 보기"
@@ -847,6 +1004,15 @@ export default function KeywordPage() {
           >
             {simpleView ? '🔎 간편 보기 ON' : '🔎 간편 보기'}
           </button>
+          {(colorVer >= 0 && colorColsRef.current.size > 0) && (
+            <button
+              onClick={clearAllColors}
+              className="px-3 py-1 bg-blue-100 text-blue-700 text-xs rounded hover:bg-blue-200"
+              title="색상 강약 표기를 모든 컬럼에서 해제 (컬럼 헤더의 🎨 로 개별 토글)"
+            >
+              🎨 색상 해제 ({colorColsRef.current.size})
+            </button>
+          )}
           {interestOnly && (
             <>
               <button
@@ -880,7 +1046,7 @@ export default function KeywordPage() {
             {fullscreen ? '✕ 전체화면 닫기 (ESC)' : '⛶ 전체화면'}
           </button>
           <span className="text-xs text-gray-400">
-            행 왼쪽 체크박스로 선택 · 컬럼 헤더 우측 ≡ 메뉴로 필터
+            행 왼쪽 체크박스로 선택 · 헤더 ≡ 메뉴로 필터 · 헤더 🎨 로 색상 강약(보이는 행 기준)
           </span>
         </div>
         <div
@@ -888,14 +1054,20 @@ export default function KeywordPage() {
           style={fullscreen
             ? { width: '100%' }
             : { height: toolsOpen ? 'calc(100vh - 200px)' : 'calc(100vh - 150px)', minHeight: 520, width: '100%' }}
+          onContextMenu={handleGridContextMenu}
         >
           <AgGridReact
             ref={gridRef}
             theme={myTheme}
             rowData={filteredKeywords}
-            columnDefs={columnDefs}
+            columnDefs={columnDefsWithColor}
             defaultColDef={defaultColDef}
-            rowSelection={{ mode: 'multiRow', selectAll: 'filtered' }}
+            rowSelection={{
+              mode: 'multiRow',
+              selectAll: 'filtered',
+              enableClickSelection: true,          // 셀 아무 곳이나 클릭해도 행 선택(블록)
+              enableSelectionWithoutKeys: true,    // Ctrl/Shift 없이도 클릭마다 토글 → 기존 체크 유지
+            }}
             selectionColumnDef={{ pinned: 'left', width: 50, suppressMovable: true, lockPosition: true }}
             animateRows={true}
             pagination={true}
@@ -906,10 +1078,38 @@ export default function KeywordPage() {
             onColumnResized={handleColumnResized}
             onColumnMoved={handleColumnMoved}
             onSortChanged={handleSortChanged}
+            onFilterChanged={refreshColorScales}
+            onModelUpdated={refreshColorScales}
             onGridReady={handleGridReady}
           />
         </div>
       </div>
+
+      {/* 헤더 우클릭 색상 강약 메뉴 */}
+      {colorMenu && (
+        <div
+          className="fixed z-[60] bg-white border border-gray-200 rounded-md shadow-lg py-1 text-sm"
+          style={{ left: Math.min(colorMenu.x, window.innerWidth - 200), top: Math.min(colorMenu.y, window.innerHeight - 90) }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => { toggleColorCol(colorMenu.colId); setColorMenu(null); }}
+            className="block w-full text-left px-3 py-1.5 hover:bg-blue-50 whitespace-nowrap"
+          >
+            {colorColsRef.current.has(colorMenu.colId)
+              ? '🎨 색상 강약 끄기'
+              : '🎨 색상 강약 켜기 (보이는 행 기준)'}
+          </button>
+          {colorColsRef.current.size > 0 && (
+            <button
+              onClick={() => { clearAllColors(); setColorMenu(null); }}
+              className="block w-full text-left px-3 py-1.5 hover:bg-blue-50 whitespace-nowrap text-gray-500 border-t"
+            >
+              모든 컬럼 색상 해제
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

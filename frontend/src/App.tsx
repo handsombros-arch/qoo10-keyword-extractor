@@ -7,6 +7,7 @@ import InsightsPage from './pages/InsightsPage';
 import ImagePage from './pages/ImagePage';
 import RelatedBulkPage from './pages/RelatedBulkPage';
 import MarginPage from './pages/MarginPage';
+import MarginSheetPage from './pages/MarginSheetPage';
 // 상품 시트 — 라우트/메뉴에서 제외 (코드 보존, 필요 시 복원)
 // import RecommendProductsPage from './pages/RecommendProductsPage';
 import ReviewPage from './pages/ReviewPage';
@@ -27,6 +28,7 @@ function App() {
             <Route path="/image" element={<ImagePage />} />
             <Route path="/related-bulk" element={<RelatedBulkPage />} />
             <Route path="/margin" element={<MarginPage />} />
+            <Route path="/margin-sheet" element={<MarginSheetPage />} />
             {/* 상품 시트 — 제거됨 (코드 보존). 복원하려면 import + 이 라우트 복구 */}
             {/* <Route path="/recommend-products" element={<RecommendProductsPage />} /> */}
             <Route path="/review" element={<ReviewPage />} />
