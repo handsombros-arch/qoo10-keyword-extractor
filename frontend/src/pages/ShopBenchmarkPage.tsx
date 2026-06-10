@@ -5,7 +5,6 @@
  * T (5/3): URL 리스트 영속 + 카드형 UI + 검색 필터 + 안내.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Check, Plus, RefreshCw, Trash2, Search, Info } from 'lucide-react';
 import api from '../api/client';
 import { loadSheet, saveSheet, newSheetRow, type SheetRow } from '../store/productSheet';
@@ -272,15 +271,9 @@ export default function ShopBenchmarkPage() {
         <div>
           <h1 className="apple-title-1">샵 벤치마크</h1>
           <p className="text-[14px] text-apple-text-3 mt-1 tracking-tight">
-            큐텐 경쟁 셀러의 상위 상품을 수집하여 상품 시트에 추가
+            큐텐 경쟁 셀러의 상위 상품을 수집
           </p>
         </div>
-        <Link
-          to="/recommend-products"
-          className="apple-btn apple-btn-secondary apple-btn-sm"
-        >
-          상품 시트 →
-        </Link>
       </div>
 
       {/* 안내 — 중복/동기화 동작 */}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 import api from '../api/client';
 
 type ReviewMatch = {
@@ -282,7 +282,6 @@ export default function ReviewPage() {
   return (
     <div className="p-4 max-w-7xl mx-auto">
       <div className="flex items-center gap-3 mb-3">
-        <Link to="/recommend-products" className="text-blue-600 text-sm">← 시트 빌드 페이지</Link>
         <h1 className="text-xl font-bold">검수 페이지</h1>
         <input
           type="date"

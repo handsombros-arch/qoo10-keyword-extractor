@@ -1,5 +1,4 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
-import { Link } from 'react-router-dom';
 import { AgGridReact } from 'ag-grid-react';
 import DataDatePicker from '../components/DataDatePicker';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
@@ -20,8 +19,8 @@ import { getKeywords, collectTrendKeywords, collectRelatedKeywords, deleteKeywor
 import type { Keyword } from '../types';
 import CheckboxSetFilter from '../components/Grid/CheckboxSetFilter';
 import TaskProgressPanel from '../components/common/TaskProgressPanel';
-import { addInterestKeywords, getInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
-import { mergeKeywordsToSheet } from '../store/keywordToSheet';
+import { addInterestKeywords, getInterestKeywords, removeInterestEntry, clearInterestKeywords, type InterestKeyword } from '../store/interestKeywords';
+import { fetchCloud } from '../store/cloudSync';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -69,6 +68,17 @@ const GOOD_CRITERIA: { key: GoodKey; label: string; desc: string; test: (k: any)
   { key: 'slot', label: '구좌',     desc: '낙찰 빈 구좌 (낙찰수 ≤ 3, 데이터 없으면 통과)', test: (k) => k?.bid_count == null || Number(k.bid_count) <= 3 },
 ];
 
+// 간편 보기에서 숨기는 컬럼 — 국가별 상품수 / 모든 낙찰 컬럼 / 전날대비 / 일본어 키워드
+const SIMPLE_VIEW_HIDE = [
+  'keyword_jp',
+  'products_jp', 'products_kr', 'products_cn', 'products_other',
+  'bid_count', 'bid_price_10', 'bid_price_9', 'bid_price_8', 'bid_price_7',
+  'bid_price_6', 'bid_price_5', 'bid_price_4', 'bid_price_3', 'bid_price_2', 'bid_price_1',
+  'volume_change_flag',
+];
+// 관심만 보기 ON 시 기본 숨김 — 분류/순위 (스냅샷 무의미)
+const INTEREST_HIDE = ['classification', 'rank'];
+
 // 빈값(null/undefined/'')은 정렬 방향과 무관하게 항상 맨 아래로.
 // ag-grid 기본은 오름차순에서 null을 맨 위로 올려, 경쟁강도/낙찰가처럼 빈값 많은 컬럼은
 // "오름차순이 안 먹는 것처럼"(빈 행이 화면을 덮음) 보임. → 빈값을 항상 바닥으로.
@@ -89,6 +99,7 @@ export default function KeywordPage() {
   const [fillTotal, setFillTotal] = useState(true);
   const [collectBids, setCollectBids] = useState(true);  // 낙찰가도 같이 수집 (기본 ON, 6/4)
   const [loading, setLoading] = useState(false);
+  const [gridLoading, setGridLoading] = useState(true);  // 그리드 데이터 로딩 오버레이 (첫 로드/새로고침)
   const [message, setMessage] = useState('');
   const [relatedInput, setRelatedInput] = useState('');
   const [dates, setDates] = useState<{ lookup_date: string; count: number }[]>([]);
@@ -127,17 +138,31 @@ export default function KeywordPage() {
   const selectAll = () => setSelectedCats(CATEGORIES.map(c => c.value));
   const clearAll = () => setSelectedCats([]);
 
-  const fetchKeywords = async () => {
+  // showLoading: 첫 로드·새로고침처럼 사용자가 의도한 로드만 오버레이 표시 (폴링은 조용히)
+  const fetchKeywords = async (showLoading = false) => {
+    if (showLoading) setGridLoading(true);
     try {
       const res = await getKeywords();
       setKeywords(res.data);
     } catch { /* ignore */ }
+    finally { if (showLoading) setGridLoading(false); }
   };
 
   useEffect(() => {
-    fetchKeywords();
+    fetchKeywords(true);
     fetchDates();
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  // 관심 키워드 클라우드 pull (다른 PC 북마크 동기화 — 옛 상품시트 페이지가 하던 역할)
+  useEffect(() => {
+    (async () => {
+      const { data } = await fetchCloud<any[]>('interest_keywords');
+      if (data && Array.isArray(data)) {
+        localStorage.setItem('interestKeywords.v1', JSON.stringify(data));
+        setInterestTick(t => t + 1);
+      }
+    })();
   }, []);
 
   // 수집 시작 후 5초마다 키워드 목록 자동 새로고침 (30초간)
@@ -223,9 +248,11 @@ export default function KeywordPage() {
   };
 
   const handleColumnResized = (e: any) => {
+    // 사용자가 드래그로 조정한 컬럼만 "고정 너비"로 표시 (autoSize 제외 대상).
+    // 드래그 중 다수 이벤트가 오므로 최종(finished) 시점에 저장.
     if (e.source === 'uiColumnResized' && e.column) {
       resizedColsRef.current.add(e.column.getColId());
-      saveColState();
+      if (e.finished) saveColState();
     }
   };
   const handleColumnMoved = (e: any) => { if (e.source === 'uiColumnDragged' || e.finished) saveColState(); };
@@ -236,7 +263,7 @@ export default function KeywordPage() {
     api?.applyColumnState?.({ defaultState: { sort: null, sortIndex: null } });
     saveColState();
   };
-  const handleGridReady = () => { restoreColState(); };
+  const handleGridReady = () => { restoreColState(); applyColumnVisibility(); };
 
   // 빠른 필터: 카테고리/분류/날짜 (state 기반 — rowData를 직접 필터링해 1-click 즉시 반영)
   const [activeCat, setActiveCat] = useState<string | null>(null);
@@ -288,24 +315,76 @@ export default function KeywordPage() {
   const toggleQuickCat = (v: string) => setActiveCat(prev => prev === v ? null : v);
   const toggleQuickClass = (v: string) => setActiveClass(prev => prev === v ? null : v);
 
+  // ── 관심 키워드 (북마크) ──
+  // interestTick 을 올리면 interestRows / interestCount 가 localStorage 에서 재조회됨.
+  const [interestOnly, setInterestOnly] = useState(false);    // 관심만 보기 모드
+  const [interestHistory, setInterestHistory] = useState(false); // 날짜별 흐름(전체 날짜) 보기
+  const [interestTick, setInterestTick] = useState(0);
+  const [simpleView, setSimpleView] = useState(false);        // 간편 보기 (일부 컬럼 숨김)
+
+  // 저장된 북마크 스냅샷 → 그리드 행. (added_at = 데이터 수집일 → 조회날짜 칸)
+  //  - 기본(최신만): keyword_jp 별 가장 최신 날짜 1건, 최신 날짜 먼저
+  //  - 흐름 보기: 모든 날짜 행 유지, 키워드별로 묶어 날짜 오름차순 (시계열 추적)
+  const interestRaw = useMemo(() => getInterestKeywords(), [interestTick]);
+  const interestRows = useMemo<any[]>(() => {
+    let list: InterestKeyword[];
+    if (interestHistory) {
+      list = [...interestRaw].sort((a, b) =>
+        a.keyword_jp === b.keyword_jp
+          ? String(a.added_at || '').localeCompare(String(b.added_at || ''))
+          : String(a.keyword_jp).localeCompare(String(b.keyword_jp), 'ja'),
+      );
+    } else {
+      const latest = new Map<string, InterestKeyword>();
+      for (const k of interestRaw) {
+        const prev = latest.get(k.keyword_jp);
+        if (!prev || String(k.added_at || '') > String(prev.added_at || '')) latest.set(k.keyword_jp, k);
+      }
+      list = [...latest.values()].sort((a, b) => String(b.added_at || '').localeCompare(String(a.added_at || '')));
+    }
+    return list.map((k, i) => ({
+      id: -(i + 1),                       // DB id 와 충돌 안 나게 음수
+      __interest: true,                   // 행 구분 플래그 (삭제 버튼 분기)
+      lookup_date: k.added_at,            // 수집/북마크 날짜를 조회날짜 칸에 표시
+      keyword_jp: k.keyword_jp,
+      keyword_kr: k.keyword_kr ?? null,
+      category: k.category,
+      search_volume_weekly: k.search_volume_weekly,
+      search_volume_daily: k.search_volume_daily,
+      competition_intensity: k.competition_intensity,
+      total_products: k.total_products,
+      products_jp: k.products_jp,
+      products_kr: k.products_kr,
+      products_cn: k.products_cn,
+      products_other: k.products_other,
+    }));
+  }, [interestRaw, interestHistory]);
+  const interestCount = interestRaw.length;   // 저장된 전체 행 수
+
   // 표시용 필터링된 rowData (state 기반)
+  // 관심만 보기 모드: 소스를 북마크 스냅샷으로 교체.
+  //  - 카테고리·좋은키워드 필터는 그대로 적용 (스냅샷에 해당 값이 있음)
+  //  - 날짜·분류 필터는 스킵 (스냅샷엔 의미 있는 분류/수집일 필터 대상이 없음)
   const filteredKeywords = useMemo(() => {
-    return keywords.filter(k => {
+    const source = interestOnly ? interestRows : keywords;
+    return source.filter(k => {
       if (activeCat && k.category !== activeCat) return false;
-      if (activeClass && k.classification !== activeClass) return false;
+      if (!interestOnly && activeClass && k.classification !== activeClass) return false;
       for (const c of GOOD_CRITERIA) {
         if (goodFilters.has(c.key) && !c.test(k)) return false;
       }
-      const d = k.lookup_date;
-      if (dateMode === 'single' && singleDate) {
-        if (d !== singleDate) return false;
-      } else if (dateMode === 'range') {
-        if (fromDate && (!d || d < fromDate)) return false;
-        if (toDate && (!d || d > toDate)) return false;
+      if (!interestOnly) {
+        const d = k.lookup_date;
+        if (dateMode === 'single' && singleDate) {
+          if (d !== singleDate) return false;
+        } else if (dateMode === 'range') {
+          if (fromDate && (!d || d < fromDate)) return false;
+          if (toDate && (!d || d > toDate)) return false;
+        }
       }
       return true;
     });
-  }, [keywords, activeCat, activeClass, goodFilters, dateMode, singleDate, fromDate, toDate]);
+  }, [keywords, interestOnly, interestRows, activeCat, activeClass, goodFilters, dateMode, singleDate, fromDate, toDate]);
 
   // 데이터가 바뀌면 사용자가 조정 안 한 컬럼만 자동 크기 조정
   useEffect(() => {
@@ -327,8 +406,6 @@ export default function KeywordPage() {
     return total > 0 ? (kr / total) * 100 : 0;
   };
 
-  // 관심 키워드 북마크
-  const [interestCount, setInterestCount] = useState<number>(() => getInterestKeywords().length);
   const addSelectedToInterest = () => {
     const api = gridRef.current?.api as any;
     if (!api) return;
@@ -340,6 +417,8 @@ export default function KeywordPage() {
     const items: InterestKeyword[] = selected.map((r: any) => ({
       keyword_jp: r.keyword_jp,
       keyword_kr: r.keyword_kr,
+      // added_at = 데이터 수집일(lookup_date). 날짜가 다르면 별도 행으로 보관됨.
+      added_at: r.lookup_date || undefined,
       category: r.category,
       search_volume_weekly: r.search_volume_weekly,
       search_volume_daily: r.search_volume_daily,
@@ -350,37 +429,43 @@ export default function KeywordPage() {
       products_cn: r.products_cn,
       products_other: r.products_other,
     }));
+    const before = getInterestKeywords().length;
     const merged = addInterestKeywords(items);
-    setInterestCount(merged.length);
-    alert(`${items.length}개 담았습니다. 관심 키워드 풀 총 ${merged.length}개.`);
+    const added = merged.length - before;
+    setInterestTick(t => t + 1);
+    alert(
+      `${added}개 새로 담음 (선택 ${items.length}${added < items.length ? `, 같은 날짜 중복 ${items.length - added}` : ''}). ` +
+      `관심 풀 총 ${merged.length}개.`,
+    );
   };
 
-  // VV-2 — 선택 키워드를 시트로 직접 보내기 (관심 풀 거치지 않음)
-  const sendSelectedToSheet = async () => {
-    const api = gridRef.current?.api as any;
-    if (!api) return;
-    const selected: any[] = api.getSelectedRows?.() || [];
-    if (selected.length === 0) {
-      alert('키워드 행을 체크해주세요.');
-      return;
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const result = await mergeKeywordsToSheet(
-      selected.map(r => ({
-        keyword_jp: r.keyword_jp,
-        keyword_kr: r.keyword_kr,
-        // R-7: LLM 분류 결과(category_inferred) 우선 — 시트 카테고리 컬럼이 6분류
-        category: r.category_inferred || r.category,
-        search_volume_weekly: r.search_volume_weekly,
-      })),
-      `keyword:${today}`,
-    );
-    alert(
-      `✓ ${result.added}건 시트에 추가 (${selected.length} 중)\n` +
-      (result.deduped > 0 ? `- 중복 ${result.deduped}건\n` : '') +
-      `\n/recommend-products 에서 확인 — URL/원가 직접 입력하세요.`
-    );
+  // 그리드 행(__interest)의 keyword_jp + 날짜(lookup_date) 1건만 해제
+  const handleRemoveInterest = (jp: string, addedAt?: string | null) => {
+    removeInterestEntry(jp, addedAt);
+    setInterestTick(t => t + 1);
   };
+  const removeSelectedInterest = () => {
+    const api = gridRef.current?.api as any;
+    const selected: any[] = api?.getSelectedRows?.() || [];
+    if (selected.length === 0) { alert('해제할 행을 체크해주세요.'); return; }
+    selected.forEach(r => removeInterestEntry(r.keyword_jp, r.lookup_date));
+    setInterestTick(t => t + 1);
+  };
+  const clearAllInterest = () => {
+    if (!confirm('관심 키워드를 모두 비우시겠습니까?')) return;
+    clearInterestKeywords();
+    setInterestTick(t => t + 1);
+  };
+
+  // 컬럼 가시성 — 간편 보기 / 관심 모드에 따라 그리드 API로 직접 토글
+  // (columnDefs 를 재생성하지 않으므로 너비·순서 저장 로직과 충돌 없음)
+  const applyColumnVisibility = () => {
+    const api = gridRef.current?.api as any;
+    if (!api?.setColumnsVisible) return;
+    api.setColumnsVisible(SIMPLE_VIEW_HIDE, !simpleView);
+    api.setColumnsVisible(INTEREST_HIDE, !interestOnly);
+  };
+  useEffect(() => { applyColumnVisibility(); }, [simpleView, interestOnly]);
 
   const columnDefs: ColDef[] = useMemo(() => [
     // (선택 체크박스 컬럼은 rowSelection 신 API가 자동 생성 — selectionColumnDef로 제어)
@@ -402,7 +487,9 @@ export default function KeywordPage() {
         const isBrand = /^[a-zA-Z0-9\s\-_.&'+]+$/.test(jp);
         return (
           <span className="inline-flex items-center gap-1">
-            <span>{p.value || '-'}</span>
+            {p.value
+              ? <a href={`https://www.qoo10.jp/s/?keyword=${encodeURIComponent(jp || p.value)}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline" title={jp ? `큐텐 검색: ${jp}` : undefined}>{p.value}</a>
+              : '-'}
             {isBrand && (
               <span
                 title="브랜드키워드"
@@ -450,7 +537,10 @@ export default function KeywordPage() {
     {
       headerName: '', width: 70, sortable: false, filter: false, resizable: false, suppressMovable: true,
       cellRenderer: (p: any) => (
-        <button onClick={() => handleDelete(p.data.id)} className="text-red-500 hover:text-red-700 text-xs">삭제</button>
+        <button
+          onClick={() => p.data?.__interest ? handleRemoveInterest(p.data.keyword_jp, p.data.lookup_date) : handleDelete(p.data.id)}
+          className="text-red-500 hover:text-red-700 text-xs"
+        >{p.data?.__interest ? '해제' : '삭제'}</button>
       ),
     },
   ], []);
@@ -540,7 +630,7 @@ export default function KeywordPage() {
             {loading ? '수집 중...' : '트렌드 키워드 수집'}
           </button>
           <button
-            onClick={fetchKeywords}
+            onClick={() => fetchKeywords(true)}
             className="px-4 py-2 bg-gray-200 text-gray-700 text-sm rounded hover:bg-gray-300"
           >
             새로고침
@@ -607,8 +697,15 @@ export default function KeywordPage() {
 
       {/* 키워드 테이블 (AG Grid) — fullscreen 시 사이드바까지 덮는 고정 오버레이 + flex(헤더 고정, 그리드만 스크롤) */}
       <div className={fullscreen ? 'fixed inset-0 z-50 bg-white flex flex-col p-2 overflow-hidden' : 'bg-white rounded-lg shadow p-2'}>
+        {interestOnly && (
+          <div className="px-2 pt-2 text-xs text-amber-700 bg-amber-50 rounded mb-1 py-1">
+            ★ 관심만 보기 — {interestHistory
+              ? '날짜별 흐름: 같은 키워드의 모든 북마크 날짜를 묶어 표시 (시계열 추적).'
+              : '키워드별 최신 날짜 1건만, 최신 먼저. 「🕒 날짜별 흐름」 켜면 과거 날짜까지 흐름 추적.'} 담은 시점 데이터 그대로 · <b>카테고리·좋은키워드 필터 사용 가능</b> (날짜·분류 필터만 미적용).
+          </div>
+        )}
         <div className={`px-2 pt-2 pb-2 border-b border-gray-100 space-y-2 ${fullscreen ? 'shrink-0' : ''}`}>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className={`flex items-center gap-2 flex-wrap ${interestOnly ? 'opacity-40 pointer-events-none select-none' : ''}`}>
             <span className="text-xs font-semibold text-gray-600 w-16">날짜</span>
 
             {/* 하루씩 선택 (기본 · 가장 최신일) */}
@@ -687,7 +784,7 @@ export default function KeywordPage() {
               >{c}</button>
             ))}
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className={`flex items-center gap-2 flex-wrap ${interestOnly ? 'opacity-40 pointer-events-none select-none' : ''}`}>
             <span className="text-xs font-semibold text-gray-600 w-16">분류</span>
             <button
               onClick={() => setActiveClass(null)}
@@ -721,7 +818,7 @@ export default function KeywordPage() {
           </div>
         </div>
         <div className={`px-2 py-2 text-sm text-gray-500 flex items-center gap-3 flex-wrap ${fullscreen ? 'shrink-0' : ''}`}>
-          <span>표시 {filteredKeywords.length.toLocaleString()} / 총 {keywords.length.toLocaleString()}개</span>
+          <span>표시 {filteredKeywords.length.toLocaleString()} / 총 {(interestOnly ? interestCount : keywords.length).toLocaleString()}개</span>
           <button
             onClick={resetSort}
             className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded border hover:bg-gray-200"
@@ -730,25 +827,51 @@ export default function KeywordPage() {
             ↕ 정렬 초기화
           </button>
           <button
-            onClick={sendSelectedToSheet}
-            className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700"
-            title="선택 키워드를 상품 시트에 직접 추가 (사장님이 한국 셀러 검색 → URL/원가 직접 입력)"
-          >
-            📋 선택 키워드를 시트로
-          </button>
-          <button
             onClick={addSelectedToInterest}
             className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700"
-            title="선택한(체크된) 행을 관심 키워드로 북마크 (상품 시트에서 활용)"
+            title="선택한(체크된) 행을 관심 키워드로 북마크"
           >
-            🔖 관심 키워드 (북마크) ({interestCount})
+            🔖 관심 담기 ({interestCount})
           </button>
-          <Link
-            to="/recommend-products"
-            className="px-3 py-1 bg-indigo-600 text-white text-xs rounded hover:bg-indigo-700"
+          <button
+            onClick={() => setInterestOnly(v => !v)}
+            className={`px-3 py-1 text-xs rounded border ${interestOnly ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+            title="북마크한 관심 키워드만 (저장된 스냅샷 그대로) 보기 ↔ 전체 보기"
           >
-            📋 상품 시트
-          </Link>
+            {interestOnly ? '★ 관심만 보기 ON' : '☆ 관심만 보기'}
+          </button>
+          <button
+            onClick={() => setSimpleView(v => !v)}
+            className={`px-3 py-1 text-xs rounded border ${simpleView ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
+            title="국가별 상품수 · 낙찰 컬럼 전체 · 전날대비증감 · 일본어 키워드 컬럼을 숨겨 핵심만 표시 (관심만 보기와 병행 가능)"
+          >
+            {simpleView ? '🔎 간편 보기 ON' : '🔎 간편 보기'}
+          </button>
+          {interestOnly && (
+            <>
+              <button
+                onClick={() => setInterestHistory(v => !v)}
+                className={`px-3 py-1 text-xs rounded border ${interestHistory ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-indigo-700 border-indigo-300 hover:bg-indigo-50'}`}
+                title="끄면 키워드별 최신 날짜 1건만, 켜면 모든 날짜를 키워드별로 묶어 시계열 흐름 추적"
+              >
+                {interestHistory ? '🕒 날짜별 흐름 ON' : '🕒 최신만 (흐름 보기 OFF)'}
+              </button>
+              <button
+                onClick={removeSelectedInterest}
+                className="px-3 py-1 bg-gray-200 text-gray-700 text-xs rounded hover:bg-gray-300"
+                title="체크한 행을 관심 목록에서 해제"
+              >
+                선택 북마크 해제
+              </button>
+              <button
+                onClick={clearAllInterest}
+                className="px-3 py-1 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200"
+                title="관심 키워드 전체 비우기"
+              >
+                전체 비우기
+              </button>
+            </>
+          )}
           <button
             onClick={() => setFullscreen(f => !f)}
             className="px-3 py-1 bg-gray-800 text-white text-xs rounded hover:bg-black ml-auto"
@@ -778,7 +901,8 @@ export default function KeywordPage() {
             pagination={true}
             paginationPageSize={2000}
             paginationPageSizeSelector={[100, 500, 1000, 2000, 5000]}
-            autoSizeStrategy={{ type: 'fitCellContents' }}
+            loading={gridLoading}
+            localeText={{ loadingOoo: '불러오는 중…', noRowsToShow: '표시할 키워드가 없습니다 (날짜·필터 확인)' }}
             onColumnResized={handleColumnResized}
             onColumnMoved={handleColumnMoved}
             onSortChanged={handleSortChanged}
