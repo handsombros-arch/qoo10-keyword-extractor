@@ -16,7 +16,13 @@ ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(ROOT_DIR, "backend")
 CHROME_DEBUG_BAT = os.path.join(ROOT_DIR, "automation", "launch_chrome_debug.bat")
 
-python_exe = sys.executable.replace("pythonw.exe", "python.exe")
+# 런처는 .pyw 더블클릭 시 전역 pythonw 로 뜨지만, 의존성은 backend/.venv 에만
+# 설치되므로(SETUP.md) 항상 .venv Python 을 쓰도록 강제한다. 없으면 전역으로 폴백.
+_venv_python = os.path.join(BACKEND_DIR, ".venv", "Scripts", "python.exe")
+if os.path.exists(_venv_python):
+    python_exe = _venv_python
+else:
+    python_exe = sys.executable.replace("pythonw.exe", "python.exe")
 
 
 def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 1.0) -> bool:
