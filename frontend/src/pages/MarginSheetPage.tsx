@@ -442,6 +442,7 @@ export default function MarginSheetPage() {
       { headerName: '판매가(원)', width: 96, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '원화 목표 판매가 P (마진 기준값)', valueGetter: (p: any) => p.data && cg(p.data).targetPriceKrw, valueFormatter: won },
       // 상시
       { headerName: '상시 등록가(¥)', width: 108, type: 'numericColumn', headerTooltip: '할인 없는 상시 큐텐 등록가(엔). 작성 당일 환율로 산출', valueGetter: (p: any) => p.data && cg(p.data).listJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#dbeafe', fontWeight: 700 } },
+      { headerName: '상시 수수료', width: 88, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '큐텐 수수료 13.5% (상시 등록가×환율 기준, 원). 이익에서 차감됨. (자동계산)', valueGetter: (p: any) => p.data && cg(p.data).commissionKrw, valueFormatter: won },
       { headerName: '상시 이익', width: 90, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '상시가 기준 순이익(원)', valueGetter: (p: any) => p.data && cg(p.data).profitKrw, valueFormatter: won },
       { headerName: '상시 마진율', width: 92, type: 'numericColumn', headerTooltip: '상시 이익 ÷ 판매가(원)', valueGetter: (p: any) => p.data && cg(p.data).marginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).marginRate) },
       // 메가와리
