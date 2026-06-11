@@ -3,7 +3,7 @@ import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, FileSpreadsheet, Target,
   Calculator,
-  Search, Link2, Settings,
+  Search, Link2, Settings, Gavel,
   Wrench, Calendar, FileEdit,
   ChevronRight, ChevronDown,
   type LucideIcon,
@@ -21,6 +21,7 @@ const mainItems: Item[] = [
 
 const moreItems: Item[] = [
   { path: '/related-bulk', label: '연관 키워드 (RD)', icon: Link2 },
+  { path: '/bid', label: '경매 낙찰가', icon: Gavel },
   { path: '/settings', label: 'AI 설정', icon: Settings },
 ];
 

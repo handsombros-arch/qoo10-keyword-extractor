@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef } from 'ag-grid-community';
-import { getExchangeRate } from '../api/endpoints';
+import { getExchangeRate, getKeywords } from '../api/endpoints';
 import { fetchCloud } from '../store/cloudSync';
 import {
   loadRows, saveRows, loadSettings, saveSettings, newMarginRow,
@@ -27,6 +27,10 @@ const pct = (p: any) => (p.value == null || p.value === '' ? '' : `${(Number(p.v
 // 입력=흰색, 자동계산=옅은 회색, 등록가·마진율만 강조색.
 const CALC_BG = { backgroundColor: '#f1f5f9' };
 
+// 키워드 분석 토글 컬럼 (추출 키워드 기준값 — 출처 키워드 옆에 임시 표시)
+const ANALYSIS_COLS = ['an_comp', 'an_sv', 'an_tp', 'an_krr', 'an_bid'];
+const ANALYSIS_BG = { backgroundColor: '#eef2ff' };
+
 // 간소화: 배수/목표마진/메가할인은 행 컬럼이 아니라 상단 전역 설정값을 사용.
 // 구매가 = 상품원가 + 국내배송비 (자동합산). 구버전 행 호환: purchase_krw 폴백.
 function rowPurchaseKrw(r: any): number {
@@ -49,7 +53,11 @@ export default function MarginSheetPage() {
   const [rateLoading, setRateLoading] = useState(false);
   const [tick, setTick] = useState(0);            // 재계산/경고 갱신
   const [fullscreen, setFullscreen] = useState(false);  // 시트 전체화면 (사이드바까지 덮음)
+  const [selectedCount, setSelectedCount] = useState(0);  // 체크된 행 수 (선택 시 표시)
+  const [analysisOn, setAnalysisOn] = useState(false);      // 키워드 분석 컬럼 토글
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const gridRef = useRef<AgGridReact>(null);
+  const kwMapRef = useRef<Map<string, any>>(new Map());     // keyword_jp → 추출 키워드 분석값(최신)
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const rowsRef = useRef(rows);   // 최신 rows (메모된 cellRenderer 의 stale 클로저 방지)
@@ -118,7 +126,31 @@ export default function MarginSheetPage() {
   };
 
   const addRow = () => {
-    const next = [...rows, newMarginRow({})];
+    const api = gridRef.current?.api as any;
+    // 앵커(원본): 체크된 마지막 행 → 없으면 포커스된 셀의 행 → 없으면 맨 끝
+    const sel: MarginRow[] = api?.getSelectedRows?.() || [];
+    let anchor: MarginRow | undefined = sel.length ? sel[sel.length - 1] : undefined;
+    if (!anchor) {
+      const fc = api?.getFocusedCell?.();
+      const node = fc ? api?.getDisplayedRowAtIndex?.(fc.rowIndex) : null;
+      if (node?.data) anchor = node.data;
+    }
+    // 원본이 있으면 출처 키워드·group_id 를 물려받아 바로 아래에 삽입 (붙어 다니도록)
+    const fresh = anchor
+      ? newMarginRow({
+          source_keyword: anchor.source_keyword,
+          source_keyword_jp: anchor.source_keyword_jp,
+          group_id: anchor.group_id,
+        })
+      : newMarginRow({});
+    let next: MarginRow[];
+    if (anchor) {
+      const idx = rows.findIndex(r => r.id === anchor!.id);
+      next = [...rows];
+      next.splice(idx >= 0 ? idx + 1 : rows.length, 0, fresh);
+    } else {
+      next = [...rows, fresh];
+    }
     setRows(next); saveRows(next);
   };
   const deleteSelected = () => {
@@ -155,6 +187,62 @@ export default function MarginSheetPage() {
     persist();
   };
 
+  const onSelectionChanged = () => {
+    const api = gridRef.current?.api as any;
+    setSelectedCount(api?.getSelectedRows?.()?.length || 0);
+  };
+
+  // 행 → 추출 키워드 분석값 (source_keyword_jp = 일본어 키워드로 매칭)
+  const kwData = (r: any): any => {
+    if (!r) return null;
+    const key = r.source_keyword_jp || r.source_keyword;
+    return key ? kwMapRef.current.get(key) || null : null;
+  };
+
+  // 키워드 분석 컬럼 토글 — 켜면 /api/keywords 최신값을 출처 키워드 옆에 표시, 다시 누르면 숨김
+  const toggleAnalysis = async () => {
+    const next = !analysisOn;
+    setAnalysisOn(next);
+    const api = gridRef.current?.api as any;
+    if (next && kwMapRef.current.size === 0) {
+      setAnalysisLoading(true);
+      try {
+        const res = await getKeywords();
+        // 키워드별로 모든 날짜 행을 모음
+        const byKw = new Map<string, any[]>();
+        for (const k of (res.data || [])) {
+          if (!k.keyword_jp) continue;
+          const arr = byKw.get(k.keyword_jp);
+          if (arr) arr.push(k); else byKw.set(k.keyword_jp, [k]);
+        }
+        // 필드별로 "값이 있는 가장 최근 행" 사용. 오늘 수집분에 상품수가 안 채워져도(0)
+        // 최근에 채워진 날 값을 보여줌. 상품수·한국비율은 같은 행에서 가져와 일관성 유지.
+        const map = new Map<string, any>();
+        for (const [kw, list] of byKw) {
+          list.sort((a, b) => String(b.lookup_date || '').localeCompare(String(a.lookup_date || ''))); // 최신 먼저
+          const latest = list[0];
+          const withProducts = list.find(r => Number(r.total_products) > 0);  // 상품수 채워진 최근 행
+          const withBid = list.find(r => Number(r.bid_price_1) > 0);           // 낙찰가 있는 최근 행
+          map.set(kw, {
+            keyword_jp: kw,
+            search_volume_weekly: latest.search_volume_weekly,
+            competition_intensity: (withProducts || latest).competition_intensity,
+            total_products: withProducts ? withProducts.total_products : null,
+            products_kr: withProducts ? withProducts.products_kr : null,
+            bid_price_1: withBid ? withBid.bid_price_1 : null,
+          });
+        }
+        kwMapRef.current = map;
+      } catch {
+        alert('키워드 데이터를 불러오지 못했습니다.');
+      } finally {
+        setAnalysisLoading(false);
+      }
+    }
+    api?.setColumnsVisible?.(ANALYSIS_COLS, next);
+    api?.refreshCells?.({ force: true });
+  };
+
   const marginCellStyle = (getter: (r: MarginRow) => number) => (p: any): any => {
     if (!p.data) return undefined;
     const m = getter(p.data);
@@ -180,6 +268,27 @@ export default function MarginSheetPage() {
             ? <a href={`https://www.qoo10.jp/s/?keyword=${encodeURIComponent(jp)}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline" title={`큐텐 검색: ${jp}`}>{p.value}</a>
             : <span>{p.value}</span>;
         } },
+      // ── 키워드 분석 (토글 — 기본 숨김. 추출 키워드 기준 최신값) ──
+      { colId: 'an_comp', headerName: '경쟁강도', width: 88, hide: true, type: 'numericColumn', cellStyle: ANALYSIS_BG,
+        headerTooltip: '키워드 분석 — 경쟁강도(전체상품수÷주평검색수). 추출 키워드 기준 최신값',
+        valueGetter: (p: any) => kwData(p.data)?.competition_intensity ?? null,
+        valueFormatter: (p: any) => p.value == null ? '' : Number(p.value).toLocaleString() },
+      { colId: 'an_sv', headerName: '검색수(주평)', width: 100, hide: true, type: 'numericColumn', cellStyle: ANALYSIS_BG,
+        headerTooltip: '키워드 분석 — 주간 평균 검색수',
+        valueGetter: (p: any) => kwData(p.data)?.search_volume_weekly ?? null,
+        valueFormatter: (p: any) => p.value == null ? '' : Number(p.value).toLocaleString() },
+      { colId: 'an_tp', headerName: '전체상품수', width: 96, hide: true, type: 'numericColumn', cellStyle: ANALYSIS_BG,
+        headerTooltip: '키워드 분석 — 큐텐 전체 상품수',
+        valueGetter: (p: any) => kwData(p.data)?.total_products ?? null,
+        valueFormatter: (p: any) => p.value == null ? '' : Number(p.value).toLocaleString() },
+      { colId: 'an_krr', headerName: '한국비율(%)', width: 96, hide: true, type: 'numericColumn', cellStyle: ANALYSIS_BG,
+        headerTooltip: '키워드 분석 — 한국상품수 ÷ 전체상품수',
+        valueGetter: (p: any) => { const d = kwData(p.data); if (!d) return null; const t = Number(d.total_products) || 0; const kr = Number(d.products_kr) || 0; return t > 0 ? (kr / t) * 100 : null; },
+        valueFormatter: (p: any) => p.value == null ? '' : `${Math.round(Number(p.value))}%` },
+      { colId: 'an_bid', headerName: '낙찰종가', width: 90, hide: true, type: 'numericColumn', cellStyle: ANALYSIS_BG,
+        headerTooltip: '키워드 분석 — 경매 1위 낙찰가(최고가). 낙찰가 수집된 키워드만',
+        valueGetter: (p: any) => kwData(p.data)?.bid_price_1 ?? null,
+        valueFormatter: (p: any) => p.value == null ? '' : Number(p.value).toLocaleString() },
       { field: 'product_name', headerName: '상품명', width: 190, editable: true, pinned: 'left',        headerTooltip: '소싱할 국내 상품명' },
       { field: 'option_label', headerName: '구성', width: 88, editable: true,        headerTooltip: '구성/세트 라벨 (예: 1개입 / 2개 세트). 세트 복제 버튼으로 자동 생성' },
       { field: 'url', headerName: 'URL', width: 70, editable: true,        headerTooltip: '국내 상품 페이지 URL (입력하면 "링크" 로 표시)',
@@ -287,10 +396,23 @@ export default function MarginSheetPage() {
       {/* 툴바 + 그리드 (전체화면 시 사이드바까지 덮는 고정 오버레이) */}
       <div className={fullscreen ? 'fixed inset-0 z-50 bg-white flex flex-col p-2 overflow-hidden' : ''}>
         <div className={`flex items-center gap-2 mb-2 text-sm flex-wrap ${fullscreen ? 'shrink-0' : ''}`}>
-          <button onClick={addRow} className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700">+ 행 추가</button>
+          <button onClick={addRow} className="px-3 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700" title="체크(또는 커서)한 원본 행 바로 아래에 새 행을 추가하고 출처 키워드를 물려받습니다. 선택이 없으면 맨 아래에 추가.">+ 행 추가</button>
           <button onClick={() => duplicateComposition(2)} className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700" title="체크한 행을 2개 세트 구성으로 복제">2개 세트 복제</button>
           <button onClick={() => duplicateComposition(3)} className="px-3 py-1 bg-emerald-600 text-white text-xs rounded hover:bg-emerald-700">3개 세트 복제</button>
           <button onClick={deleteSelected} className="px-3 py-1 bg-red-100 text-red-700 text-xs rounded hover:bg-red-200">선택 삭제</button>
+          <button
+            onClick={toggleAnalysis}
+            disabled={analysisLoading}
+            className={`px-3 py-1 text-xs rounded border disabled:opacity-50 ${analysisOn ? 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700' : 'bg-white text-indigo-700 border-indigo-300 hover:bg-indigo-50'}`}
+            title="추출 키워드 기준 경쟁강도·검색수(주평)·전체상품수·한국비율·낙찰종가를 출처 키워드 옆에 임시 표시 (다시 누르면 숨김)"
+          >
+            {analysisLoading ? '불러오는 중…' : analysisOn ? '🔍 키워드 분석 ON' : '🔍 키워드 분석'}
+          </button>
+          {selectedCount > 0 && (
+            <span className="px-2 py-1 bg-blue-50 text-blue-700 text-xs rounded font-semibold border border-blue-200">
+              {selectedCount}개 선택됨
+            </span>
+          )}
           <span className="text-xs text-gray-400">방식·배송 = 클릭 선택 · 등록가·마진율만 색상 · 총 {rows.length}행 · 헤더에 마우스=설명</span>
           <button
             onClick={() => setFullscreen(f => !f)}
@@ -317,6 +439,7 @@ export default function MarginSheetPage() {
             singleClickEdit={false}
             stopEditingWhenCellsLoseFocus={true}
             onCellValueChanged={onCellValueChanged}
+            onSelectionChanged={onSelectionChanged}
             getRowId={(p: any) => p.data.id}
             rowClassRules={{
               'mega-loss-row': (p: any) => p.data && computeMarginRow(toInput(p.data, settingsRef.current), settingsRef.current.exchange_rate).megaMarginRate < 0,

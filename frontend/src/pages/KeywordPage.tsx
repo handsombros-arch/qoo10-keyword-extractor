@@ -373,6 +373,17 @@ export default function KeywordPage() {
       products_kr: k.products_kr,
       products_cn: k.products_cn,
       products_other: k.products_other,
+      bid_count: k.bid_count,
+      bid_price_1: k.bid_price_1,
+      bid_price_2: k.bid_price_2,
+      bid_price_3: k.bid_price_3,
+      bid_price_4: k.bid_price_4,
+      bid_price_5: k.bid_price_5,
+      bid_price_6: k.bid_price_6,
+      bid_price_7: k.bid_price_7,
+      bid_price_8: k.bid_price_8,
+      bid_price_9: k.bid_price_9,
+      bid_price_10: k.bid_price_10,
     }));
   }, [interestRaw, interestHistory]);
   const interestCount = interestRaw.length;   // 저장된 전체 행 수
@@ -444,6 +455,18 @@ export default function KeywordPage() {
       products_kr: r.products_kr,
       products_cn: r.products_cn,
       products_other: r.products_other,
+      // 낙찰 스냅샷 (관심만 보기에서 낙찰수/구좌 표시 — 북마크 시점 값)
+      bid_count: r.bid_count,
+      bid_price_1: r.bid_price_1,
+      bid_price_2: r.bid_price_2,
+      bid_price_3: r.bid_price_3,
+      bid_price_4: r.bid_price_4,
+      bid_price_5: r.bid_price_5,
+      bid_price_6: r.bid_price_6,
+      bid_price_7: r.bid_price_7,
+      bid_price_8: r.bid_price_8,
+      bid_price_9: r.bid_price_9,
+      bid_price_10: r.bid_price_10,
     }));
     const before = getInterestKeywords().length;
     const merged = addInterestKeywords(items);
