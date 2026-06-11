@@ -31,6 +31,45 @@ const CALC_BG = { backgroundColor: '#f1f5f9' };
 const ANALYSIS_COLS = ['an_comp', 'an_sv', 'an_tp', 'an_krr', 'an_bid'];
 const ANALYSIS_BG = { backgroundColor: '#eef2ff' };
 
+// ── 엑셀/구글시트 ↔ 시트 클립보드 ──────────────────────────────
+// 숫자: 쉼표·통화기호·공백 제거 후 파싱. 빈칸 또는 NaN 은 0(또는 null).
+const toNum = (s: any): number => {
+  const t = String(s ?? '').replace(/[,\s¥₩%]/g, '');
+  if (t === '') return 0;
+  const n = Number(t); return isNaN(n) ? 0 : n;
+};
+const toNumOrNull = (s: any): number | null => {
+  const t = String(s ?? '').replace(/[,\s¥₩%]/g, '');
+  if (t === '') return null;
+  const n = Number(t); return isNaN(n) ? null : n;
+};
+const toStr = (s: any): string => String(s ?? '').trim();
+
+// 붙여넣기/복사 대상 = 편집 가능한 입력 컬럼 (그리드 표시 순서 = 왼→오).
+// 계산열·방식/배송 선택은 제외. key 는 포커스 셀의 field/colId 와 매칭.
+type PasteCol = { key: string; set: (r: MarginRow, v: any) => void; get: (r: MarginRow) => string };
+const PASTE_COLS: PasteCol[] = [
+  { key: 'registered_date',  set: (r, v) => { r.registered_date = toStr(v); },   get: r => toStr(r.registered_date) },
+  { key: 'source_keyword',   set: (r, v) => { r.source_keyword = toStr(v); },     get: r => toStr(r.source_keyword) },
+  { key: 'product_name',     set: (r, v) => { r.product_name = toStr(v); },       get: r => toStr(r.product_name) },
+  { key: 'option_label',     set: (r, v) => { r.option_label = toStr(v); },       get: r => toStr(r.option_label) },
+  { key: 'url',              set: (r, v) => { r.url = toStr(v); },                 get: r => toStr(r.url) },
+  { key: 'qty',              set: (r, v) => { r.qty = toNum(v) || 1; },            get: r => String(r.qty ?? '') },
+  { key: 'weight_g',         set: (r, v) => { r.weight_g = toNum(v); },            get: r => String(r.weight_g ?? '') },
+  { key: 'goods_cost_krw',   set: (r, v) => { r.goods_cost_krw = toNum(v); },      get: r => String(r.goods_cost_krw ?? '') },
+  { key: 'inbound_ship_krw', set: (r, v) => { r.inbound_ship_krw = toNum(v); },    get: r => String(r.inbound_ship_krw ?? '') },
+  { key: 'domestic_ship_krw',set: (r, v) => { r.domestic_ship_krw = toNum(v); },   get: r => String(r.domestic_ship_krw ?? '') },
+  { key: 'kse',              set: (r, v) => { r.kse_override_krw = toNumOrNull(v); }, get: r => (r.kse_override_krw == null ? '' : String(r.kse_override_krw)) },
+  { key: 'memo',             set: (r, v) => { r.memo = toStr(v); },                get: r => toStr(r.memo) },
+];
+
+// 클립보드 텍스트 → 2차원 배열 (행=\n, 열=\t). 엑셀/구글시트 복사 형식.
+function parseClipboardMatrix(text: string): string[][] {
+  const norm = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/, '');
+  if (!norm) return [];
+  return norm.split('\n').map(line => line.split('\t'));
+}
+
 // 간소화: 배수/목표마진/메가할인은 행 컬럼이 아니라 상단 전역 설정값을 사용.
 // 구매가 = 상품원가 + 국내배송비 (자동합산). 구버전 행 호환: purchase_krw 폴백.
 function rowPurchaseKrw(r: any): number {
@@ -192,6 +231,75 @@ export default function MarginSheetPage() {
     setSelectedCount(api?.getSelectedRows?.()?.length || 0);
   };
 
+  // 포커스된 컬럼의 PASTE_COLS 시작 인덱스 (field 또는 colId 로 매칭)
+  const pasteStartIndex = (col: any): number => {
+    const key = col?.getColDef?.()?.field || col?.getColId?.();
+    const i = PASTE_COLS.findIndex(c => c.key === key);
+    return i;
+  };
+
+  // 엑셀/구글시트에서 복사한 표를 포커스 셀부터 붙여넣기 (Community엔 기본 미지원 → 직접 구현)
+  const onPaste = (e: React.ClipboardEvent) => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    if (api.getEditingCells?.().length) return;   // 셀 편집 중이면 기본 동작에 맡김
+    const focused = api.getFocusedCell?.();
+    if (!focused || focused.rowIndex == null) return;
+    const startCol = pasteStartIndex(focused.column);
+    if (startCol < 0) return;   // 편집 불가 셀(계산열 등)에 포커스면 무시 → 입력 셀을 먼저 클릭
+    const text = e.clipboardData?.getData('text/plain') || '';
+    const matrix = parseClipboardMatrix(text);
+    if (!matrix.length) return;
+
+    e.preventDefault();
+
+    const next = [...rows];
+    const idToIdx = new Map(next.map((r, i) => [r.id, i]));
+    for (let r = 0; r < matrix.length; r++) {
+      const node = api.getDisplayedRowAtIndex?.(focused.rowIndex + r);
+      let idx = node?.data ? idToIdx.get(node.data.id) : undefined;
+      if (idx == null) {            // 행이 모자라면 새 행 추가
+        const fresh = newMarginRow({});
+        next.push(fresh); idx = next.length - 1; idToIdx.set(fresh.id, idx);
+      }
+      const row = { ...next[idx] };
+      const cells = matrix[r];
+      for (let c = 0; c < cells.length; c++) {
+        const target = PASTE_COLS[startCol + c];
+        if (!target) break;         // 오른쪽 끝 초과분은 버림
+        target.set(row, cells[c]);
+      }
+      next[idx] = row;
+    }
+    setRows(next); saveRows(next);
+    setTick(t => t + 1);
+    setTimeout(() => gridRef.current?.api?.refreshCells({ force: true }), 0);
+  };
+
+  // 시트 → 엑셀/구글시트 복사: 체크된 행은 입력 컬럼 전체를 TSV로, 없으면 포커스 셀 값만.
+  const onCopy = (e: React.ClipboardEvent) => {
+    const api = gridRef.current?.api as any;
+    if (!api) return;
+    if (api.getEditingCells?.().length) return;   // 편집 중이면 기본 복사
+    const sel: MarginRow[] = api.getSelectedRows?.() || [];
+    let tsv = '';
+    if (sel.length) {
+      tsv = sel.map(row => PASTE_COLS.map(c => c.get(row)).join('\t')).join('\n');
+    } else {
+      const f = api.getFocusedCell?.();
+      if (!f || f.rowIndex == null) return;
+      const node = api.getDisplayedRowAtIndex?.(f.rowIndex);
+      if (!node) return;
+      let val: any;
+      try { val = api.getCellValue?.({ rowNode: node, colKey: f.column }); } catch { /* ignore */ }
+      if (val == null) { const fld = f.column?.getColDef?.()?.field; val = fld ? node.data?.[fld] : ''; }
+      tsv = val == null ? '' : String(val);
+    }
+    if (!tsv) return;
+    e.preventDefault();
+    e.clipboardData?.setData('text/plain', tsv);
+  };
+
   // 행 → 추출 키워드 분석값 (source_keyword_jp = 일본어 키워드로 매칭)
   const kwData = (r: any): any => {
     if (!r) return null;
@@ -318,7 +426,7 @@ export default function MarginSheetPage() {
             <option value="paid">유료</option>
           </select>
         ) },
-      { headerName: 'KSE운임', width: 100, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',
+      { colId: 'kse', headerName: 'KSE운임', width: 100, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',
         headerTooltip: '큐텐 KSE 해상운임(한국→일본). 무게로 자동 계산되며 직접 입력해 덮어쓸 수 있음(예외 조정). 비우면 다시 자동. 유료배송이면 고객 부담이라 셀러 마진에서 제외.',
         valueGetter: (p: any) => p.data ? (p.data.kse_override_krw != null ? p.data.kse_override_krw : cg(p.data).kseAutoKrw) : null,
         valueSetter: (p: any) => {
@@ -413,7 +521,7 @@ export default function MarginSheetPage() {
               {selectedCount}개 선택됨
             </span>
           )}
-          <span className="text-xs text-gray-400">방식·배송 = 클릭 선택 · 등록가·마진율만 색상 · 총 {rows.length}행 · 헤더에 마우스=설명</span>
+          <span className="text-xs text-gray-400">방식·배송 = 클릭 선택 · 등록가·마진율만 색상 · 총 {rows.length}행 · 헤더에 마우스=설명 · 엑셀/구글시트에서 복사 → 입력 셀 클릭 후 Ctrl+V 붙여넣기</span>
           <button
             onClick={() => setFullscreen(f => !f)}
             className="px-3 py-1 bg-gray-800 text-white text-xs rounded hover:bg-black ml-auto"
@@ -426,6 +534,8 @@ export default function MarginSheetPage() {
         <div
           className={fullscreen ? 'flex-1 min-h-0' : ''}
           style={fullscreen ? { width: '100%' } : { height: 'calc(100vh - 230px)', minHeight: 480, width: '100%' }}
+          onPaste={onPaste}
+          onCopy={onCopy}
         >
           <AgGridReact
             ref={gridRef}
