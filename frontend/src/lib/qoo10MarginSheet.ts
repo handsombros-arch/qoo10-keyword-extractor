@@ -48,9 +48,9 @@ export type MarginMode = 'markup' | 'target';
 
 export interface MarginRowInput {
   qty: number;                 // 개수 (세트 구성)
-  weightG: number;             // 실제 무게(g, 1개 기준)
-  purchaseKrw: number;         // 구매가(원, 1개 기준) = 상품원가 + 국내배송비
-  domesticShipKrw: number;     // KSE 배대지까지 배송비+포장비(원, 1개 기준)
+  weightG: number;             // 실제 무게(g, 1개 기준) — 발송무게는 ×개수
+  goodsCostKrw: number;        // 상품원가(원, 1개 기준) — 개수에 비례(×qty)
+  flatShipKrw: number;         // 국내배송비 + KSE배대지 배송+포장(원). 묶음배송 → 1회분(개수 무관)
   mode: MarginMode;
   markup: number;              // 원가 배수 (markup 모드, 예 1.4)
   targetMargin: number;        // 목표 마진율 (target 모드, 예 0.30) — 상시 기준
@@ -85,7 +85,9 @@ export function computeMarginRow(inp: MarginRowInput, rate: number): MarginRowRe
   const qty = Math.max(1, inp.qty || 1);
   const R = rate > 0 ? rate : 10;             // 환율 없으면 안전 폴백(원본 근사치 10)
   const effWeightG = (inp.weightG || 0) * qty + PACKAGING_WEIGHT_G;
-  const costKrw = ((inp.purchaseKrw || 0) + (inp.domesticShipKrw || 0)) * qty;
+  // 상품원가만 개수 비례. 국내배송비·배대지포장은 묶음배송이라 1회분 고정.
+  // (해상운임 KSE 는 아래에서 발송무게=무게×개수 로 자동 반영)
+  const costKrw = (inp.goodsCostKrw || 0) * qty + (inp.flatShipKrw || 0);
   const kseAutoKrw = lookupKseShipping(effWeightG);
   const kseShipKrw = inp.kseOverrideKrw != null ? inp.kseOverrideKrw : kseAutoKrw;
   // 유료배송이면 운임은 바이어 부담 → 셀러 마진 계산에서 KSE 제외 (운임 자체는 표시용으로 유지)

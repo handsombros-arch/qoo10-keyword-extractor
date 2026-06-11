@@ -76,10 +76,19 @@ function rowPurchaseKrw(r: any): number {
   const sum = (r.goods_cost_krw || 0) + (r.inbound_ship_krw || 0);
   return sum > 0 ? sum : (r.purchase_krw || 0);
 }
+// 상품원가(1개)만 ×개수, 국내배송비+배대지포장은 묶음배송 1회분(개수 무관).
+// 구버전 행 호환: goods_cost 가 비면 purchase_krw 를 상품원가로 폴백.
+function rowGoodsCostKrw(r: any): number {
+  return (r.goods_cost_krw || 0) > 0 ? r.goods_cost_krw : (r.purchase_krw || 0);
+}
+function rowFlatShipKrw(r: any): number {
+  return (r.inbound_ship_krw || 0) + (r.domestic_ship_krw || 0);
+}
 function toInput(r: MarginRow, s: MarginSheetSettings): MarginRowInput {
   return {
-    qty: r.qty, weightG: r.weight_g, purchaseKrw: rowPurchaseKrw(r),
-    domesticShipKrw: r.domestic_ship_krw, mode: r.mode,
+    qty: r.qty, weightG: r.weight_g,
+    goodsCostKrw: rowGoodsCostKrw(r), flatShipKrw: rowFlatShipKrw(r),
+    mode: r.mode,
     markup: s.default_markup, targetMargin: s.default_target_margin,
     kseOverrideKrw: r.kse_override_krw, megaDiscount: s.default_mega_discount,
     shipPaidByBuyer: r.ship_mode === 'paid',
@@ -410,12 +419,12 @@ export default function MarginSheetPage() {
           ? <a href={p.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">링크</a> : '' },
       { field: 'qty', headerName: '개수', width: 60, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',        headerTooltip: '세트 개수. 개수만큼 무게·상품원가·국내배송·KSE배대지가 곱해짐' },
       { field: 'weight_g', headerName: '무게(g)', width: 78, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',        headerTooltip: '상품 1개 실제 무게(g). 포장 100g 가산 후 KSE 해상 요금표 자동조회. 무료/유료 모두 운임 산정에 사용.' },
-      { headerName: '구매가', groupId: 'grp_buy', headerTooltip: '상품원가 + 국내배송비 = 구매가 (1개 기준)', children: [
-        { field: 'goods_cost_krw', headerName: '상품원가', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품 자체 가격(1개)' },
-        { field: 'inbound_ship_krw', headerName: '국내배송비', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품을 내(배대지)에게 받기까지의 배송비(1개). 놓치기 쉬우니 별도 입력 → 구매가에 자동 합산.' },
-        { headerName: '합계', width: 90, type: 'numericColumn', cellStyle: CALC_BG, valueGetter: (p: any) => p.data && rowPurchaseKrw(p.data), valueFormatter: won,        headerTooltip: '상품원가 + 국내배송비 자동 합산 (1개). (자동계산)' },
+      { headerName: '구매가', groupId: 'grp_buy', headerTooltip: '상품원가(1개) + 국내배송비. 마진계산: 상품원가만 ×개수, 국내배송비는 묶음배송 1회분.', children: [
+        { field: 'goods_cost_krw', headerName: '상품원가', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품 자체 가격(1개 기준). 개수만큼 곱해짐(2박스=×2).' },
+        { field: 'inbound_ship_krw', headerName: '국내배송비', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품을 배대지까지 받는 국내 배송비. 묶음배송이라 개수와 무관하게 1회분만 마진에 반영.' },
+        { headerName: '합계', width: 90, type: 'numericColumn', cellStyle: CALC_BG, valueGetter: (p: any) => p.data && rowPurchaseKrw(p.data), valueFormatter: won,        headerTooltip: '상품원가(1개) + 국내배송비 참고 합계. (마진엔 상품원가만 ×개수 반영)' },
       ] },
-      { field: 'domestic_ship_krw', headerName: 'KSE배대지 배송+포장', width: 130, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '한국 KSE 배대지(포워더)까지 보내는 국내 배송비 + 포장비(1개). (큐텐 해상 KSE 운임과는 별개)' },
+      { field: 'domestic_ship_krw', headerName: 'KSE배대지 배송+포장', width: 130, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '한국 KSE 배대지(포워더)까지 보내는 국내 배송비 + 포장비. 묶음배송이라 개수와 무관하게 1회분만 마진에 반영. (큐텐 해상 KSE 운임과는 별개)' },
       { field: 'mode', headerName: '방식', width: 96,
         headerTooltip: '클릭해서 선택. 원가배수=구매가×배수, 목표마진=목표 마진율 역산. 배수/목표마진/메가할인 값은 상단 설정에서 일괄 적용.',
         cellRenderer: (p: any) => (
