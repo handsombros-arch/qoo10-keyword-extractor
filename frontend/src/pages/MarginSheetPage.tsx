@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import type { ColDef } from 'ag-grid-community';
+import type { ColDef, ColGroupDef } from 'ag-grid-community';
 import { getExchangeRate, getKeywords } from '../api/endpoints';
 import { fetchCloud } from '../store/cloudSync';
 import {
@@ -361,7 +361,7 @@ export default function MarginSheetPage() {
     return { backgroundColor: '#fef3c7' };
   };
 
-  const columnDefs: ColDef[] = useMemo(() => {
+  const columnDefs: (ColDef | ColGroupDef)[] = useMemo(() => {
     const cg = (r: any) => computeMarginRow(toInput(r, settingsRef.current), settingsRef.current.exchange_rate);
     return [
       { field: 'registered_date', headerName: '등록일', width: 76, editable: true, pinned: 'left',
@@ -404,9 +404,11 @@ export default function MarginSheetPage() {
           ? <a href={p.value} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">링크</a> : '' },
       { field: 'qty', headerName: '개수', width: 60, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',        headerTooltip: '세트 개수. 개수만큼 무게·상품원가·국내배송·KSE배대지가 곱해짐' },
       { field: 'weight_g', headerName: '무게(g)', width: 78, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor',        headerTooltip: '상품 1개 실제 무게(g). 포장 100g 가산 후 KSE 해상 요금표 자동조회. 무료/유료 모두 운임 산정에 사용.' },
-      { field: 'goods_cost_krw', headerName: '상품원가', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품 자체 가격(1개)' },
-      { field: 'inbound_ship_krw', headerName: '국내배송비', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품을 내(배대지)에게 받기까지의 배송비(1개). 놓치기 쉬우니 별도 입력 → 구매가에 자동 합산.' },
-      { headerName: '구매가', width: 90, type: 'numericColumn', cellStyle: CALC_BG, valueGetter: (p: any) => p.data && rowPurchaseKrw(p.data), valueFormatter: won,        headerTooltip: '상품원가 + 국내배송비 자동 합산. (자동계산)' },
+      { headerName: '구매가', groupId: 'grp_buy', headerTooltip: '상품원가 + 국내배송비 = 구매가 (1개 기준)', children: [
+        { field: 'goods_cost_krw', headerName: '상품원가', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품 자체 가격(1개)' },
+        { field: 'inbound_ship_krw', headerName: '국내배송비', width: 84, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '국내 상품을 내(배대지)에게 받기까지의 배송비(1개). 놓치기 쉬우니 별도 입력 → 구매가에 자동 합산.' },
+        { headerName: '합계', width: 90, type: 'numericColumn', cellStyle: CALC_BG, valueGetter: (p: any) => p.data && rowPurchaseKrw(p.data), valueFormatter: won,        headerTooltip: '상품원가 + 국내배송비 자동 합산 (1개). (자동계산)' },
+      ] },
       { field: 'domestic_ship_krw', headerName: 'KSE배대지 배송+포장', width: 130, editable: true, type: 'numericColumn', cellEditor: 'agNumberCellEditor', valueFormatter: won,        headerTooltip: '한국 KSE 배대지(포워더)까지 보내는 국내 배송비 + 포장비(1개). (큐텐 해상 KSE 운임과는 별개)' },
       { field: 'mode', headerName: '방식', width: 96,
         headerTooltip: '클릭해서 선택. 원가배수=구매가×배수, 목표마진=목표 마진율 역산. 배수/목표마진/메가할인 값은 상단 설정에서 일괄 적용.',
@@ -441,14 +443,19 @@ export default function MarginSheetPage() {
       { headerName: '발송무게', width: 82, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '무게×개수 + 포장 100g', valueGetter: (p: any) => p.data && cg(p.data).effWeightG, valueFormatter: (p: any) => p.value ? `${p.value}g` : '' },
       { headerName: '판매가(원)', width: 96, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '원화 목표 판매가 P (마진 기준값)', valueGetter: (p: any) => p.data && cg(p.data).targetPriceKrw, valueFormatter: won },
       // 상시
-      { headerName: '상시 등록가(¥)', width: 108, type: 'numericColumn', headerTooltip: '할인 없는 상시 큐텐 등록가(엔). 작성 당일 환율로 산출', valueGetter: (p: any) => p.data && cg(p.data).listJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#dbeafe', fontWeight: 700 } },
-      { headerName: '상시 수수료', width: 88, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '큐텐 수수료 13.5% (상시 등록가×환율 기준, 원). 이익에서 차감됨. (자동계산)', valueGetter: (p: any) => p.data && cg(p.data).commissionKrw, valueFormatter: won },
-      { headerName: '상시 이익', width: 90, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '상시가 기준 순이익(원)', valueGetter: (p: any) => p.data && cg(p.data).profitKrw, valueFormatter: won },
-      { headerName: '상시 마진율', width: 92, type: 'numericColumn', headerTooltip: '상시 이익 ÷ 판매가(원)', valueGetter: (p: any) => p.data && cg(p.data).marginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).marginRate) },
+      { headerName: '상시', groupId: 'grp_normal', headerTooltip: '할인 없는 상시 판매 기준 — 등록가·수수료·이익·마진율', children: [
+        { headerName: '등록가(¥)', width: 100, type: 'numericColumn', headerTooltip: '할인 없는 상시 큐텐 등록가(엔). 작성 당일 환율로 산출', valueGetter: (p: any) => p.data && cg(p.data).listJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#dbeafe', fontWeight: 700 } },
+        { headerName: '수수료', width: 84, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '큐텐 수수료 13.5% (상시 등록가×환율 기준, 원). 이익에서 차감됨. (자동계산)', valueGetter: (p: any) => p.data && cg(p.data).commissionKrw, valueFormatter: won },
+        { headerName: '이익', width: 88, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '상시가 기준 순이익(원)', valueGetter: (p: any) => p.data && cg(p.data).profitKrw, valueFormatter: won },
+        { headerName: '마진율', width: 88, type: 'numericColumn', headerTooltip: '상시 이익 ÷ 판매가(원)', valueGetter: (p: any) => p.data && cg(p.data).marginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).marginRate) },
+      ] },
       // 메가와리
-      { headerName: '메가 등록가(¥)', width: 110, type: 'numericColumn', headerTooltip: '메가와리(빅프로모션) 할인 적용 등록가(엔)', valueGetter: (p: any) => p.data && cg(p.data).megaListJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#f3e8ff', fontWeight: 700 } },
-      { headerName: '메가 이익', width: 90, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '메가와리 할인 적용 시 순이익(원). 음수면 역마진', valueGetter: (p: any) => p.data && cg(p.data).megaProfitKrw, valueFormatter: won },
-      { headerName: '메가 마진율', width: 92, type: 'numericColumn', headerTooltip: '메가 이익 ÷ 판매가(원). 상단 메가 최소마진 미달 시 경고', valueGetter: (p: any) => p.data && cg(p.data).megaMarginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).megaMarginRate) },
+      { headerName: '메가와리', groupId: 'grp_mega', headerTooltip: '메가와리(빅프로모션) 할인 적용 기준 — 등록가·수수료·이익·마진율', children: [
+        { headerName: '등록가(¥)', width: 100, type: 'numericColumn', headerTooltip: '메가와리(빅프로모션) 할인 적용 등록가(엔)', valueGetter: (p: any) => p.data && cg(p.data).megaListJpy, valueFormatter: jpy, cellStyle: { backgroundColor: '#f3e8ff', fontWeight: 700 } },
+        { headerName: '수수료', width: 84, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '큐텐 수수료 13.5% (메가 등록가×환율 기준, 원). 이익에서 차감됨. (자동계산)', valueGetter: (p: any) => p.data && cg(p.data).megaCommissionKrw, valueFormatter: won },
+        { headerName: '이익', width: 88, type: 'numericColumn', cellStyle: CALC_BG, headerTooltip: '메가와리 할인 적용 시 순이익(원). 음수면 역마진', valueGetter: (p: any) => p.data && cg(p.data).megaProfitKrw, valueFormatter: won },
+        { headerName: '마진율', width: 88, type: 'numericColumn', headerTooltip: '메가 이익 ÷ 판매가(원). 상단 메가 최소마진 미달 시 경고', valueGetter: (p: any) => p.data && cg(p.data).megaMarginRate, valueFormatter: pct, cellStyle: marginCellStyle(r => cg(r).megaMarginRate) },
+      ] },
       { headerName: '평가', width: 64, cellStyle: CALC_BG, headerTooltip: '상시 마진율 정성 평가', valueGetter: (p: any) => p.data && marginVerdict(cg(p.data).marginRate) },
       { field: 'memo', headerName: '메모', width: 130, editable: true, headerTooltip: '자유 메모' },
     ];

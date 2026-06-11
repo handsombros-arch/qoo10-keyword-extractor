@@ -72,6 +72,7 @@ export interface MarginRowResult {
   marginRate: number;
   // 메가와리
   megaListJpy: number;
+  megaCommissionKrw: number;
   megaProfitKrw: number;
   megaMarginRate: number;
 }
@@ -110,13 +111,14 @@ export function computeMarginRow(inp: MarginRowInput, rate: number): MarginRowRe
   // 메가와리: 등록가 ×(1-할인). 판매가↓ → 이익↓
   const megaListJpy = listJpy * (1 - (inp.megaDiscount || 0));
   const megaS = megaListJpy * R;
-  const megaProfitKrw = megaS - costKrw - megaS * QOO10_COMMISSION - kseForMargin;
+  const megaCommissionKrw = megaS * QOO10_COMMISSION;
+  const megaProfitKrw = megaS - costKrw - megaCommissionKrw - kseForMargin;
   const megaMarginRate = P > 0 ? megaProfitKrw / P : 0;
 
   return {
     effWeightG, costKrw, kseShipKrw, kseAutoKrw, targetPriceKrw: P,
     listJpy, commissionKrw, profitKrw, marginRate,
-    megaListJpy, megaProfitKrw, megaMarginRate,
+    megaListJpy, megaCommissionKrw, megaProfitKrw, megaMarginRate,
   };
 }
 
