@@ -3,7 +3,7 @@ import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import type { ColDef, ColGroupDef } from 'ag-grid-community';
 import { getExchangeRate, getKeywords } from '../api/endpoints';
-import { fetchCloud } from '../store/cloudSync';
+import { fetchCloud, pushCloud } from '../store/cloudSync';
 import {
   loadRows, saveRows, loadSettings, saveSettings, newMarginRow,
   duplicateAsComposition, type MarginRow, type MarginSheetSettings,
@@ -120,12 +120,18 @@ export default function MarginSheetPage() {
       if (cloudRows.data && Array.isArray(cloudRows.data)) {
         localStorage.setItem('marginSheet.rows.v1', JSON.stringify(cloudRows.data));
         setRows(cloudRows.data);
+      } else if (rowsRef.current.length) {
+        // 클라우드가 비었지만 로컬에 데이터가 있으면 1회 백필 업로드
+        // (이전엔 margin_sheet 키가 서버 허용목록에 없어 동기화가 안 됐음)
+        pushCloud('margin_sheet', rowsRef.current).catch(() => {});
       }
       let s = settingsRef.current;
       if (cloudSet.data && typeof cloudSet.data === 'object') {
         s = { ...s, ...cloudSet.data };
         localStorage.setItem('marginSheet.settings.v1', JSON.stringify(s));
         setSettings(s);
+      } else {
+        pushCloud('margin_sheet_settings', settingsRef.current).catch(() => {});
       }
       if (!s.exchange_rate) await refreshRate();
     })();

@@ -17,6 +17,10 @@ router = APIRouter(prefix="/api/user-data", tags=["user-data"])
 
 ALLOWED_KEYS = {
     "product_sheet",
+    "margin_sheet",            # 큐텐 마진 시트 행 (PC 간 공유 + 백업)
+    "margin_sheet_settings",   # 마진 시트 환율·배수·메가할인 등 설정
+    "streak_freezes",          # 대시보드 등록 스트릭 freeze
+    "shop_urls",               # 샵 벤치마크 URL 목록
     "interest_keywords",
     "shop_cache",
     "brand_auto_add_threshold",  # /settings 에서 조정. payload: {"value": 0.0~1.0}
