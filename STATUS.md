@@ -1,5 +1,7 @@
 # 엘비텐 (LV10) — 현재 상황 (2026-05-02)
 
+> **⚠️ 2026-09-19 갱신:** 이 문서는 5/2 기준으로 일부 구식. 현재 위치는 `docs/HANDOFF_2026-09-19.md` 를 먼저 읽을 것. 윈도우 야간 자동화는 5/16부터 OFF, 수집은 맥북 전담(8/21 이후 중단 상태).
+
 VBA → Python(FastAPI) + React 재구축. 두 PC(메인 + Tailscale 노트북) 같은 Supabase 공유.
 실행: `start.pyw` 더블클릭 → `localhost:8000` (CMD 없음, --reload 없음).
 
